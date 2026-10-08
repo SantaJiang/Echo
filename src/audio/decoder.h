@@ -19,6 +19,8 @@ public:
 
     // Audible timeline. endFrame < 0 plays until the file ends.
     void setRange(qint64 startFrame, qint64 endFrame);
+    // Continue a range that stopped on its end, keeping samples already decoded past that point.
+    void extendRange(qint64 endFrame);
 
     [[nodiscard]] const SampleFormat& format() const { return m_format; }
     [[nodiscard]] const ReplayGain& replayGain() const { return m_gain; }

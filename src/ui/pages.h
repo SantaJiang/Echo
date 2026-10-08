@@ -6,6 +6,7 @@
 
 #include <QWidget>
 
+class QLabel;
 class QLineEdit;
 class QListWidget;
 class QStackedWidget;
@@ -21,10 +22,14 @@ public:
     void setPlayingId(qint64 id);
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
+signals:
+    void addFolderRequested();
+
 private:
     Library* m_library = nullptr;
     TrackTable* m_table = nullptr;
-    QString m_sort = QStringLiteral("title");
+    QWidget* m_empty = nullptr;
+    QString m_sort = QStringLiteral("album");
     bool m_desc = false;
 };
 
@@ -118,7 +123,15 @@ signals:
     void playlistSelected(qint64 id);
 
 private:
+    void showSection(QWidget* section, QListWidget* list);
     Library* m_library = nullptr;
+    QWidget* m_empty = nullptr;
+    QLabel* m_emptyText = nullptr;
+    QWidget* m_body = nullptr;
+    QWidget* m_trackSection = nullptr;
+    QWidget* m_artistSection = nullptr;
+    QWidget* m_albumSection = nullptr;
+    QWidget* m_playlistSection = nullptr;
     TrackTable* m_tracks = nullptr;
     QListWidget* m_albums = nullptr;
     QListWidget* m_artists = nullptr;

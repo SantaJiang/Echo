@@ -179,6 +179,7 @@ void Player::setReplayGainEnabled(bool enabled)
 void Player::setShuffle(bool shuffle)
 {
     m_shuffle = shuffle;
+    queueUpcoming();
     emit changed();
 }
 
@@ -404,7 +405,7 @@ float Player::gainFor(const Track& track, bool albumContext) const
     if (!m_replayGain) {
         return 0;
     }
-    const bool useAlbum = albumContext && track.hasAlbumGain;
+    const bool useAlbum = albumContext && !m_shuffle && track.hasAlbumGain;
     if (!useAlbum && !track.hasTrackGain && !track.hasAlbumGain) {
         return 0;
     }

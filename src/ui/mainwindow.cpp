@@ -6,6 +6,7 @@
 #include "playback/player.h"
 #include "ui/miniplayer.h"
 #include "ui/nowplaying.h"
+#include "ui/icons.h"
 #include "ui/pages.h"
 #include "ui/playerbar.h"
 #include "ui/queuepanel.h"
@@ -13,6 +14,8 @@
 #include "ui/theme.h"
 #include "ui/trackdialog.h"
 
+#include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
@@ -21,18 +24,24 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QStackedWidget>
+#include <QStringList>
+#include <QToolButton>
 #include <QTextEdit>
 #include <QTimer>
+#include <QWindow>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -55,16 +64,83 @@ Track withSidecarLyrics(const Track& track)
     return copy;
 }
 
-QString formatText(int rate, int bits, bool exclusive)
+QString formatText(int sourceRate, int sourceBits, bool sourceFloat, int deviceRate, bool exclusive)
 {
-    if (rate <= 0) {
+    if (sourceRate <= 0) {
         return {};
     }
-    return QStringLiteral("%1 kHz · %2 bit%3")
-        .arg(rate / 1000.0, 0, 'f', rate % 1000 == 0 ? 1 : 1)
-        .arg(bits)
-        .arg(exclusive ? QStringLiteral(" · 独占") : QString());
+    const QString depth = sourceFloat ? QStringLiteral("32-bit float") : QStringLiteral("%1 bit").arg(sourceBits);
+    QString text = QStringLiteral("%1 kHz · %2").arg(sourceRate / 1000.0, 0, 'f', 1).arg(depth);
+    if (deviceRate > 0 && deviceRate != sourceRate) {
+        text += QStringLiteral(" → %1 kHz").arg(deviceRate / 1000.0, 0, 'f', 1);
+    }
+    if (exclusive) {
+        text += QStringLiteral(" · 独占");
+    }
+    return text;
 }
+
+class CaptionBar : public QWidget {
+public:
+    explicit CaptionBar(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("captionBar"));
+        setFixedHeight(36);
+        auto* layout = new QHBoxLayout(this);
+        layout->setContentsMargins(12, 0, 6, 0);
+        layout->setSpacing(2);
+        auto* title = new QLabel(QStringLiteral("Echo"), this);
+        title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600;"));
+        auto make = [this](const QString& text, const QString& tip) {
+            auto* button = new QToolButton(this);
+            button->setText(text);
+            button->setToolTip(tip);
+            button->setAutoRaise(true);
+            button->setFixedSize(32, 28);
+            button->setFocusPolicy(Qt::NoFocus);
+            return button;
+        };
+        auto* minimize = make(QStringLiteral("—"), QStringLiteral("最小化"));
+        auto* maximize = make(QStringLiteral("□"), QStringLiteral("最大化"));
+        auto* close = make(QStringLiteral("×"), QStringLiteral("关闭"));
+        layout->addWidget(title);
+        layout->addStretch();
+        layout->addWidget(minimize);
+        layout->addWidget(maximize);
+        layout->addWidget(close);
+        connect(minimize, &QToolButton::clicked, this, [this] { window()->showMinimized(); });
+        connect(maximize, &QToolButton::clicked, this, [this] {
+            if (window()->isMaximized()) {
+                window()->showNormal();
+            } else {
+                window()->showMaximized();
+            }
+        });
+        connect(close, &QToolButton::clicked, this, [this] { window()->close(); });
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && window()->windowHandle()) {
+            window()->windowHandle()->startSystemMove();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            if (window()->isMaximized()) {
+                window()->showNormal();
+            } else {
+                window()->showMaximized();
+            }
+        }
+    }
+};
 
 } // namespace
 
@@ -75,6 +151,11 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     , m_engine(engine)
 {
     setWindowTitle(QStringLiteral("Echo"));
+    setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+#ifndef Q_OS_MACOS
+    setWindowFlag(Qt::FramelessWindowHint);
+#endif
+    setMinimumSize(960, 640);
     resize(1180, 760);
     setAcceptDrops(true);
     polish(this);
@@ -97,17 +178,32 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_stack->addWidget(m_now);
 
     m_search = new QLineEdit(this);
+    m_search->setObjectName(QStringLiteral("search"));
     m_search->setPlaceholderText(QStringLiteral("搜索"));
     m_search->setClearButtonEnabled(true);
-    m_search->setFixedHeight(32);
+    m_search->setFixedSize(260, 32);
+    m_search->addAction(icon(Icon::Search, echo::palette().secondary, 14), QLineEdit::LeadingPosition);
 
     m_queue = new QueuePanel(this);
     m_queue->hide();
     m_bar = new PlayerBar(this);
 
     auto* content = new QVBoxLayout();
-    content->setContentsMargins(0, 12, 16, 0);
-    content->addWidget(m_search);
+#ifdef Q_OS_MACOS
+    content->setContentsMargins(0, 22, 0, 0);
+#else
+    content->setContentsMargins(0, 12, 0, 0);
+#endif
+    m_heading = new QLabel(QStringLiteral("歌曲"), this);
+    m_heading->setStyleSheet(QStringLiteral("font-size: 28px; font-weight: 700;"));
+    m_heading->setFixedHeight(36);
+    auto* searchRow = new QHBoxLayout();
+    searchRow->setContentsMargins(32, 0, 24, 8);
+    searchRow->setAlignment(Qt::AlignVCenter);
+    searchRow->addWidget(m_heading, 0, Qt::AlignVCenter);
+    searchRow->addStretch();
+    searchRow->addWidget(m_search, 0, Qt::AlignVCenter);
+    content->addLayout(searchRow);
     auto* middle = new QHBoxLayout();
     middle->addWidget(m_stack, 1);
     middle->addWidget(m_queue);
@@ -117,13 +213,29 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     body->setContentsMargins(0, 0, 0, 0);
     body->setSpacing(0);
     body->addWidget(m_sidebar);
-    body->addLayout(content, 1);
+    auto* divider = new QFrame(this);
+    divider->setObjectName(QStringLiteral("contentDivider"));
+    divider->setFixedWidth(1);
+    divider->setFrameShape(QFrame::NoFrame);
+    divider->setAutoFillBackground(true);
+    QPalette dividerPalette = divider->palette();
+    dividerPalette.setColor(QPalette::Window, echo::palette().dark ? QColor(255, 255, 255, 70) : QColor(QStringLiteral("#8E8E93")));
+    divider->setPalette(dividerPalette);
+    auto* right = new QVBoxLayout();
+    right->setContentsMargins(0, 0, 0, 0);
+    right->setSpacing(0);
+    right->addLayout(content, 1);
+    right->addWidget(m_bar);
+    body->addWidget(divider);
+    body->addLayout(right, 1);
     auto* root = new QWidget(this);
     auto* column = new QVBoxLayout(root);
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(0);
+#ifndef Q_OS_MACOS
+    column->addWidget(new CaptionBar(root));
+#endif
     column->addLayout(body, 1);
-    column->addWidget(m_bar);
     setCentralWidget(root);
 
     m_mini = new MiniPlayer();
@@ -163,6 +275,10 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_playlistId = id;
         m_playlist->setPlaylist(id);
         m_search->clear();
+        m_heading->setText(m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))
+                               ? m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))->text()
+                               : QStringLiteral("歌单"));
+        m_heading->show();
         m_stack->setCurrentWidget(m_playlist);
     });
     connect(m_sidebar, &Sidebar::createPlaylistRequested, this, &MainWindow::promptPlaylist);
@@ -182,6 +298,12 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_sidebar, &Sidebar::deletePlaylistRequested, this, [this](qint64 id) { m_library->deletePlaylist(id); });
     connect(m_sidebar, &Sidebar::deleteFolderRequested, this, [this](qint64 id) { m_library->deletePlaylistFolder(id); });
     connect(m_sidebar, &Sidebar::addFolderRequested, this, [this] {
+        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
+        if (!path.isEmpty()) {
+            m_library->addRoot(path);
+        }
+    });
+    connect(m_songs, &SongsPage::addFolderRequested, this, [this] {
         const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
         if (!path.isEmpty()) {
             m_library->addRoot(path);
@@ -236,6 +358,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
         if (text.trimmed().isEmpty()) {
             m_showingSearch = false;
+            m_heading->show();
             m_stack->setCurrentIndex(m_playlistId > 0 && m_stack->currentWidget() == m_searchPage ? 4 : m_libraryPage);
             if (m_stack->currentWidget() == m_playlist) {
                 m_playlist->reload();
@@ -243,6 +366,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
             return;
         }
         m_showingSearch = true;
+        m_heading->hide();
         m_searchPage->search(text.trimmed());
         m_stack->setCurrentWidget(m_searchPage);
     });
@@ -254,12 +378,21 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_bar, &PlayerBar::volumeChanged, m_player, &Player::setVolume);
     connect(m_bar, &PlayerBar::shuffleToggled, this, [this] { m_player->setShuffle(!m_player->shuffle()); });
     connect(m_bar, &PlayerBar::repeatToggled, this, [this] {
-        const int next = (static_cast<int>(m_player->repeat()) + 1) % 3;
-        m_player->setRepeat(static_cast<Player::Repeat>(next));
+        m_player->setRepeat(m_player->repeat() == Player::Repeat::Off ? Player::Repeat::All : Player::Repeat::Off);
     });
     connect(m_bar, &PlayerBar::queueToggled, this, [this] { m_queue->setVisible(!m_queue->isVisible()); });
-    connect(m_bar, &PlayerBar::lyricsRequested, this, [this] { m_stack->setCurrentWidget(m_now); });
-    connect(m_bar, &PlayerBar::artworkClicked, this, [this] { m_stack->setCurrentWidget(m_now); });
+    connect(m_bar, &PlayerBar::lyricsRequested, this, [this] {
+        const Track track = withSidecarLyrics(m_player->currentTrack());
+        m_heading->hide();
+        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
+        m_stack->setCurrentWidget(m_now);
+    });
+    connect(m_bar, &PlayerBar::artworkClicked, this, [this] {
+        const Track track = withSidecarLyrics(m_player->currentTrack());
+        m_heading->hide();
+        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
+        m_stack->setCurrentWidget(m_now);
+    });
     connect(m_now, &NowPlayingPage::editLyricsRequested, this, [this] { showInfo(m_player->currentTrack().id); });
 
     connect(m_queue, &QueuePanel::activated, this, [this](int index) {
@@ -289,6 +422,9 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
 
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
     connect(m_library, &Library::scanProgress, this, [this](int done, int total) {
+        if (total <= 0 || done >= total) {
+            return;
+        }
         m_sidebar->setScanText(QStringLiteral("正在扫描 %1 / %2").arg(done).arg(total));
     });
     connect(m_library, &Library::scanFinished, this, [this] { m_sidebar->setScanText({}); });
@@ -298,8 +434,8 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_engine, &AudioEngine::exclusiveFallback, this, [this](const QString&) {
         m_bar->setStatus(QStringLiteral("设备被占用，已改用共享模式"));
     });
-    connect(m_engine, &AudioEngine::deviceOpened, this, [this](int rate, int bits, bool exclusive) {
-        m_bar->setFormatText(formatText(rate, bits, exclusive));
+    connect(m_engine, &AudioEngine::deviceOpened, this, [this](int sourceRate, int sourceBits, bool sourceFloat, int deviceRate, bool exclusive) {
+        m_bar->setFormatText(formatText(sourceRate, sourceBits, sourceFloat, deviceRate, exclusive));
     });
 
     installMediaIntegration(this, [this](MediaCommand command, qint64 argument) {
@@ -336,8 +472,34 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
 
     refreshViews();
     syncPlayer();
+    qApp->installEventFilter(this);
     applyWindowChrome(this);
     installSidebarEffect(m_sidebar);
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+#ifdef Q_OS_MACOS
+    if (event->type() == QEvent::MouseButtonPress) {
+        auto* mouse = static_cast<QMouseEvent*>(event);
+        auto* widget = qobject_cast<QWidget*>(watched);
+        if (mouse->button() == Qt::LeftButton && widget && widget->window() == this) {
+            const QPoint local = mapFromGlobal(mouse->globalPosition().toPoint());
+            const bool trafficLights = local.x() < 74 && local.y() < 36;
+            const bool titleStrip = local.y() >= 0 && local.y() < 52 && rect().contains(local) && !trafficLights;
+            if (titleStrip && !qobject_cast<QAbstractButton*>(widget) && !qobject_cast<QLineEdit*>(widget)
+                && !qobject_cast<QAbstractItemView*>(widget)) {
+                if (windowHandle() && windowHandle()->startSystemMove()) {
+                    return true;
+                }
+            }
+        }
+    }
+#else
+    Q_UNUSED(watched);
+    Q_UNUSED(event);
+#endif
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::openPaths(const QStringList& paths)
@@ -458,6 +620,9 @@ void MainWindow::showLibraryPage(int index)
     m_libraryPage = index;
     m_playlistId = 0;
     m_search->clear();
+    const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺人"), QStringLiteral("文件夹")};
+    m_heading->setText(index >= 0 && index < titles.size() ? titles.at(index) : QStringLiteral("歌曲"));
+    m_heading->show();
     m_stack->setCurrentIndex(index);
 }
 

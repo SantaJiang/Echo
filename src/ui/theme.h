@@ -21,6 +21,7 @@ struct Palette {
 };
 
 [[nodiscard]] Palette palette();
+void useDarkTheme();
 void polish(QWidget* root);
 [[nodiscard]] QString formatDuration(qint64 milliseconds);
 

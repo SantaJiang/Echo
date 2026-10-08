@@ -1,3 +1,4 @@
+#include "ui/icons.h"
 #include "ui/trackdialog.h"
 
 #include <QDialogButtonBox>
@@ -43,9 +44,7 @@ TrackDialog::TrackDialog(const Track& track, const QPixmap& artwork, QWidget* pa
     auto* artRow = new QHBoxLayout();
     auto* art = new QLabel(this);
     art->setFixedSize(72, 72);
-    if (!artwork.isNull()) {
-        art->setPixmap(artwork.scaled(72, 72, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
-    }
+    art->setPixmap((artwork.isNull() ? placeholderCover(72) : artwork).scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     auto* pick = new QPushButton(QStringLiteral("更换封面"), this);
     artRow->addWidget(art);
     artRow->addWidget(pick);
@@ -60,7 +59,9 @@ TrackDialog::TrackDialog(const Track& track, const QPixmap& artwork, QWidget* pa
         m_albumArtist->setReadOnly(true);
         pick->setEnabled(false);
     }
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+    auto* buttons = new QDialogButtonBox(this);
+    buttons->addButton(QStringLiteral("保存"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(QStringLiteral("取消"), QDialogButtonBox::RejectRole);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

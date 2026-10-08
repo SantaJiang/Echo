@@ -35,6 +35,7 @@ private:
     void selectLibrary(int index);
     QListWidget* m_library = nullptr;
     QTreeWidget* m_playlists = nullptr;
+    QLabel* m_playlistEmpty = nullptr;
     QLabel* m_status = nullptr;
     bool m_rebuilding = false;
 };

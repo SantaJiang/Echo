@@ -47,6 +47,14 @@ Library::Library(QObject* parent)
 {
     m_rescanTimer.setSingleShot(true);
     m_rescanTimer.setInterval(800);
+    m_suppressTimer.setSingleShot(true);
+    connect(&m_suppressTimer, &QTimer::timeout, this, [this] {
+        m_suppressWatch = false;
+        if (m_rescanQueued && !m_scanning) {
+            m_rescanQueued = false;
+            m_rescanTimer.start();
+        }
+    });
     connect(&m_rescanTimer, &QTimer::timeout, this, [this] {
         if (m_pendingRoot <= 0 || !m_database) {
             return;
@@ -59,7 +67,8 @@ Library::Library(QObject* parent)
         }
     });
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString& path) {
-        if (!m_database) {
+        if (!m_database || m_suppressWatch || m_scanning) {
+            m_rescanQueued = true;
             return;
         }
         for (const LibraryRoot& root : m_database->roots()) {
@@ -96,6 +105,8 @@ bool Library::open(QString* error)
     connect(m_scanThread, &QThread::finished, m_scanner, &QObject::deleteLater);
     connect(m_scanner, &Scanner::progress, this, [this](qint64, int done, int total) { emit scanProgress(done, total); });
     connect(m_scanner, &Scanner::finished, this, [this](qint64) {
+        m_scanning = false;
+        suppressWatch(1500);
         watchRoots();
         emit changed();
         emit scanFinished();
@@ -737,19 +748,37 @@ void Library::scanRoot(qint64 id, const QString& path)
     if (!m_scanner) {
         return;
     }
+    m_scanning = true;
+    suppressWatch(1500);
     QMetaObject::invokeMethod(m_scanner, "scanRoot", Qt::QueuedConnection, Q_ARG(qint64, id), Q_ARG(QString, path));
+}
+
+void Library::suppressWatch(int milliseconds)
+{
+    m_suppressWatch = true;
+    m_suppressTimer.start(milliseconds);
 }
 
 void Library::watchRoots()
 {
-    const auto current = m_watcher.directories();
-    if (!current.isEmpty()) {
-        m_watcher.removePaths(current);
-    }
+    QStringList wanted;
     for (const LibraryRoot& root : roots()) {
-        m_watcher.addPath(root.path);
+        wanted.push_back(root.path);
+    }
+    wanted.sort();
+    QStringList current = m_watcher.directories();
+    current.sort();
+    if (current == wanted) {
+        return;
+    }
+    suppressWatch(1500);
+    if (!m_watcher.directories().isEmpty()) {
+        m_watcher.removePaths(m_watcher.directories());
+    }
+    for (const QString& path : wanted) {
+        m_watcher.addPath(path);
 #if !defined(Q_OS_MACOS)
-        QDirIterator iterator(root.path, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        QDirIterator iterator(path, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
         int added = 0;
         while (iterator.hasNext() && added < 4000) {
             m_watcher.addPath(iterator.next());

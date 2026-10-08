@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/engine/audioformat.h>
+
 #include <QString>
 #include <cstdint>
 
@@ -11,13 +13,18 @@ struct SampleFormat {
     int bitsPerSample = 0;
     int bytesPerSample = 0;
     bool isFloat = false;
+    // FFmpeg places 24-bit (and other partial-width) PCM in the high bits of S32.
+    bool highAligned = false;
+    // Fooyin sample type. Unknown means infer from the fields above.
+    Fooyin::SampleFormat pcm = Fooyin::SampleFormat::Unknown;
 
     [[nodiscard]] int bytesPerFrame() const { return bytesPerSample * channels; }
     [[nodiscard]] bool valid() const { return sampleRate > 0 && channels > 0 && bytesPerSample > 0; }
     [[nodiscard]] bool operator==(const SampleFormat& other) const
     {
         return sampleRate == other.sampleRate && channels == other.channels && bitsPerSample == other.bitsPerSample
-            && bytesPerSample == other.bytesPerSample && isFloat == other.isFloat;
+            && bytesPerSample == other.bytesPerSample && isFloat == other.isFloat && highAligned == other.highAligned
+            && pcm == other.pcm;
     }
 };
 

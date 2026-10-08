@@ -1,10 +1,19 @@
 #include "audio/decoder.h"
 
+#include <core/engine/ffmpegpcm.h>
+
+extern "C" {
+#include <libavutil/replaygain.h>
+}
+
 #include <QByteArray>
 #include <QVector>
 
+#include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 extern "C" {
@@ -39,6 +48,41 @@ bool parseDb(QString text, double* value)
     }
     *value = parsed;
     return true;
+}
+
+void applyReplayGainValue(bool* hasGain, double* db, int32_t microbels)
+{
+    if (*hasGain || microbels == INT32_MIN) {
+        return;
+    }
+    *db = static_cast<double>(microbels) / 100000.0;
+    *hasGain = true;
+}
+
+void readSideReplayGain(const AVStream* stream, ReplayGain* gain)
+{
+    if (!stream || !stream->codecpar) {
+        return;
+    }
+    const AVPacketSideData* side = nullptr;
+    for (int index = 0; index < stream->codecpar->nb_coded_side_data; ++index) {
+        if (stream->codecpar->coded_side_data[index].type == AV_PKT_DATA_REPLAYGAIN) {
+            side = &stream->codecpar->coded_side_data[index];
+            break;
+        }
+    }
+    if (!side || side->size < static_cast<int>(sizeof(AVReplayGain))) {
+        return;
+    }
+    const auto* replay = reinterpret_cast<const AVReplayGain*>(side->data);
+    applyReplayGainValue(&gain->hasTrack, &gain->trackDb, replay->track_gain);
+    applyReplayGainValue(&gain->hasAlbum, &gain->albumDb, replay->album_gain);
+    if (replay->track_peak > 0) {
+        gain->trackPeak = static_cast<double>(replay->track_peak) / 100000.0;
+    }
+    if (replay->album_peak > 0) {
+        gain->albumPeak = static_cast<double>(replay->album_peak) / 100000.0;
+    }
 }
 
 void readReplayGain(AVDictionary* dictionary, ReplayGain* gain)
@@ -123,6 +167,9 @@ struct Decoder::Impl {
     bool codecEof = false;
     bool sawFramePts = false;
     std::vector<uint8_t> pending;
+    std::vector<uint8_t> overflow;
+    bool rangeHold = false;
+    int decodeErrors = 0;
     QString error;
 
     ~Impl()
@@ -144,6 +191,9 @@ struct Decoder::Impl {
         av_packet_free(&packet);
         av_frame_free(&frame);
         pending.clear();
+        overflow.clear();
+        rangeHold = false;
+        decodeErrors = 0;
         streamIndex = -1;
         codecEof = false;
         sawFramePts = false;
@@ -257,20 +307,24 @@ bool Decoder::open(const QString& path, QString* error)
     }
 
     m_format.sampleRate = m_impl->codec->sample_rate;
-    m_format.channels = m_impl->codec->ch_layout.nb_channels;
-    m_format.isFloat = packed == AV_SAMPLE_FMT_FLT;
-    if (packed == AV_SAMPLE_FMT_S16) {
-        m_format.bitsPerSample = 16;
-        m_format.bytesPerSample = 2;
-    } else if (packed == AV_SAMPLE_FMT_S32) {
-        const int rawBits = m_impl->codec->bits_per_raw_sample;
-        m_format.bitsPerSample = rawBits >= 16 && rawBits <= 32 ? rawBits : 32;
-        m_format.bytesPerSample = 4;
-    } else {
-        m_format.bitsPerSample = 32;
-        m_format.bytesPerSample = 4;
-        m_format.isFloat = true;
+    const AVCodecID codecId = stream->codecpar->codec_id;
+    const bool dsd = codecId == AV_CODEC_ID_DSD_LSBF || codecId == AV_CODEC_ID_DSD_MSBF || codecId == AV_CODEC_ID_DSD_LSBF_PLANAR
+        || codecId == AV_CODEC_ID_DSD_MSBF_PLANAR;
+    if (dsd && m_format.sampleRate >= 8) {
+        // FFmpeg's DSD decoder emits one PCM sample per byte, which is the bit rate divided by 8.
+        m_format.sampleRate /= 8;
     }
+    m_format.channels = m_impl->codec->ch_layout.nb_channels;
+    const int rawBits = m_impl->codec->bits_per_raw_sample;
+    m_format.pcm = Fooyin::Utils::sampleFormatFromFFmpeg(packed, rawBits);
+    if (m_format.pcm == Fooyin::SampleFormat::Unknown) {
+        m_format.pcm = Fooyin::SampleFormat::F32;
+    }
+    const Fooyin::AudioFormat described {m_format.pcm, std::max(m_format.sampleRate, 1), std::max(m_format.channels, 1)};
+    m_format.bitsPerSample = described.bitdepth();
+    m_format.bytesPerSample = described.bytesPerSample();
+    m_format.isFloat = m_format.pcm == Fooyin::SampleFormat::F32 || m_format.pcm == Fooyin::SampleFormat::F64;
+    m_format.highAligned = m_format.pcm == Fooyin::SampleFormat::S24In32;
     if (!m_format.valid()) {
         if (error) {
             *error = QStringLiteral("音频格式无效");
@@ -290,6 +344,7 @@ bool Decoder::open(const QString& path, QString* error)
     m_padding = std::max(0, stream->codecpar->trailing_padding);
     readAppleGapless(stream->metadata, &m_delay, &m_padding);
     readAppleGapless(m_impl->format->metadata, &m_delay, &m_padding);
+    readSideReplayGain(stream, &m_gain);
     readReplayGain(stream->metadata, &m_gain);
     readReplayGain(m_impl->format->metadata, &m_gain);
     return true;
@@ -300,7 +355,25 @@ void Decoder::setRange(qint64 startFrame, qint64 endFrame)
     m_rangeStart = std::max<qint64>(0, startFrame);
     m_rangeEnd = endFrame;
     if (m_impl) {
+        m_impl->overflow.clear();
+        m_impl->rangeHold = false;
         seekAudibleFrame(m_rangeStart);
+    }
+}
+
+void Decoder::extendRange(qint64 endFrame)
+{
+    m_rangeEnd = endFrame;
+    if (!m_impl) {
+        return;
+    }
+    if (!m_impl->overflow.empty()) {
+        m_impl->pending.insert(m_impl->pending.end(), m_impl->overflow.begin(), m_impl->overflow.end());
+        m_impl->overflow.clear();
+    }
+    if (m_impl->rangeHold) {
+        m_impl->rangeHold = false;
+        m_impl->codecEof = false;
     }
 }
 
@@ -329,11 +402,18 @@ bool Decoder::seekAudibleFrame(qint64 frame)
     }
     const qint64 raw = std::max<qint64>(0, frame) + m_delay;
     const int64_t timestamp = av_rescale_q(raw, AVRational {1, m_format.sampleRate}, m_impl->timeBase);
-    if (av_seek_frame(m_impl->format, m_impl->streamIndex, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
+    const bool sought = avformat_seek_file(m_impl->format, m_impl->streamIndex, std::numeric_limits<int64_t>::min(), timestamp,
+                                            timestamp, 0)
+            >= 0
+        || av_seek_frame(m_impl->format, m_impl->streamIndex, timestamp, AVSEEK_FLAG_BACKWARD) >= 0;
+    if (!sought) {
         return false;
     }
     avcodec_flush_buffers(m_impl->codec);
     m_impl->pending.clear();
+    m_impl->overflow.clear();
+    m_impl->rangeHold = false;
+    m_impl->decodeErrors = 0;
     m_impl->codecEof = false;
     m_impl->sawFramePts = false;
     m_impl->nextRaw = raw;
@@ -376,6 +456,10 @@ int Decoder::read(uint8_t* dst, int maxFrames)
         if (result == AVERROR_EOF) {
             avcodec_send_packet(m_impl->codec, nullptr);
         } else if (result < 0) {
+            if (result == AVERROR_INVALIDDATA && m_impl->decodeErrors < 8) {
+                ++m_impl->decodeErrors;
+                continue;
+            }
             return -1;
         } else if (m_impl->packet->stream_index != m_impl->streamIndex) {
             av_packet_unref(m_impl->packet);
@@ -384,6 +468,10 @@ int Decoder::read(uint8_t* dst, int maxFrames)
             result = avcodec_send_packet(m_impl->codec, m_impl->packet);
             av_packet_unref(m_impl->packet);
             if (result < 0 && result != AVERROR(EAGAIN)) {
+                if (result == AVERROR_INVALIDDATA && m_impl->decodeErrors < 8) {
+                    ++m_impl->decodeErrors;
+                    continue;
+                }
                 return -1;
             }
         }
@@ -398,8 +486,14 @@ int Decoder::read(uint8_t* dst, int maxFrames)
                 break;
             }
             if (result < 0) {
+                if (result == AVERROR_INVALIDDATA && m_impl->decodeErrors < 8) {
+                    ++m_impl->decodeErrors;
+                    av_frame_unref(m_impl->frame);
+                    break;
+                }
                 return -1;
             }
+            m_impl->decodeErrors = 0;
             AVFrame* frame = m_impl->frame;
             const int samples = frame->nb_samples;
             std::vector<uint8_t> interleaved(static_cast<size_t>(samples) * static_cast<size_t>(frameBytes));
@@ -427,25 +521,52 @@ int Decoder::read(uint8_t* dst, int maxFrames)
                     m_padding = AV_RL32(side->data + 4);
                 }
             }
-            for (int index = 0; index < samples; ++index) {
+            auto audibleAt = [&](int index) {
                 const qint64 raw = frameRaw + index;
                 if (raw < m_delay || index < sideSkip) {
-                    continue;
+                    return false;
                 }
                 if (m_impl->totalRaw > 0 && m_padding > 0 && raw >= m_impl->totalRaw - m_padding) {
-                    continue;
+                    return false;
                 }
                 const qint64 audible = raw - m_delay;
                 if (audible < m_rangeStart) {
-                    continue;
+                    return false;
                 }
                 if (m_rangeEnd >= 0 && audible >= m_rangeEnd) {
-                    m_impl->codecEof = true;
+                    return false;
+                }
+                return true;
+            };
+            int overflowStart = -1;
+            int index = 0;
+            while (index < samples && !m_impl->codecEof) {
+                while (index < samples && !audibleAt(index)) {
+                    ++index;
+                }
+                const int start = index;
+                while (index < samples && !m_impl->codecEof && audibleAt(index)) {
+                    ++index;
+                }
+                if (start < index) {
+                    const auto offset = static_cast<size_t>(start) * static_cast<size_t>(frameBytes);
+                    const auto bytes = static_cast<size_t>(index - start) * static_cast<size_t>(frameBytes);
+                    m_impl->pending.insert(m_impl->pending.end(), interleaved.begin() + static_cast<std::ptrdiff_t>(offset),
+                                           interleaved.begin() + static_cast<std::ptrdiff_t>(offset + bytes));
+                }
+            }
+            for (int sample = 0; sample < samples; ++sample) {
+                const qint64 audible = frameRaw + sample - m_delay;
+                if (m_rangeEnd >= 0 && audible >= m_rangeEnd) {
+                    overflowStart = sample;
                     break;
                 }
-                const auto offset = static_cast<size_t>(index) * static_cast<size_t>(frameBytes);
-                m_impl->pending.insert(m_impl->pending.end(), interleaved.begin() + static_cast<std::ptrdiff_t>(offset),
-                                       interleaved.begin() + static_cast<std::ptrdiff_t>(offset + static_cast<size_t>(frameBytes)));
+            }
+            if (overflowStart >= 0) {
+                const auto offset = static_cast<size_t>(overflowStart) * static_cast<size_t>(frameBytes);
+                m_impl->overflow.insert(m_impl->overflow.end(), interleaved.begin() + static_cast<std::ptrdiff_t>(offset), interleaved.end());
+                m_impl->rangeHold = true;
+                m_impl->codecEof = true;
             }
             m_impl->nextRaw = frameRaw + samples;
             av_frame_unref(frame);

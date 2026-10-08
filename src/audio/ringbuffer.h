@@ -11,7 +11,7 @@ namespace echo {
 // Single-producer, single-consumer byte ring. Indices are free-running.
 class RingBuffer {
 public:
-    explicit RingBuffer(int capacityBytes = 4 * 1024 * 1024)
+    explicit RingBuffer(int capacityBytes = 8 * 1024 * 1024)
     {
         int cap = 1;
         while (cap < capacityBytes) {

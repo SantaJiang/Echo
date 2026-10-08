@@ -18,6 +18,7 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     auto* layout = new QHBoxLayout(this);
     m_art = new QLabel(this);
     m_art->setFixedSize(64, 64);
+    m_art->setPixmap(placeholderCover(64));
     auto* meta = new QVBoxLayout();
     m_title = new QLabel(this);
     m_title->setStyleSheet(QStringLiteral("font-weight: 600;"));
@@ -30,13 +31,19 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     auto* next = new QToolButton(this);
     auto* expand = new QToolButton(this);
     previous->setIcon(icon(Icon::Previous, echo::palette().text, 16));
-    m_play->setIcon(icon(Icon::Play, echo::palette().text, 18));
+    m_play->setIcon(icon(Icon::Play, echo::palette().text, 16));
     next->setIcon(icon(Icon::Next, echo::palette().text, 16));
-    expand->setText(QStringLiteral("展开"));
-    previous->setAutoRaise(true);
-    m_play->setAutoRaise(true);
-    next->setAutoRaise(true);
-    expand->setAutoRaise(true);
+    expand->setIcon(icon(Icon::Expand, echo::palette().text, 14));
+    expand->setText(QString());
+    expand->setToolTip(QStringLiteral("展开"));
+    previous->setToolTip(QStringLiteral("上一首"));
+    m_play->setToolTip(QStringLiteral("播放"));
+    next->setToolTip(QStringLiteral("下一首"));
+    for (auto* button : {previous, m_play, next, expand}) {
+        button->setAutoRaise(true);
+        button->setFixedSize(32, 32);
+        button->setIconSize(QSize(16, 16));
+    }
     layout->addWidget(m_art);
     layout->addLayout(meta, 1);
     layout->addWidget(previous);

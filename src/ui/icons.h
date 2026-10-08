@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QIcon>
+#include <QPixmap>
 
 namespace echo {
 
@@ -21,9 +22,11 @@ enum class Icon {
     Lyrics,
     Plus,
     Shuffle,
-    Repeat
+    Repeat,
+    Expand
 };
 
 [[nodiscard]] QIcon icon(Icon kind, const QColor& color, int size = 16);
+[[nodiscard]] QPixmap placeholderCover(int side);
 
 } // namespace echo

@@ -65,6 +65,8 @@ MediaFilter* g_filter = nullptr;
 
 } // namespace
 
+void useDarkAppearance() {}
+
 void applyWindowChrome(QWidget* window)
 {
     HWND hwnd = reinterpret_cast<HWND>(window->winId());

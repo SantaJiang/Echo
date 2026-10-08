@@ -28,30 +28,27 @@ void dispatchCommand(MediaCommand command, qint64 argument)
 
 } // namespace
 
+void useDarkAppearance()
+{
+    [NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]];
+}
+
 void applyWindowChrome(QWidget* window)
 {
+    useDarkAppearance();
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
     NSWindow* native = view.window;
     native.titlebarAppearsTransparent = YES;
     native.titleVisibility = NSWindowTitleHidden;
     native.styleMask |= NSWindowStyleMaskFullSizeContentView;
-    native.toolbarStyle = NSWindowToolbarStyleUnified;
-    if (native.toolbar == nil) {
-        native.toolbar = [[NSToolbar alloc] initWithIdentifier:@"echo.toolbar"];
-    }
+    native.toolbar = nil;
+    native.movableByWindowBackground = NO;
 }
 
-void installSidebarEffect(QWidget* sidebar)
+void installSidebarEffect(QWidget*)
 {
-    sidebar->setAttribute(Qt::WA_TranslucentBackground);
-    sidebar->setStyleSheet(QStringLiteral("QWidget#sidebar { background: transparent; }"));
-    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(sidebar->winId());
-    NSVisualEffectView* effect = [[NSVisualEffectView alloc] initWithFrame:view.bounds];
-    effect.material = NSVisualEffectMaterialSidebar;
-    effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    effect.state = NSVisualEffectStateFollowsWindowActiveState;
-    effect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [view addSubview:effect positioned:NSWindowBelow relativeTo:nil];
+    // Qt 把控件画在 NSView 的图层上。再叠一层 NSVisualEffectView 会盖住侧边栏文字，
+    // 所以这里用实色侧边栏，不插入系统材质视图。
 }
 
 void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qint64)>& handler)

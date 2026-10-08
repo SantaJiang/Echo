@@ -36,7 +36,7 @@ signals:
     void finished();
     void errorOccurred(const QString& message);
     void exclusiveFallback(const QString& reason);
-    void deviceOpened(int sampleRate, int bits, bool exclusive);
+    void deviceOpened(int sourceRate, int sourceBits, bool sourceFloat, int deviceRate, bool exclusive);
 
 private:
     struct Worker;

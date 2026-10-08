@@ -25,6 +25,11 @@ if(UNIX AND NOT APPLE)
 endif()
 
 set(ECHO_CORE_SOURCES
+  src/vendor/fooyin/src/audioformat.cpp
+  src/vendor/fooyin/src/audiobuffer.cpp
+  src/vendor/fooyin/src/audioconverter.cpp
+  src/vendor/fooyin/src/ffmpegpcm.cpp
+  src/vendor/fooyin/src/fadingdefs.cpp
   src/audio/decoder.cpp
   src/audio/cue.cpp
   src/audio/convert.cpp
@@ -54,7 +59,7 @@ else()
 endif()
 
 add_library(echo_core STATIC ${ECHO_CORE_SOURCES})
-target_include_directories(echo_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(echo_core PUBLIC ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vendor/fooyin/include)
 target_link_libraries(echo_core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PkgConfig::FFMPEG PkgConfig::TAGLIB)
 get_filename_component(ECHO_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
 target_compile_definitions(echo_core PUBLIC "ECHO_QT_PLUGINS=\"${ECHO_QT_PREFIX}/share/qt/plugins\"")
@@ -81,8 +86,7 @@ else()
   target_compile_options(echo_core PRIVATE -Wall -Wextra)
 endif()
 
-set(ECHO_APP_SOURCES
-  src/main.cpp
+set(ECHO_UI_SOURCES
   src/ui/theme.cpp
   src/ui/icons.cpp
   src/ui/tracktable.cpp
@@ -95,19 +99,23 @@ set(ECHO_APP_SOURCES
   src/ui/trackdialog.cpp
   src/ui/mainwindow.cpp
   src/platform/platform.cpp
+  resources/echo.qrc
 )
 if(APPLE)
-  list(APPEND ECHO_APP_SOURCES src/platform/platform_mac.mm)
+  list(APPEND ECHO_UI_SOURCES src/platform/platform_mac.mm)
 elseif(WIN32)
-  list(APPEND ECHO_APP_SOURCES src/platform/platform_win.cpp)
+  list(APPEND ECHO_UI_SOURCES src/platform/platform_win.cpp)
 else()
-  list(APPEND ECHO_APP_SOURCES src/platform/platform_linux.cpp)
+  list(APPEND ECHO_UI_SOURCES src/platform/platform_linux.cpp)
 endif()
 
-add_executable(echo ${ECHO_APP_SOURCES})
+add_executable(echo src/main.cpp ${ECHO_UI_SOURCES})
+add_executable(echo-uishot tools/uishot.cpp ${ECHO_UI_SOURCES})
 target_link_libraries(echo PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
+target_link_libraries(echo-uishot PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
 if(APPLE)
   target_link_libraries(echo PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
+  target_link_libraries(echo-uishot PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
   set_source_files_properties(src/platform/platform_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   set_target_properties(echo PROPERTIES
     OUTPUT_NAME Echo
@@ -132,6 +140,7 @@ if(Qt6DBus_FOUND)
 endif()
 if(NOT MSVC)
   target_compile_options(echo PRIVATE -Wall -Wextra)
+  target_compile_options(echo-uishot PRIVATE -Wall -Wextra)
 endif()
 
 add_executable(echo-probe tools/probe.cpp)

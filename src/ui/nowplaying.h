@@ -31,6 +31,7 @@ private:
     QLabel* m_art = nullptr;
     QLabel* m_title = nullptr;
     QLabel* m_artist = nullptr;
+    QWidget* m_lyricsPane = nullptr;
     QListWidget* m_lyrics = nullptr;
     QVector<LyricLine> m_lines;
 };

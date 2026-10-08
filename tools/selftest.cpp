@@ -1,3 +1,4 @@
+#include "audio/convert.h"
 #include "audio/cue.h"
 #include "audio/decoder.h"
 #include "library/database.h"
@@ -140,6 +141,84 @@ int main(int argc, char** argv)
     expect(sawWav, "wav indexed");
     const auto found = database.searchTracks(QStringLiteral("\"First\"*"), 10);
     expect(!found.isEmpty(), "fts");
+
+    echo::SampleFormat pcm16;
+    pcm16.sampleRate = 44100;
+    pcm16.channels = 2;
+    pcm16.bitsPerSample = 16;
+    pcm16.bytesPerSample = 2;
+    echo::DeviceFormat same16;
+    same16.sampleRate = 44100;
+    same16.channels = 2;
+    same16.bitsPerSample = 16;
+    same16.containerBytes = 2;
+    const int16_t identityIn[] = {1, -2, 30000, -30000};
+    int16_t identityOut[4] = {};
+    uint32_t dither = 1;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(identityIn), pcm16, 2, reinterpret_cast<uint8_t*>(identityOut), same16, 1.f,
+                         &dither);
+    expect(std::memcmp(identityIn, identityOut, sizeof(identityIn)) == 0, "16-bit passthrough");
+
+    echo::SampleFormat pcm24;
+    pcm24.sampleRate = 96000;
+    pcm24.channels = 1;
+    pcm24.bitsPerSample = 24;
+    pcm24.bytesPerSample = 4;
+    echo::DeviceFormat aligned24;
+    aligned24.sampleRate = 96000;
+    aligned24.channels = 1;
+    aligned24.bitsPerSample = 24;
+    aligned24.containerBytes = 4;
+    aligned24.highAligned = true;
+    const int32_t low24 = 0x00123456;
+    int32_t high24 = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&low24), pcm24, 1, reinterpret_cast<uint8_t*>(&high24), aligned24, 1.f, &dither);
+    expect(high24 == low24, "24-bit word preserved");
+
+    echo::SampleFormat ffmpeg24;
+    ffmpeg24.sampleRate = 48000;
+    ffmpeg24.channels = 1;
+    ffmpeg24.bitsPerSample = 24;
+    ffmpeg24.bytesPerSample = 4;
+    ffmpeg24.highAligned = true;
+    const int32_t shifted = 3 << 8;
+    echo::DeviceFormat floatOut;
+    floatOut.sampleRate = 48000;
+    floatOut.channels = 1;
+    floatOut.bitsPerSample = 32;
+    floatOut.containerBytes = 4;
+    floatOut.isFloat = true;
+    float decoded24 = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&shifted), ffmpeg24, 1, reinterpret_cast<uint8_t*>(&decoded24), floatOut,
+                         1.f, &dither);
+    expect(std::fabs(decoded24 - (3.f / 8388608.f)) < 1e-8f, "24-bit high align to float");
+    const int32_t fullScale = 0x7FFFFF << 8;
+    float fullFloat = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&fullScale), ffmpeg24, 1, reinterpret_cast<uint8_t*>(&fullFloat), floatOut,
+                         1.f, &dither);
+    expect(std::fabs(fullFloat - (8388607.f / 8388608.f)) < 1e-6f, "24-bit full scale");
+
+    const QString wav24 = dir.filePath(QStringLiteral("tone24.wav"));
+    ffmpeg({QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+            QStringLiteral("sine=frequency=440:duration=0.2:sample_rate=48000"), QStringLiteral("-c:a"),
+            QStringLiteral("pcm_s24le"), wav24});
+    echo::Decoder wav24Decoder;
+    expect(wav24Decoder.open(wav24, &error), "24-bit wav open");
+    expect(wav24Decoder.format().sampleRate == 48000 && wav24Decoder.format().bitsPerSample == 24 && wav24Decoder.format().highAligned,
+           "24-bit wav format");
+    std::vector<uint8_t> wav24Pcm(static_cast<size_t>(2048 * std::max(1, wav24Decoder.format().bytesPerFrame())));
+    const int wav24Frames = wav24Decoder.read(wav24Pcm.data(), 2048);
+    expect(wav24Frames > 0, "24-bit wav read");
+    std::vector<float> wav24Float(static_cast<size_t>(std::max(wav24Frames, 0)));
+    if (wav24Frames > 0) {
+        echo::convertSamples(wav24Pcm.data(), wav24Decoder.format(), wav24Frames, reinterpret_cast<uint8_t*>(wav24Float.data()),
+                             floatOut, 1.f, &dither);
+        float peak = 0;
+        for (float sample : wav24Float) {
+            peak = std::max(peak, std::fabs(sample));
+        }
+        expect(std::fabs(peak - 0.124969f) < 0.002f, "24-bit wav peak");
+    }
 
     if (failures != 0) {
         std::cerr << failures << " failure(s)\n";

@@ -15,8 +15,11 @@ namespace echo {
 QueuePanel::QueuePanel(QWidget* parent)
     : QWidget(parent)
 {
+    setObjectName(QStringLiteral("queuePanel"));
     setFixedWidth(320);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 16, 16, 12);
+    layout->setSpacing(8);
     auto* header = new QHBoxLayout();
     header->addWidget(new QLabel(QStringLiteral("待播清单"), this));
     auto* clear = new QPushButton(QStringLiteral("清空"), this);

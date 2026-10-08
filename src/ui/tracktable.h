@@ -33,6 +33,7 @@ public:
     explicit TrackTable(QWidget* parent = nullptr);
     void setTracks(QVector<Track> tracks);
     void setPlayingId(qint64 id);
+    [[nodiscard]] int hoverRow() const { return m_hoverRow; }
     [[nodiscard]] TrackModel* trackModel() const { return m_model; }
 
 signals:
@@ -44,8 +45,15 @@ signals:
     void revealRequested(qint64 id);
     void removeRequested(const QVector<qint64>& ids);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
+
 private:
+    void applyColumnWidths();
     TrackModel* m_model = nullptr;
+    int m_hoverRow = -1;
 };
 
 } // namespace echo

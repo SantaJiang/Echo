@@ -1,7 +1,9 @@
 #include "audio/engine.h"
 #include "library/library.h"
+#include "platform/platform.h"
 #include "playback/player.h"
 #include "ui/mainwindow.h"
+#include "ui/theme.h"
 
 #include <QApplication>
 #include <QDir>
@@ -38,6 +40,8 @@ int main(int argc, char** argv)
     QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
 #endif
     QApplication application(argc, argv);
+    echo::useDarkTheme();
+    echo::useDarkAppearance();
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));

@@ -3,6 +3,7 @@
 #include <QMainWindow>
 #include <QStringList>
 
+class QLabel;
 class QLineEdit;
 class QStackedWidget;
 
@@ -31,6 +32,7 @@ public:
     void openPaths(const QStringList& paths);
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
@@ -54,6 +56,7 @@ private:
     Sidebar* m_sidebar = nullptr;
     QStackedWidget* m_stack = nullptr;
     QLineEdit* m_search = nullptr;
+    QLabel* m_heading = nullptr;
     SongsPage* m_songs = nullptr;
     AlbumsPage* m_albums = nullptr;
     ArtistsPage* m_artists = nullptr;

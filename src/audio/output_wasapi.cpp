@@ -71,10 +71,29 @@ public:
             }
         }
         const AUDCLNT_SHAREMODE mode = openedExclusive ? AUDCLNT_SHAREMODE_EXCLUSIVE : AUDCLNT_SHAREMODE_SHARED;
-        const REFERENCE_TIME duration = openedExclusive ? 1000000 : 0;
-        const HRESULT started = m_client->Initialize(mode, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, duration,
-                                                      openedExclusive ? duration : 0, reinterpret_cast<WAVEFORMATEX*>(&desired),
-                                                      nullptr);
+        REFERENCE_TIME defaultPeriod = 0;
+        REFERENCE_TIME minimumPeriod = 0;
+        m_client->GetDevicePeriod(&defaultPeriod, &minimumPeriod);
+        REFERENCE_TIME duration = openedExclusive ? (defaultPeriod > 0 ? defaultPeriod : 1000000) : 0;
+        HRESULT started = m_client->Initialize(mode, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, duration,
+                                                openedExclusive ? duration : 0, reinterpret_cast<WAVEFORMATEX*>(&desired), nullptr);
+        if (openedExclusive && started == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
+            UINT32 alignedFrames = 0;
+            m_client->GetBufferSize(&alignedFrames);
+            const REFERENCE_TIME aligned = static_cast<REFERENCE_TIME>(
+                (10000000.0 * static_cast<double>(alignedFrames) / static_cast<double>(desired.Format.nSamplesPerSec)) + 0.5);
+            m_client.Reset();
+            if (FAILED(m_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, IID_PPV_ARGS(&m_client)))) {
+                if (error) {
+                    *error = QStringLiteral("无法重新打开 WASAPI");
+                }
+                close();
+                return false;
+            }
+            duration = aligned > 0 ? aligned : duration;
+            started = m_client->Initialize(mode, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, duration, duration,
+                                            reinterpret_cast<WAVEFORMATEX*>(&desired), nullptr);
+        }
         if (mix) {
             CoTaskMemFree(mix);
         }
@@ -130,6 +149,21 @@ public:
     {
         if (!m_client || m_running) {
             return;
+        }
+        if (m_opened.exclusive && m_render && m_bufferFrames > 0) {
+            BYTE* data = nullptr;
+            if (SUCCEEDED(m_render->GetBuffer(m_bufferFrames, &data)) && data) {
+                const int frameBytes = m_opened.bytesPerFrame();
+                int received = 0;
+                if (m_pull) {
+                    received = m_pull(data, static_cast<int>(m_bufferFrames));
+                }
+                if (received < static_cast<int>(m_bufferFrames)) {
+                    std::memset(data + std::max(received, 0) * frameBytes, 0,
+                                static_cast<size_t>(m_bufferFrames - std::max(received, 0)) * static_cast<size_t>(frameBytes));
+                }
+                m_render->ReleaseBuffer(m_bufferFrames, received == 0 ? AUDCLNT_BUFFERFLAGS_SILENT : 0);
+            }
         }
         m_running = true;
         m_client->Start();

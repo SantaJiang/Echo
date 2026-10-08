@@ -6,8 +6,8 @@
 
 namespace echo {
 
-// Converts interleaved PCM. Packing-only conversions stay bit-exact.
-// Gain other than 1, or a float intermediate, uses TPDF dither when writing integers.
+// Converts interleaved PCM. Integer copies and 24-in-32 alignment stay bit-exact.
+// Gain other than 1, or a float intermediate, uses TPDF dither when writing integers below 24-bit.
 void convertSamples(const uint8_t* src, const SampleFormat& srcFmt, int frames, uint8_t* dst, const DeviceFormat& dstFmt,
                     float gain, uint32_t* ditherState);
 

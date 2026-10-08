@@ -4,6 +4,8 @@
 
 namespace echo {
 
+void useDarkAppearance() {}
+
 void applyWindowChrome(QWidget*) {}
 
 void installSidebarEffect(QWidget*) {}

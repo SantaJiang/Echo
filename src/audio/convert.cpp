@@ -1,97 +1,103 @@
 #include "audio/convert.h"
 
+#include <core/engine/audioconverter.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace echo {
 namespace {
 
-float nextUnit(uint32_t* state)
+Fooyin::SampleFormat inferPcm(const SampleFormat& format)
 {
-    uint32_t x = *state;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    *state = x ? x : 0xA5A5A5A5u;
-    return static_cast<float>(*state >> 8) * (1.0f / 16777216.0f);
+    if (format.pcm != Fooyin::SampleFormat::Unknown) {
+        return format.pcm;
+    }
+    if (format.isFloat) {
+        return format.bytesPerSample >= 8 ? Fooyin::SampleFormat::F64 : Fooyin::SampleFormat::F32;
+    }
+    if (format.bytesPerSample <= 1) {
+        return Fooyin::SampleFormat::U8;
+    }
+    if (format.bytesPerSample == 2) {
+        return Fooyin::SampleFormat::S16;
+    }
+    if (format.bitsPerSample > 0 && format.bitsPerSample <= 24) {
+        return Fooyin::SampleFormat::S24In32;
+    }
+    return Fooyin::SampleFormat::S32;
 }
 
-float readSample(const uint8_t* src, const SampleFormat& fmt)
+Fooyin::AudioFormat fooyinSource(const SampleFormat& format)
 {
-    if (fmt.isFloat) {
-        float value = 0;
-        std::memcpy(&value, src, sizeof(float));
-        return value;
+    const int channels = std::max(format.channels, 1);
+    const int rate = format.sampleRate > 0 ? format.sampleRate : 48000;
+    return {inferPcm(format), rate, channels};
+}
+
+Fooyin::SampleFormat devicePcm(const DeviceFormat& format)
+{
+    if (format.isFloat) {
+        return format.containerBytes >= 8 ? Fooyin::SampleFormat::F64 : Fooyin::SampleFormat::F32;
     }
-    if (fmt.bytesPerSample == 2) {
-        int16_t value = 0;
-        std::memcpy(&value, src, sizeof(value));
-        return static_cast<float>(value) / 32768.0f;
+    if (format.containerBytes <= 2 || format.bitsPerSample <= 16) {
+        return Fooyin::SampleFormat::S16;
     }
-    int32_t value = 0;
-    std::memcpy(&value, src, sizeof(value));
-    const int shift = std::clamp(32 - fmt.bitsPerSample, 0, 31);
-    if (fmt.bitsPerSample > 0 && fmt.bitsPerSample < 32) {
-        const int32_t sign = 1 << (fmt.bitsPerSample - 1);
-        value &= (sign << 1) - 1;
-        if (value & sign) {
-            value |= ~((sign << 1) - 1);
+    return Fooyin::SampleFormat::S32;
+}
+
+bool needsIntegerPack(const DeviceFormat& format)
+{
+    if (format.isFloat || format.containerBytes <= 2 || format.bitsPerSample <= 16) {
+        return false;
+    }
+    if (format.containerBytes == 4 && (format.bitsPerSample >= 32 || format.highAligned)) {
+        return false;
+    }
+    return true;
+}
+
+void scaleFloat(uint8_t* data, int count, float gain)
+{
+    auto* samples = reinterpret_cast<float*>(data);
+    for (int index = 0; index < count; ++index) {
+        samples[index] = std::clamp(samples[index] * gain, -1.0f, 1.0f);
+    }
+}
+
+void fillMissingChannels(uint8_t* destination, int frames, int sourceChannels, int destChannels, int bytesPerSample)
+{
+    if (sourceChannels <= 0 || destChannels <= sourceChannels || bytesPerSample <= 0) {
+        return;
+    }
+    const int frameBytes = destChannels * bytesPerSample;
+    for (int frame = 0; frame < frames; ++frame) {
+        uint8_t* frameData = destination + static_cast<size_t>(frame) * static_cast<size_t>(frameBytes);
+        const uint8_t* last = frameData + static_cast<size_t>(sourceChannels - 1) * static_cast<size_t>(bytesPerSample);
+        for (int channel = sourceChannels; channel < destChannels; ++channel) {
+            std::memcpy(frameData + static_cast<size_t>(channel) * static_cast<size_t>(bytesPerSample), last,
+                        static_cast<size_t>(bytesPerSample));
         }
     }
-    return static_cast<float>(value) / static_cast<float>(1u << std::min(shift == 0 ? 31 : (fmt.bitsPerSample - 1), 31));
 }
 
-void writeSample(uint8_t* dst, float sample, const DeviceFormat& fmt, uint32_t* ditherState, bool dither)
+void packInteger(const int32_t* source, uint8_t* destination, int count, const DeviceFormat& format)
 {
-    sample = std::clamp(sample, -1.0f, 1.0f);
-    if (fmt.isFloat) {
-        std::memcpy(dst, &sample, sizeof(float));
-        return;
+    const int shift = format.bitsPerSample > 0 && format.bitsPerSample < 32 && !format.highAligned ? 32 - format.bitsPerSample : 8;
+    for (int index = 0; index < count; ++index) {
+        const auto value = static_cast<int32_t>(source[index] >> shift);
+        if (format.containerBytes == 3) {
+            destination[0] = static_cast<uint8_t>(value);
+            destination[1] = static_cast<uint8_t>(value >> 8);
+            destination[2] = static_cast<uint8_t>(value >> 16);
+            destination += 3;
+            continue;
+        }
+        std::memcpy(destination, &value, sizeof(value));
+        destination += 4;
     }
-    const int bits = std::clamp(fmt.bitsPerSample, 8, 32);
-    const double scale = static_cast<double>(1u << std::min(bits - 1, 31));
-    double shaped = static_cast<double>(sample);
-    if (dither && bits < 24) {
-        const float lsb = static_cast<float>(1.0 / scale);
-        shaped += static_cast<double>((nextUnit(ditherState) - nextUnit(ditherState)) * lsb);
-    }
-    const auto maxValue = static_cast<int64_t>(scale) - 1;
-    const auto minValue = -static_cast<int64_t>(scale);
-    int64_t quantized = std::llround(shaped * scale);
-    quantized = std::clamp(quantized, minValue, maxValue);
-
-    if (fmt.containerBytes == 2) {
-        const auto value = static_cast<int16_t>(quantized);
-        std::memcpy(dst, &value, sizeof(value));
-        return;
-    }
-    if (fmt.containerBytes == 3) {
-        const auto value = static_cast<int32_t>(quantized);
-        dst[0] = static_cast<uint8_t>(value);
-        dst[1] = static_cast<uint8_t>(value >> 8);
-        dst[2] = static_cast<uint8_t>(value >> 16);
-        return;
-    }
-    auto value = static_cast<int32_t>(quantized);
-    if (fmt.highAligned && bits < 32) {
-        value <<= (32 - bits);
-    }
-    std::memcpy(dst, &value, sizeof(value));
-}
-
-bool packingOnly(const SampleFormat& src, const DeviceFormat& dst, float gain)
-{
-    if (std::fabs(gain - 1.0f) > 0.0001f || src.isFloat || dst.isFloat) {
-        return false;
-    }
-    if (src.channels != dst.channels || src.bitsPerSample != dst.bitsPerSample) {
-        return false;
-    }
-    if (src.bytesPerSample == dst.containerBytes && !dst.highAligned) {
-        return true;
-    }
-    return false;
 }
 
 } // namespace
@@ -99,25 +105,47 @@ bool packingOnly(const SampleFormat& src, const DeviceFormat& dst, float gain)
 void convertSamples(const uint8_t* src, const SampleFormat& srcFmt, int frames, uint8_t* dst, const DeviceFormat& dstFmt,
                     float gain, uint32_t* ditherState)
 {
-    if (frames <= 0) {
+    if (frames <= 0 || srcFmt.channels <= 0 || dstFmt.channels <= 0) {
         return;
     }
-    if (packingOnly(srcFmt, dstFmt, gain) && srcFmt.channels == dstFmt.channels) {
-        std::memcpy(dst, src, static_cast<size_t>(frames) * static_cast<size_t>(srcFmt.bytesPerFrame()));
-        return;
-    }
-    const bool dither = std::fabs(gain - 1.0f) > 0.0001f || srcFmt.isFloat || srcFmt.sampleRate != dstFmt.sampleRate;
-    const int srcStep = srcFmt.bytesPerSample;
-    const int dstStep = dstFmt.containerBytes;
-    for (int frame = 0; frame < frames; ++frame) {
-        for (int channel = 0; channel < dstFmt.channels; ++channel) {
-            const int srcChannel = std::min(channel, srcFmt.channels - 1);
-            const float sample = readSample(src + srcChannel * srcStep, srcFmt) * gain;
-            writeSample(dst + channel * dstStep, sample, dstFmt, ditherState, dither);
+    Fooyin::AudioFormat input = fooyinSource(srcFmt);
+    input.clearChannelLayout();
+    const int outChannels = std::max(dstFmt.channels, 1);
+    Fooyin::AudioFormat output {devicePcm(dstFmt), input.sampleRate(), outChannels};
+    output.clearChannelLayout();
+    const bool applyGain = std::fabs(gain - 1.0f) > 0.0001f;
+    const bool dither = ditherState != nullptr && (applyGain || srcFmt.isFloat || srcFmt.sampleRate != dstFmt.sampleRate);
+    const auto* inputBytes = reinterpret_cast<const std::byte*>(src);
+    Fooyin::AudioFormat from = input;
+    std::vector<uint8_t> gained;
+    if (applyGain) {
+        from = {Fooyin::SampleFormat::F32, input.sampleRate(), input.channelCount()};
+        from.clearChannelLayout();
+        gained.resize(static_cast<size_t>(frames) * static_cast<size_t>(from.bytesPerFrame()));
+        if (!Fooyin::Audio::convert(input, inputBytes, from, reinterpret_cast<std::byte*>(gained.data()), frames, false)) {
+            std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(dstFmt.bytesPerFrame(), 1)));
+            return;
         }
-        src += srcFmt.bytesPerFrame();
-        dst += dstFmt.bytesPerFrame();
+        scaleFloat(gained.data(), frames * from.channelCount(), gain);
+        inputBytes = reinterpret_cast<const std::byte*>(gained.data());
     }
+
+    if (needsIntegerPack(dstFmt)) {
+        Fooyin::AudioFormat s32 {Fooyin::SampleFormat::S32, from.sampleRate(), outChannels};
+        s32.clearChannelLayout();
+        std::vector<int32_t> wide(static_cast<size_t>(frames) * static_cast<size_t>(outChannels));
+        if (!Fooyin::Audio::convert(from, inputBytes, s32, reinterpret_cast<std::byte*>(wide.data()), frames, dither)) {
+            std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(dstFmt.bytesPerFrame(), 1)));
+            return;
+        }
+        packInteger(wide.data(), dst, frames * outChannels, dstFmt);
+        fillMissingChannels(dst, frames, input.channelCount(), outChannels, std::max(dstFmt.containerBytes, 1));
+        return;
+    }
+
+    std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(output.bytesPerFrame(), 1)));
+    Fooyin::Audio::convert(from, inputBytes, output, reinterpret_cast<std::byte*>(dst), frames, dither);
+    fillMissingChannels(dst, frames, input.channelCount(), outChannels, std::max(output.bytesPerSample(), 1));
 }
 
 } // namespace echo

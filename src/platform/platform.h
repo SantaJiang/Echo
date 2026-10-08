@@ -12,6 +12,7 @@ namespace echo {
 enum class MediaCommand { Toggle, Next, Previous, Seek };
 
 void applyWindowChrome(QWidget* window);
+void useDarkAppearance();
 void installSidebarEffect(QWidget* sidebar);
 void showInFileManager(const QString& path);
 void installMediaIntegration(QWidget* window, const std::function<void(MediaCommand, qint64)>& handler);

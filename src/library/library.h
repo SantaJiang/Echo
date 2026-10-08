@@ -96,6 +96,7 @@ private:
     void apply(const UndoStep& step, bool inverse);
     void scanRoot(qint64 id, const QString& path);
     void watchRoots();
+    void suppressWatch(int milliseconds);
     [[nodiscard]] static QString orderSql(const QString& column, bool descending);
 
     std::unique_ptr<Database> m_database;
@@ -104,7 +105,11 @@ private:
     Scanner* m_scanner = nullptr;
     QFileSystemWatcher m_watcher;
     QTimer m_rescanTimer;
+    QTimer m_suppressTimer;
     qint64 m_pendingRoot = 0;
+    bool m_suppressWatch = false;
+    bool m_rescanQueued = false;
+    bool m_scanning = false;
     QVector<UndoStep> m_undo;
     QVector<UndoStep> m_redo;
     bool m_applyingUndo = false;

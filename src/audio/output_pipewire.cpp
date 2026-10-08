@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 namespace echo {
@@ -65,12 +66,15 @@ public:
             m_opened.bitsPerSample = 32;
             m_opened.containerBytes = 4;
         }
-        Q_UNUSED(exclusive);
-
-        m_stream = pw_stream_new_simple(pw_thread_loop_get_loop(m_loop), "Echo",
-                                         pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                                                           PW_KEY_MEDIA_ROLE, "Music", nullptr),
-                                         &PipeWireOutput::events, this);
+        char latency[32];
+        std::snprintf(latency, sizeof(latency), "%d/%d", 1024, std::max(m_opened.sampleRate, 1));
+        pw_properties* properties = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
+                                                      PW_KEY_MEDIA_ROLE, "Music", PW_KEY_NODE_LATENCY, latency, nullptr);
+        if (exclusive) {
+            pw_properties_set(properties, PW_KEY_NODE_EXCLUSIVE, "true");
+            m_opened.exclusive = true;
+        }
+        m_stream = pw_stream_new_simple(pw_thread_loop_get_loop(m_loop), "Echo", properties, &PipeWireOutput::events, this);
         if (!m_stream) {
             if (error) {
                 *error = QStringLiteral("无法创建 PipeWire 流");
@@ -91,10 +95,23 @@ public:
         spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
         const spa_pod* params[1];
         params[0] = spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &info);
-        const int connected = pw_stream_connect(m_stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+        int connected = pw_stream_connect(m_stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
                                                  static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
                                                                               | PW_STREAM_FLAG_RT_PROCESS),
                                                  params, 1);
+        if (connected < 0 && exclusive) {
+            pw_stream_destroy(m_stream);
+            m_stream = nullptr;
+            m_opened.exclusive = false;
+            properties = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE, "Music",
+                                           PW_KEY_NODE_LATENCY, latency, nullptr);
+            m_stream = pw_stream_new_simple(pw_thread_loop_get_loop(m_loop), "Echo", properties, &PipeWireOutput::events, this);
+            connected = m_stream ? pw_stream_connect(m_stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
+                                                      static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS
+                                                                                   | PW_STREAM_FLAG_RT_PROCESS),
+                                                      params, 1)
+                                 : -1;
+        }
         if (connected < 0) {
             if (error) {
                 *error = QStringLiteral("无法连接 PipeWire");

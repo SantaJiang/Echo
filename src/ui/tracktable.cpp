@@ -2,9 +2,13 @@
 
 #include "ui/theme.h"
 
+#include <QAbstractItemView>
 #include <QHeaderView>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
+#include <QResizeEvent>
 #include <QStyledItemDelegate>
 
 namespace echo {
@@ -22,14 +26,16 @@ public:
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
         const Palette colors = palette();
-        QRect row = option.rect;
-        if (index.column() == 0) {
-            row.setLeft(option.rect.left() + 8);
-        }
-        if (option.state & QStyle::State_Selected) {
-            painter->fillRect(option.rect, colors.selected);
-        } else if (option.state & QStyle::State_MouseOver) {
-            painter->fillRect(option.rect, colors.hover);
+        const bool selected = option.state & QStyle::State_Selected;
+        const auto* table = qobject_cast<const TrackTable*>(option.widget);
+        const bool hover = table && table->hoverRow() == index.row();
+        if ((selected || hover) && option.widget) {
+            const QRectF row(4, option.rect.top() + 2, option.widget->width() - 28, option.rect.height() - 4);
+            QPainterPath clip;
+            clip.addRoundedRect(row, 8, 8);
+            painter->setClipPath(clip, Qt::IntersectClip);
+            painter->fillRect(option.rect, selected ? colors.selected : colors.hover);
+            painter->setClipping(false);
         }
         const bool missing = index.data(Qt::UserRole + 1).toBool();
         const bool playing = index.data(Qt::UserRole + 2).toBool();
@@ -37,9 +43,17 @@ public:
         if (playing && index.column() == 1) {
             text = colors.accent;
         }
-        painter->setPen(index.column() == 0 || index.column() == 4 ? colors.secondary : text);
         const QString value = index.data(Qt::DisplayRole).toString();
-        const QRect textRect = option.rect.adjusted(index.column() == 0 ? 14 : 8, 0, -8, 0);
+        const int rightPad = index.column() == 4 ? 20 : 8;
+        QRect textRect = option.rect.adjusted(12, 0, -rightPad, 0);
+        if (playing && index.column() == 0) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(colors.accent);
+            const QRectF dot(textRect.left(), option.rect.center().y() - 3, 6, 6);
+            painter->drawEllipse(dot);
+            textRect.setLeft(textRect.left() + 14);
+        }
+        painter->setPen(index.column() == 0 || index.column() == 4 ? colors.secondary : text);
         painter->drawText(textRect, Qt::AlignVCenter | (index.column() == 4 ? Qt::AlignRight : Qt::AlignLeft), value);
         painter->restore();
     }
@@ -138,6 +152,12 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const
 
 QVariant TrackModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
+    if (orientation == Qt::Horizontal && role == Qt::TextAlignmentRole) {
+        if (section == 4) {
+            return QVariant::fromValue(Qt::AlignRight | Qt::AlignVCenter);
+        }
+        return QVariant::fromValue(Qt::AlignLeft | Qt::AlignVCenter);
+    }
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return {};
     }
@@ -169,15 +189,15 @@ TrackTable::TrackTable(QWidget* parent)
     setWordWrap(false);
     setAlternatingRowColors(false);
     setMouseTracking(true);
+    viewport()->setMouseTracking(true);
+    QPalette viewPalette = palette();
+    viewPalette.setColor(QPalette::Highlight, echo::palette().selected);
+    viewPalette.setColor(QPalette::HighlightedText, echo::palette().text);
+    setPalette(viewPalette);
     verticalHeader()->hide();
     horizontalHeader()->setStretchLastSection(false);
-    horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
-    horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
-    setColumnWidth(0, 54);
-    setColumnWidth(4, 72);
+    horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    horizontalHeader()->setMinimumSectionSize(36);
     verticalHeader()->setDefaultSectionSize(40);
     setContextMenuPolicy(Qt::CustomContextMenu);
     connect(this, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -217,6 +237,44 @@ void TrackTable::setTracks(QVector<Track> tracks)
 void TrackTable::setPlayingId(qint64 id)
 {
     m_model->setPlayingId(id);
+}
+
+void TrackTable::mouseMoveEvent(QMouseEvent* event)
+{
+    const int row = indexAt(event->position().toPoint()).row();
+    if (row != m_hoverRow) {
+        m_hoverRow = row;
+        viewport()->update();
+    }
+    QTableView::mouseMoveEvent(event);
+}
+
+void TrackTable::leaveEvent(QEvent* event)
+{
+    if (m_hoverRow != -1) {
+        m_hoverRow = -1;
+        viewport()->update();
+    }
+    QTableView::leaveEvent(event);
+}
+
+void TrackTable::resizeEvent(QResizeEvent* event)
+{
+    QTableView::resizeEvent(event);
+    applyColumnWidths();
+}
+
+void TrackTable::applyColumnWidths()
+{
+    const int available = qMax(0, viewport()->width() - 24);
+    const int number = 46;
+    const int time = 72;
+    const int rest = qMax(0, available - number - time);
+    setColumnWidth(0, number);
+    setColumnWidth(1, rest * 44 / 100);
+    setColumnWidth(2, rest * 28 / 100);
+    setColumnWidth(3, rest - (rest * 44 / 100) - (rest * 28 / 100));
+    setColumnWidth(4, time);
 }
 
 } // namespace echo
