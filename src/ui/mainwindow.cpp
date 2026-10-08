@@ -1,0 +1,582 @@
+#include "ui/mainwindow.h"
+
+#include "audio/engine.h"
+#include "library/library.h"
+#include "platform/platform.h"
+#include "playback/player.h"
+#include "ui/miniplayer.h"
+#include "ui/nowplaying.h"
+#include "ui/pages.h"
+#include "ui/playerbar.h"
+#include "ui/queuepanel.h"
+#include "ui/sidebar.h"
+#include "ui/theme.h"
+#include "ui/trackdialog.h"
+
+#include <QAction>
+#include <QApplication>
+#include <QCursor>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QPlainTextEdit>
+#include <QStackedWidget>
+#include <QTextEdit>
+#include <QTimer>
+#include <QUrl>
+#include <QVBoxLayout>
+
+#include <algorithm>
+
+namespace echo {
+namespace {
+
+Track withSidecarLyrics(const Track& track)
+{
+    Track copy = track;
+    if (!copy.lyrics.trimmed().isEmpty() || copy.path.isEmpty()) {
+        return copy;
+    }
+    const QFileInfo info(copy.path);
+    QFile file(info.absolutePath() + QLatin1Char('/') + info.completeBaseName() + QStringLiteral(".lrc"));
+    if (file.open(QIODevice::ReadOnly)) {
+        copy.lyrics = QString::fromUtf8(file.readAll());
+    }
+    return copy;
+}
+
+QString formatText(int rate, int bits, bool exclusive)
+{
+    if (rate <= 0) {
+        return {};
+    }
+    return QStringLiteral("%1 kHz · %2 bit%3")
+        .arg(rate / 1000.0, 0, 'f', rate % 1000 == 0 ? 1 : 1)
+        .arg(bits)
+        .arg(exclusive ? QStringLiteral(" · 独占") : QString());
+}
+
+} // namespace
+
+MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QWidget* parent)
+    : QMainWindow(parent)
+    , m_library(library)
+    , m_player(player)
+    , m_engine(engine)
+{
+    setWindowTitle(QStringLiteral("Echo"));
+    resize(1180, 760);
+    setAcceptDrops(true);
+    polish(this);
+
+    m_sidebar = new Sidebar(this);
+    m_songs = new SongsPage(library, this);
+    m_albums = new AlbumsPage(library, this);
+    m_artists = new ArtistsPage(library, this);
+    m_folders = new FoldersPage(library, this);
+    m_playlist = new PlaylistPage(library, this);
+    m_searchPage = new SearchPage(library, this);
+    m_now = new NowPlayingPage(this);
+    m_stack = new QStackedWidget(this);
+    m_stack->addWidget(m_songs);
+    m_stack->addWidget(m_albums);
+    m_stack->addWidget(m_artists);
+    m_stack->addWidget(m_folders);
+    m_stack->addWidget(m_playlist);
+    m_stack->addWidget(m_searchPage);
+    m_stack->addWidget(m_now);
+
+    m_search = new QLineEdit(this);
+    m_search->setPlaceholderText(QStringLiteral("搜索"));
+    m_search->setClearButtonEnabled(true);
+    m_search->setFixedHeight(32);
+
+    m_queue = new QueuePanel(this);
+    m_queue->hide();
+    m_bar = new PlayerBar(this);
+
+    auto* content = new QVBoxLayout();
+    content->setContentsMargins(0, 12, 16, 0);
+    content->addWidget(m_search);
+    auto* middle = new QHBoxLayout();
+    middle->addWidget(m_stack, 1);
+    middle->addWidget(m_queue);
+    content->addLayout(middle, 1);
+
+    auto* body = new QHBoxLayout();
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+    body->addWidget(m_sidebar);
+    body->addLayout(content, 1);
+    auto* root = new QWidget(this);
+    auto* column = new QVBoxLayout(root);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
+    column->addLayout(body, 1);
+    column->addWidget(m_bar);
+    setCentralWidget(root);
+
+    m_mini = new MiniPlayer();
+    buildMenus();
+
+    auto wire = [this](TrackTable* table, bool albumContext) {
+        connect(table, &TrackTable::tracksActivated, this, [this, albumContext](const QVector<qint64>& ids, int index) {
+            playVisible(ids, index, albumContext);
+        });
+        connect(table, &TrackTable::playNextRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueueNext(ids); });
+        connect(table, &TrackTable::enqueueRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueue(ids); });
+        connect(table, &TrackTable::playlistRequested, this, [this](const QVector<qint64>& ids) { addToPlaylist(ids); });
+        connect(table, &TrackTable::infoRequested, this, &MainWindow::showInfo);
+        connect(table, &TrackTable::revealRequested, this, &MainWindow::reveal);
+    };
+    wire(m_songs->table(), false);
+    wire(m_albums->detailTable(), true);
+    wire(m_artists->table(), false);
+    wire(m_folders->table(), true);
+    wire(m_playlist->table(), false);
+    wire(m_searchPage->table(), false);
+    connect(m_songs->table(), &TrackTable::removeRequested, this, [this](const QVector<qint64>& ids) {
+        if (QMessageBox::question(this, QStringLiteral("移除"), QStringLiteral("从资料库移除所选歌曲？文件不会被删除。")) == QMessageBox::Yes) {
+            m_library->removeFromLibrary(ids);
+        }
+    });
+    connect(m_playlist->table(), &TrackTable::removeRequested, this, [this] {
+        QVector<int> positions;
+        for (const QModelIndex& row : m_playlist->table()->selectionModel()->selectedRows()) {
+            positions.push_back(row.row());
+        }
+        m_library->removePlaylistPositions(m_playlist->playlistId(), positions);
+    });
+
+    connect(m_sidebar, &Sidebar::librarySelected, this, &MainWindow::showLibraryPage);
+    connect(m_sidebar, &Sidebar::playlistSelected, this, [this](qint64 id) {
+        m_playlistId = id;
+        m_playlist->setPlaylist(id);
+        m_search->clear();
+        m_stack->setCurrentWidget(m_playlist);
+    });
+    connect(m_sidebar, &Sidebar::createPlaylistRequested, this, &MainWindow::promptPlaylist);
+    connect(m_sidebar, &Sidebar::createFolderRequested, this, &MainWindow::promptFolder);
+    connect(m_sidebar, &Sidebar::renamePlaylistRequested, this, [this](qint64 id) {
+        const QString name = QInputDialog::getText(this, QStringLiteral("重命名歌单"), QStringLiteral("名称"));
+        if (!name.trimmed().isEmpty()) {
+            m_library->renamePlaylist(id, name.trimmed());
+        }
+    });
+    connect(m_sidebar, &Sidebar::renameFolderRequested, this, [this](qint64 id) {
+        const QString name = QInputDialog::getText(this, QStringLiteral("重命名文件夹"), QStringLiteral("名称"));
+        if (!name.trimmed().isEmpty()) {
+            m_library->renamePlaylistFolder(id, name.trimmed());
+        }
+    });
+    connect(m_sidebar, &Sidebar::deletePlaylistRequested, this, [this](qint64 id) { m_library->deletePlaylist(id); });
+    connect(m_sidebar, &Sidebar::deleteFolderRequested, this, [this](qint64 id) { m_library->deletePlaylistFolder(id); });
+    connect(m_sidebar, &Sidebar::addFolderRequested, this, [this] {
+        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
+        if (!path.isEmpty()) {
+            m_library->addRoot(path);
+        }
+    });
+
+    connect(m_albums, &AlbumsPage::albumPlayRequested, this, [this](const QString& key, bool shuffle) {
+        const auto tracks = m_library->albumTracks(key);
+        QVector<qint64> ids;
+        for (const Track& track : tracks) {
+            ids.push_back(track.id);
+        }
+        if (shuffle) {
+            m_player->setShuffle(true);
+        }
+        playVisible(ids, 0, true);
+    });
+    connect(m_albums, &AlbumsPage::artistRequested, this, [this](const QString& key) {
+        m_artists->reload();
+        m_artists->selectArtist(key);
+        m_sidebar->setSelectedLibrary(2);
+    });
+    connect(m_artists, &ArtistsPage::albumPlayRequested, this, [this](const QString& key, bool) {
+        m_albums->openAlbum(key);
+        m_sidebar->setSelectedLibrary(1);
+    });
+    connect(m_folders, &FoldersPage::playFolderRequested, this, [this](const QString& folder) {
+        const auto tracks = m_library->folderTracks(folder, true);
+        QVector<qint64> ids;
+        for (const Track& track : tracks) {
+            ids.push_back(track.id);
+        }
+        playVisible(ids, 0, true);
+    });
+    connect(m_searchPage, &SearchPage::albumSelected, this, [this](const QString& key) {
+        m_search->clear();
+        m_albums->openAlbum(key);
+        m_sidebar->setSelectedLibrary(1);
+    });
+    connect(m_searchPage, &SearchPage::artistSelected, this, [this](const QString& key) {
+        m_search->clear();
+        m_artists->reload();
+        m_artists->selectArtist(key);
+        m_sidebar->setSelectedLibrary(2);
+    });
+    connect(m_searchPage, &SearchPage::playlistSelected, this, [this](qint64 id) {
+        m_search->clear();
+        m_playlistId = id;
+        m_playlist->setPlaylist(id);
+        m_stack->setCurrentWidget(m_playlist);
+    });
+    connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
+        if (text.trimmed().isEmpty()) {
+            m_showingSearch = false;
+            m_stack->setCurrentIndex(m_playlistId > 0 && m_stack->currentWidget() == m_searchPage ? 4 : m_libraryPage);
+            if (m_stack->currentWidget() == m_playlist) {
+                m_playlist->reload();
+            }
+            return;
+        }
+        m_showingSearch = true;
+        m_searchPage->search(text.trimmed());
+        m_stack->setCurrentWidget(m_searchPage);
+    });
+
+    connect(m_bar, &PlayerBar::toggleRequested, m_player, &Player::toggle);
+    connect(m_bar, &PlayerBar::nextRequested, m_player, &Player::next);
+    connect(m_bar, &PlayerBar::previousRequested, m_player, &Player::previous);
+    connect(m_bar, &PlayerBar::seekRequested, m_player, &Player::seek);
+    connect(m_bar, &PlayerBar::volumeChanged, m_player, &Player::setVolume);
+    connect(m_bar, &PlayerBar::shuffleToggled, this, [this] { m_player->setShuffle(!m_player->shuffle()); });
+    connect(m_bar, &PlayerBar::repeatToggled, this, [this] {
+        const int next = (static_cast<int>(m_player->repeat()) + 1) % 3;
+        m_player->setRepeat(static_cast<Player::Repeat>(next));
+    });
+    connect(m_bar, &PlayerBar::queueToggled, this, [this] { m_queue->setVisible(!m_queue->isVisible()); });
+    connect(m_bar, &PlayerBar::lyricsRequested, this, [this] { m_stack->setCurrentWidget(m_now); });
+    connect(m_bar, &PlayerBar::artworkClicked, this, [this] { m_stack->setCurrentWidget(m_now); });
+    connect(m_now, &NowPlayingPage::editLyricsRequested, this, [this] { showInfo(m_player->currentTrack().id); });
+
+    connect(m_queue, &QueuePanel::activated, this, [this](int index) {
+        const auto queue = m_player->queue();
+        if (index < 0 || index >= queue.size()) {
+            return;
+        }
+        QVector<qint64> ids;
+        for (const Player::Entry& entry : queue) {
+            ids.push_back(entry.trackId);
+        }
+        m_player->playTracks(ids, index, queue[index].albumContext);
+    });
+    connect(m_queue, &QueuePanel::removed, m_player, &Player::removeQueueRow);
+    connect(m_queue, &QueuePanel::moved, m_player, &Player::moveQueue);
+    connect(m_queue, &QueuePanel::cleared, m_player, &Player::clearUpcoming);
+
+    connect(m_mini, &MiniPlayer::toggleRequested, m_player, &Player::toggle);
+    connect(m_mini, &MiniPlayer::nextRequested, m_player, &Player::next);
+    connect(m_mini, &MiniPlayer::previousRequested, m_player, &Player::previous);
+    connect(m_mini, &MiniPlayer::expandRequested, this, [this] {
+        m_mini->hide();
+        show();
+        raise();
+        activateWindow();
+    });
+
+    connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
+    connect(m_library, &Library::scanProgress, this, [this](int done, int total) {
+        m_sidebar->setScanText(QStringLiteral("正在扫描 %1 / %2").arg(done).arg(total));
+    });
+    connect(m_library, &Library::scanFinished, this, [this] { m_sidebar->setScanText({}); });
+    connect(m_library, &Library::scanFailed, this, [this](const QString& message) { m_sidebar->setScanText(message); });
+    connect(m_player, &Player::changed, this, &MainWindow::syncPlayer);
+    connect(m_engine, &AudioEngine::errorOccurred, this, [this](const QString& message) { m_bar->setStatus(message); });
+    connect(m_engine, &AudioEngine::exclusiveFallback, this, [this](const QString&) {
+        m_bar->setStatus(QStringLiteral("设备被占用，已改用共享模式"));
+    });
+    connect(m_engine, &AudioEngine::deviceOpened, this, [this](int rate, int bits, bool exclusive) {
+        m_bar->setFormatText(formatText(rate, bits, exclusive));
+    });
+
+    installMediaIntegration(this, [this](MediaCommand command, qint64 argument) {
+        switch (command) {
+        case MediaCommand::Toggle:
+            m_player->toggle();
+            break;
+        case MediaCommand::Next:
+            m_player->next();
+            break;
+        case MediaCommand::Previous:
+            m_player->previous();
+            break;
+        case MediaCommand::Seek:
+            m_player->seek(argument);
+            break;
+        }
+    });
+
+    auto* timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this] {
+        const Track track = withSidecarLyrics(m_player->currentTrack());
+        const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 720);
+        m_bar->setPosition(m_player->positionMs(), track.durationMs);
+        if (m_stack->currentWidget() == m_now) {
+            m_now->setTrack(track, art, m_player->positionMs());
+        }
+        if (m_mini->isVisible()) {
+            m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
+        }
+        updateSystemNowPlaying(track, art.toImage(), m_player->positionMs(), track.durationMs, m_player->state() == AudioEngine::State::Playing);
+    });
+    timer->start(250);
+
+    refreshViews();
+    syncPlayer();
+    applyWindowChrome(this);
+    installSidebarEffect(m_sidebar);
+}
+
+void MainWindow::openPaths(const QStringList& paths)
+{
+    QVector<qint64> ids;
+    for (const QString& path : paths) {
+        const QFileInfo info(path);
+        if (info.isDir()) {
+            m_library->addRoot(info.absoluteFilePath());
+        } else {
+            ids += m_library->importFiles({info.absoluteFilePath()});
+        }
+    }
+    if (!ids.isEmpty()) {
+        playVisible(ids, 0, false);
+    }
+}
+
+void MainWindow::buildMenus()
+{
+    auto* file = menuBar()->addMenu(QStringLiteral("文件"));
+    file->addAction(QStringLiteral("添加音乐文件夹…"), QKeySequence(Qt::CTRL | Qt::Key_O), this, [this] {
+        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
+        if (!path.isEmpty()) {
+            m_library->addRoot(path);
+        }
+    });
+    file->addAction(QStringLiteral("导入播放列表…"), this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入播放列表"), {}, QStringLiteral("播放列表 (*.m3u *.m3u8)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        qint64 id = m_playlistId;
+        if (id <= 0) {
+            id = m_library->createPlaylist(QFileInfo(path).completeBaseName());
+            m_playlistId = id;
+        }
+        QString error;
+        if (!m_library->importM3u(id, path, &error)) {
+            QMessageBox::warning(this, QStringLiteral("导入失败"), error);
+        } else {
+            m_playlist->setPlaylist(id);
+            m_stack->setCurrentWidget(m_playlist);
+        }
+    });
+    file->addAction(QStringLiteral("导出播放列表…"), this, [this] {
+        if (m_playlistId <= 0) {
+            return;
+        }
+        const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出播放列表"), {}, QStringLiteral("播放列表 (*.m3u8)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        QString error;
+        if (!m_library->exportM3u(m_playlistId, path, &error)) {
+            QMessageBox::warning(this, QStringLiteral("导出失败"), error);
+        }
+    });
+
+    auto* edit = menuBar()->addMenu(QStringLiteral("编辑"));
+    edit->addAction(QStringLiteral("撤销"), QKeySequence::Undo, m_library, &Library::undo);
+    edit->addAction(QStringLiteral("重做"), QKeySequence::Redo, m_library, &Library::redo);
+    edit->addAction(QStringLiteral("新建歌单"), QKeySequence(Qt::CTRL | Qt::Key_N), this, [this] { promptPlaylist(0); });
+
+    auto* control = menuBar()->addMenu(QStringLiteral("控制"));
+    control->addAction(QStringLiteral("播放/暂停"), this, [this] { m_player->toggle(); });
+    control->addAction(QStringLiteral("下一首"), QKeySequence(Qt::CTRL | Qt::Key_Right), m_player, &Player::next);
+    control->addAction(QStringLiteral("上一首"), QKeySequence(Qt::CTRL | Qt::Key_Left), m_player, &Player::previous);
+    control->addAction(QStringLiteral("随机播放"), this, [this] { m_player->setShuffle(!m_player->shuffle()); });
+    control->addAction(QStringLiteral("重复"), this, [this] {
+        m_player->setRepeat(static_cast<Player::Repeat>((static_cast<int>(m_player->repeat()) + 1) % 3));
+    });
+    control->addAction(QStringLiteral("迷你播放器"), this, [this] {
+        hide();
+        const Track track = m_player->currentTrack();
+        m_mini->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 128), m_player->state() == AudioEngine::State::Playing);
+        m_mini->show();
+    });
+    auto* exclusive = control->addAction(QStringLiteral("独占输出"));
+    exclusive->setCheckable(true);
+    exclusive->setChecked(m_player->exclusive());
+    connect(exclusive, &QAction::toggled, m_player, &Player::setExclusive);
+    auto* replay = control->addAction(QStringLiteral("ReplayGain"));
+    replay->setCheckable(true);
+    replay->setChecked(m_player->replayGainEnabled());
+    connect(replay, &QAction::toggled, m_player, &Player::setReplayGainEnabled);
+
+    auto* search = new QAction(QStringLiteral("搜索"), this);
+    search->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F));
+    connect(search, &QAction::triggered, m_search, [this] { m_search->setFocus(); m_search->selectAll(); });
+    addAction(search);
+    auto* volumeUp = new QAction(this);
+    volumeUp->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Up));
+    connect(volumeUp, &QAction::triggered, this, [this] { m_player->setVolume(std::min(1.f, m_player->volume() + 0.05f)); });
+    addAction(volumeUp);
+    auto* volumeDown = new QAction(this);
+    volumeDown->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Down));
+    connect(volumeDown, &QAction::triggered, this, [this] { m_player->setVolume(std::max(0.f, m_player->volume() - 0.05f)); });
+    addAction(volumeDown);
+}
+
+void MainWindow::refreshViews()
+{
+    m_songs->reload();
+    m_albums->reload();
+    m_artists->reload();
+    m_folders->reload();
+    m_playlist->reload();
+    if (m_showingSearch) {
+        m_searchPage->search(m_search->text().trimmed());
+    }
+    m_sidebar->setPlaylists(m_library->playlistFolders(), m_library->playlists());
+    syncPlayer();
+}
+
+void MainWindow::showLibraryPage(int index)
+{
+    m_libraryPage = index;
+    m_playlistId = 0;
+    m_search->clear();
+    m_stack->setCurrentIndex(index);
+}
+
+void MainWindow::syncPlayer()
+{
+    const Track track = withSidecarLyrics(m_player->currentTrack());
+    const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 160);
+    m_bar->setTrack(track, art);
+    m_bar->setPlaying(m_player->state() == AudioEngine::State::Playing);
+    m_bar->setVolume(m_player->volume());
+    m_bar->setShuffle(m_player->shuffle());
+    m_bar->setRepeat(static_cast<int>(m_player->repeat()));
+    m_bar->setPosition(m_player->positionMs(), track.durationMs);
+    m_queue->setQueue(m_player->queue(), m_player->index(), m_library);
+    const qint64 id = track.id;
+    m_songs->setPlayingId(id);
+    m_albums->setPlayingId(id);
+    m_artists->setPlayingId(id);
+    m_folders->setPlayingId(id);
+    m_playlist->setPlayingId(id);
+    m_searchPage->setPlayingId(id);
+    if (track.missing) {
+        m_bar->setStatus(QStringLiteral("找不到文件"));
+    }
+    if (m_stack->currentWidget() == m_now) {
+        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
+    }
+}
+
+void MainWindow::playVisible(const QVector<qint64>& ids, int index, bool albumContext)
+{
+    m_player->playTracks(ids, index, albumContext);
+}
+
+void MainWindow::addToPlaylist(const QVector<qint64>& ids)
+{
+    QMenu menu(this);
+    const auto playlists = m_library->playlists();
+    if (playlists.isEmpty()) {
+        menu.addAction(QStringLiteral("新建歌单"), this, [this, ids] {
+            const qint64 id = m_library->createPlaylist(QStringLiteral("新歌单"));
+            m_library->addToPlaylist(id, ids);
+        });
+    }
+    for (const Playlist& playlist : playlists) {
+        menu.addAction(playlist.name, this, [this, ids, playlist] { m_library->addToPlaylist(playlist.id, ids); });
+    }
+    menu.exec(QCursor::pos());
+}
+
+void MainWindow::showInfo(qint64 id)
+{
+    Track track = withSidecarLyrics(m_library->track(id));
+    if (track.id == 0) {
+        return;
+    }
+    TrackDialog dialog(track, m_library->artwork()->pixmap(track.artworkHash, 160), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    QString error;
+    if (!m_library->saveTags(id, dialog.edit(), &error)) {
+        QMessageBox::warning(this, QStringLiteral("无法保存"), error.isEmpty() ? QStringLiteral("写入标签失败") : error);
+    }
+}
+
+void MainWindow::reveal(qint64 id)
+{
+    const Track track = m_library->track(id);
+    if (!track.path.isEmpty()) {
+        showInFileManager(track.path);
+    }
+}
+
+void MainWindow::promptPlaylist(qint64 folderId)
+{
+    const QString name = QInputDialog::getText(this, QStringLiteral("新建歌单"), QStringLiteral("名称"), QLineEdit::Normal, QStringLiteral("新歌单"));
+    if (!name.trimmed().isEmpty()) {
+        m_library->createPlaylist(name.trimmed(), folderId);
+    }
+}
+
+void MainWindow::promptFolder()
+{
+    const QString name = QInputDialog::getText(this, QStringLiteral("新建文件夹"), QStringLiteral("名称"), QLineEdit::Normal, QStringLiteral("新文件夹"));
+    if (!name.trimmed().isEmpty()) {
+        m_library->createPlaylistFolder(name.trimmed());
+    }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Space) {
+        auto* focus = QApplication::focusWidget();
+        if (!qobject_cast<QLineEdit*>(focus) && !qobject_cast<QTextEdit*>(focus) && !qobject_cast<QPlainTextEdit*>(focus)) {
+            m_player->toggle();
+            event->accept();
+            return;
+        }
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event)
+{
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::dropEvent(QDropEvent* event)
+{
+    QStringList paths;
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            paths.push_back(url.toLocalFile());
+        }
+    }
+    openPaths(paths);
+}
+
+} // namespace echo

@@ -1,0 +1,13 @@
+Echo is a local music player.
+
+Third-party components are used under their own licenses and are linked
+dynamically where those licenses require it:
+
+- Qt is used under the GNU Lesser General Public License version 3.
+- FFmpeg libraries (libavformat, libavcodec, libavutil, libswresample) are used
+  under the GNU Lesser General Public License version 2.1 or later.
+- TagLib is used under the Mozilla Public License version 1.1 or the GNU Lesser
+  General Public License version 2.1.
+
+Corresponding source for the LGPL libraries is available from their upstream
+projects: https://qt.io , https://ffmpeg.org and https://taglib.org .

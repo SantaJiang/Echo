@@ -1,0 +1,182 @@
+cmake_minimum_required(VERSION 3.24)
+project(Echo VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Sql Concurrent Network)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
+pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
+
+if(UNIX AND NOT APPLE)
+  find_package(Qt6 COMPONENTS DBus)
+  pkg_check_modules(PIPEWIRE libpipewire-0.3)
+  pkg_check_modules(ALSA alsa)
+endif()
+
+set(ECHO_CORE_SOURCES
+  src/audio/decoder.cpp
+  src/audio/cue.cpp
+  src/audio/convert.cpp
+  src/audio/engine.cpp
+  src/audio/output.cpp
+  src/library/types.cpp
+  src/library/database.cpp
+  src/library/metadata.cpp
+  src/library/artwork.cpp
+  src/library/scanner.cpp
+  src/library/library.cpp
+  src/playback/player.cpp
+)
+
+if(APPLE)
+  list(APPEND ECHO_CORE_SOURCES src/audio/output_coreaudio.mm)
+elseif(WIN32)
+  list(APPEND ECHO_CORE_SOURCES src/audio/output_wasapi.cpp)
+else()
+  if(PIPEWIRE_FOUND)
+    list(APPEND ECHO_CORE_SOURCES src/audio/output_pipewire.cpp)
+  endif()
+  if(ALSA_FOUND)
+    list(APPEND ECHO_CORE_SOURCES src/audio/output_alsa.cpp)
+  endif()
+  list(APPEND ECHO_CORE_SOURCES src/audio/output_null.cpp)
+endif()
+
+add_library(echo_core STATIC ${ECHO_CORE_SOURCES})
+target_include_directories(echo_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(echo_core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PkgConfig::FFMPEG PkgConfig::TAGLIB)
+get_filename_component(ECHO_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+target_compile_definitions(echo_core PUBLIC "ECHO_QT_PLUGINS=\"${ECHO_QT_PREFIX}/share/qt/plugins\"")
+if(PIPEWIRE_FOUND)
+  target_compile_definitions(echo_core PUBLIC ECHO_HAS_PIPEWIRE=1)
+  target_include_directories(echo_core PUBLIC ${PIPEWIRE_INCLUDE_DIRS})
+  target_link_libraries(echo_core PUBLIC ${PIPEWIRE_LINK_LIBRARIES})
+endif()
+if(ALSA_FOUND)
+  target_compile_definitions(echo_core PUBLIC ECHO_HAS_ALSA=1)
+  target_include_directories(echo_core PUBLIC ${ALSA_INCLUDE_DIRS})
+  target_link_libraries(echo_core PUBLIC ${ALSA_LINK_LIBRARIES})
+endif()
+if(APPLE)
+  target_link_libraries(echo_core PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreFoundation")
+  set_source_files_properties(src/audio/output_coreaudio.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+if(WIN32)
+  target_link_libraries(echo_core PUBLIC ole32 uuid avrt)
+endif()
+if(MSVC)
+  target_compile_options(echo_core PRIVATE /W4 /EHsc)
+else()
+  target_compile_options(echo_core PRIVATE -Wall -Wextra)
+endif()
+
+set(ECHO_APP_SOURCES
+  src/main.cpp
+  src/ui/theme.cpp
+  src/ui/icons.cpp
+  src/ui/tracktable.cpp
+  src/ui/sidebar.cpp
+  src/ui/pages.cpp
+  src/ui/playerbar.cpp
+  src/ui/queuepanel.cpp
+  src/ui/nowplaying.cpp
+  src/ui/miniplayer.cpp
+  src/ui/trackdialog.cpp
+  src/ui/mainwindow.cpp
+  src/platform/platform.cpp
+)
+if(APPLE)
+  list(APPEND ECHO_APP_SOURCES src/platform/platform_mac.mm)
+elseif(WIN32)
+  list(APPEND ECHO_APP_SOURCES src/platform/platform_win.cpp)
+else()
+  list(APPEND ECHO_APP_SOURCES src/platform/platform_linux.cpp)
+endif()
+
+add_executable(echo ${ECHO_APP_SOURCES})
+target_link_libraries(echo PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
+if(APPLE)
+  target_link_libraries(echo PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
+  set_source_files_properties(src/platform/platform_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  set_target_properties(echo PROPERTIES
+    OUTPUT_NAME Echo
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.echo.player
+    MACOSX_BUNDLE_BUNDLE_NAME Echo
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/data/MacOSXBundleInfo.plist.in
+  )
+endif()
+if(WIN32)
+  target_link_libraries(echo PRIVATE dwmapi comctl32)
+  set_target_properties(echo PROPERTIES WIN32_EXECUTABLE TRUE OUTPUT_NAME Echo)
+endif()
+if(UNIX AND NOT APPLE)
+  set_target_properties(echo PROPERTIES OUTPUT_NAME Echo)
+endif()
+if(Qt6DBus_FOUND)
+  target_link_libraries(echo PRIVATE Qt6::DBus)
+  target_compile_definitions(echo PRIVATE ECHO_HAS_MPRIS=1)
+endif()
+if(NOT MSVC)
+  target_compile_options(echo PRIVATE -Wall -Wextra)
+endif()
+
+add_executable(echo-probe tools/probe.cpp)
+target_link_libraries(echo-probe PRIVATE echo_core)
+
+add_executable(echo-selftest tools/selftest.cpp)
+target_link_libraries(echo-selftest PRIVATE echo_core)
+
+if(APPLE)
+  get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
+  find_program(ECHO_MACDEPLOYQT macdeployqt HINTS "${ECHO_QT_BIN}")
+endif()
+if(WIN32)
+  get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
+  find_program(ECHO_WINDEPLOYQT windeployqt HINTS "${ECHO_QT_BIN}")
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS echo BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(ECHO_MACDEPLOYQT)
+  install(CODE "execute_process(COMMAND \"${ECHO_MACDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/Echo.app\" -always-overwrite)")
+endif()
+if(ECHO_WINDEPLOYQT)
+  install(CODE "execute_process(COMMAND \"${ECHO_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe\")")
+endif()
+install(TARGETS echo-probe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(UNIX AND NOT APPLE)
+  install(FILES data/echo.desktop DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+  install(FILES data/echo.svg DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps)
+endif()
+
+set(CPACK_PACKAGE_NAME "Echo")
+set(CPACK_PACKAGE_VENDOR "Echo")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Local high-quality music player")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/NOTICE")
+if(APPLE)
+  set(CPACK_GENERATOR DragNDrop)
+elseif(WIN32)
+  set(CPACK_GENERATOR NSIS)
+  set(CPACK_NSIS_DISPLAY_NAME "Echo")
+  set(CPACK_NSIS_PACKAGE_NAME "Echo")
+else()
+  set(CPACK_GENERATOR DEB)
+  set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Echo")
+  set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+endif()
+include(CPack)

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Echo
+GenericName=Music Player
+Comment=Local high-quality music player
+Exec=Echo %F
+Icon=echo
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/flac;audio/mpeg;audio/mp4;audio/x-wav;audio/x-aiff;audio/ogg;audio/opus;audio/x-ape;audio/x-wavpack;audio/x-ms-wma;
+StartupWMClass=Echo
