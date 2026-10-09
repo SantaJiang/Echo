@@ -55,8 +55,6 @@ QChar codepoint(Icon kind)
         return QChar(0xf028);
     case Icon::Queue:
         return QChar(0xf0ca);
-    case Icon::Lyrics:
-        return QChar(0xf075);
     case Icon::Plus:
         return QChar(0x002b);
     case Icon::Shuffle:

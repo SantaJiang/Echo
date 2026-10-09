@@ -15,7 +15,6 @@ class ArtistsPage;
 class FoldersPage;
 class Library;
 class MiniPlayer;
-class NowPlayingPage;
 class Player;
 class PlayerBar;
 class PlaylistPage;
@@ -63,7 +62,6 @@ private:
     FoldersPage* m_folders = nullptr;
     PlaylistPage* m_playlist = nullptr;
     SearchPage* m_searchPage = nullptr;
-    NowPlayingPage* m_now = nullptr;
     PlayerBar* m_bar = nullptr;
     QueuePanel* m_queue = nullptr;
     MiniPlayer* m_mini = nullptr;

@@ -11,8 +11,21 @@
 #include <QResizeEvent>
 #include <QStyledItemDelegate>
 
+#include <algorithm>
+
 namespace echo {
 namespace {
+
+QRectF rowPill(const QStyleOptionViewItem& option, const TrackTable* table)
+{
+    const int last = table && table->model() ? table->model()->columnCount() - 1 : 4;
+    const int columnsLeft = table ? table->columnViewportPosition(0) : 0;
+    const int columnsRight = table ? table->columnViewportPosition(last) + table->columnWidth(last) : option.rect.right();
+    const int viewportRight = table && table->viewport() ? table->viewport()->width() : columnsRight;
+    const qreal left = std::max(4, columnsLeft + 4);
+    const qreal right = std::min(viewportRight - 10, columnsRight - 6);
+    return QRectF(left, option.rect.top() + 2, std::max(20.0, right - left), option.rect.height() - 4);
+}
 
 class RowDelegate : public QStyledItemDelegate {
 public:
@@ -30,7 +43,7 @@ public:
         const auto* table = qobject_cast<const TrackTable*>(option.widget);
         const bool hover = table && table->hoverRow() == index.row();
         if ((selected || hover) && option.widget) {
-            const QRectF row(4, option.rect.top() + 2, option.widget->width() - 28, option.rect.height() - 4);
+            const QRectF row = rowPill(option, table);
             QPainterPath clip;
             clip.addRoundedRect(row, 8, 8);
             painter->setClipPath(clip, Qt::IntersectClip);
@@ -38,23 +51,43 @@ public:
             painter->setClipping(false);
         }
         const bool missing = index.data(Qt::UserRole + 1).toBool();
-        const bool playing = index.data(Qt::UserRole + 2).toBool();
+        const bool current = index.data(Qt::UserRole + 2).toBool();
+        const bool audible = index.data(Qt::UserRole + 3).toBool();
+        if (current && !selected && !hover && option.widget) {
+            const QRectF row = rowPill(option, table);
+            QPainterPath clip;
+            clip.addRoundedRect(row, 8, 8);
+            painter->setClipPath(clip, Qt::IntersectClip);
+            QColor wash = colors.accent;
+            wash.setAlpha(36);
+            painter->fillRect(option.rect, wash);
+            painter->setClipping(false);
+        }
         QColor text = missing ? colors.secondary : colors.text;
-        if (playing && index.column() == 1) {
+        if (current && index.column() == 1) {
             text = colors.accent;
         }
         const QString value = index.data(Qt::DisplayRole).toString();
         const int rightPad = index.column() == 4 ? 20 : 8;
-        QRect textRect = option.rect.adjusted(12, 0, -rightPad, 0);
-        if (playing && index.column() == 0) {
+        const QRect textRect = option.rect.adjusted(12, 0, -rightPad, 0);
+        if (audible && index.column() == 0) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(colors.accent);
-            const QRectF dot(textRect.left(), option.rect.center().y() - 3, 6, 6);
-            painter->drawEllipse(dot);
-            textRect.setLeft(textRect.left() + 14);
+            const qreal heights[3] = {5.0, 11.0, 7.0};
+            qreal x = textRect.left();
+            const qreal mid = option.rect.center().y();
+            for (const qreal height : heights) {
+                painter->drawRoundedRect(QRectF(x, mid - height / 2.0, 2.0, height), 1.0, 1.0);
+                x += 4.0;
+            }
+        } else {
+            QColor pen = index.column() == 0 || index.column() == 4 ? colors.secondary : text;
+            if (current && index.column() == 0) {
+                pen = colors.accent;
+            }
+            painter->setPen(pen);
+            painter->drawText(textRect, Qt::AlignVCenter | (index.column() == 4 ? Qt::AlignRight : Qt::AlignLeft), value);
         }
-        painter->setPen(index.column() == 0 || index.column() == 4 ? colors.secondary : text);
-        painter->drawText(textRect, Qt::AlignVCenter | (index.column() == 4 ? Qt::AlignRight : Qt::AlignLeft), value);
         painter->restore();
     }
 
@@ -80,9 +113,10 @@ void TrackModel::setTracks(QVector<Track> tracks)
     endResetModel();
 }
 
-void TrackModel::setPlayingId(qint64 id)
+void TrackModel::setPlayingId(qint64 id, bool playing)
 {
     m_playingId = id;
+    m_audible = playing && id > 0;
     if (!m_tracks.isEmpty()) {
         emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1));
     }
@@ -129,7 +163,10 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const
         return track.missing;
     }
     if (role == Qt::UserRole + 2) {
-        return track.id == m_playingId;
+        return track.id == m_playingId && m_playingId > 0;
+    }
+    if (role == Qt::UserRole + 3) {
+        return track.id == m_playingId && m_audible;
     }
     if (role != Qt::DisplayRole) {
         return {};
@@ -196,8 +233,17 @@ TrackTable::TrackTable(QWidget* parent)
     setPalette(viewPalette);
     verticalHeader()->hide();
     horizontalHeader()->setStretchLastSection(false);
-    horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
-    horizontalHeader()->setMinimumSectionSize(36);
+    horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    horizontalHeader()->setMinimumSectionSize(40);
+    horizontalHeader()->setCascadingSectionResizes(false);
+    setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(horizontalHeader(), &QHeaderView::sectionResized, this, [this](int, int, int) {
+        if (m_applyingWidths) {
+            return;
+        }
+        m_userSized = true;
+        emit columnWidthsChanged(columnWidths());
+    });
     verticalHeader()->setDefaultSectionSize(40);
     setContextMenuPolicy(Qt::CustomContextMenu);
     connect(this, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -234,9 +280,32 @@ void TrackTable::setTracks(QVector<Track> tracks)
     m_model->setTracks(std::move(tracks));
 }
 
-void TrackTable::setPlayingId(qint64 id)
+void TrackTable::setPlayingId(qint64 id, bool playing)
 {
-    m_model->setPlayingId(id);
+    m_model->setPlayingId(id, playing);
+}
+
+void TrackTable::setColumnWidths(const QVector<int>& widths)
+{
+    if (widths.size() != 5) {
+        return;
+    }
+    m_userSized = true;
+    m_applyingWidths = true;
+    for (int column = 0; column < widths.size(); ++column) {
+        setColumnWidth(column, qMax(40, widths.at(column)));
+    }
+    m_applyingWidths = false;
+}
+
+QVector<int> TrackTable::columnWidths() const
+{
+    QVector<int> widths;
+    widths.reserve(5);
+    for (int column = 0; column < 5; ++column) {
+        widths.push_back(columnWidth(column));
+    }
+    return widths;
 }
 
 void TrackTable::mouseMoveEvent(QMouseEvent* event)
@@ -261,11 +330,14 @@ void TrackTable::leaveEvent(QEvent* event)
 void TrackTable::resizeEvent(QResizeEvent* event)
 {
     QTableView::resizeEvent(event);
-    applyColumnWidths();
+    if (!m_userSized) {
+        applyColumnWidths();
+    }
 }
 
 void TrackTable::applyColumnWidths()
 {
+    m_applyingWidths = true;
     const int available = qMax(0, viewport()->width() - 24);
     const int number = 46;
     const int time = 72;
@@ -275,6 +347,7 @@ void TrackTable::applyColumnWidths()
     setColumnWidth(2, rest * 28 / 100);
     setColumnWidth(3, rest - (rest * 44 / 100) - (rest * 28 / 100));
     setColumnWidth(4, time);
+    m_applyingWidths = false;
 }
 
 } // namespace echo

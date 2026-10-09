@@ -10,10 +10,8 @@
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFont>
-#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QMouseEvent>
 #include <QProcess>
 #include <QTimer>
 
@@ -112,13 +110,5 @@ int main(int argc, char** argv)
     if (nav) {
         nav->setCurrentRow(0);
     }
-    for (auto* label : window.findChildren<QLabel*>()) {
-        if (label->width() == 48 && label->height() == 48) {
-            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(8, 8), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-            QApplication::sendEvent(label, &release);
-            break;
-        }
-    }
-    grab(&window, out, QStringLiteral("now"));
     return 0;
 }

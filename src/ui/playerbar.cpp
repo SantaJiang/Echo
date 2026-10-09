@@ -3,7 +3,6 @@
 #include "ui/icons.h"
 #include "ui/theme.h"
 
-#include <QEvent>
 #include <QPaintEvent>
 #include <QHBoxLayout>
 #include <QPainter>
@@ -88,7 +87,6 @@ PlayerBar::PlayerBar(QWidget* parent)
     m_art = new QLabel(this);
     m_art->setFixedSize(48, 48);
     m_art->setPixmap(placeholderCover(48));
-    m_art->setCursor(Qt::PointingHandCursor);
     auto* meta = new QVBoxLayout();
     meta->setSpacing(1);
     m_title = new QLabel(QStringLiteral("未在播放"), this);
@@ -182,9 +180,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     volumeIcon->setPixmap(icon(Icon::Volume, colors.text, 15).pixmap(15, 15));
     volumeIcon->setFixedSize(18, 18);
     volumeIcon->setAlignment(Qt::AlignCenter);
-    auto* lyrics = make(Icon::Lyrics, 16);
     auto* queue = make(Icon::Queue, 16);
-    lyrics->setToolTip(QStringLiteral("歌词"));
     queue->setToolTip(QStringLiteral("待播清单"));
     auto* right = new QHBoxLayout();
     right->setSpacing(4);
@@ -192,11 +188,10 @@ PlayerBar::PlayerBar(QWidget* parent)
     right->addStretch();
     right->addWidget(volumeIcon);
     right->addWidget(m_volume);
-    right->addWidget(lyrics);
     right->addWidget(queue);
     auto* rightWrap = new QWidget(this);
     rightWrap->setLayout(right);
-    rightWrap->setFixedWidth(280);
+    rightWrap->setFixedWidth(240);
     rightWrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
     layout->addWidget(leftWrap, 0, Qt::AlignVCenter);
@@ -211,14 +206,12 @@ PlayerBar::PlayerBar(QWidget* parent)
     connect(m_shuffle, &QToolButton::clicked, this, &PlayerBar::shuffleToggled);
     connect(m_repeat, &QToolButton::clicked, this, &PlayerBar::repeatToggled);
     connect(queue, &QToolButton::clicked, this, &PlayerBar::queueToggled);
-    connect(lyrics, &QToolButton::clicked, this, &PlayerBar::lyricsRequested);
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) { emit volumeChanged(value / 100.f); });
     connect(m_seek, &QSlider::sliderPressed, this, [this] { m_seeking = true; });
     connect(m_seek, &QSlider::sliderReleased, this, [this] {
         m_seeking = false;
         emit seekRequested(m_seek->value());
     });
-    m_art->installEventFilter(this);
 }
 
 void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
@@ -293,15 +286,6 @@ void PlayerBar::paintEvent(QPaintEvent*)
     painter.fillRect(rect(), dark ? QColor(QStringLiteral("#2C2C2E")) : QColor(QStringLiteral("#F2F2F6")));
     painter.setPen(dark ? QColor(255, 255, 255, 40) : QColor(QStringLiteral("#8E8E93")));
     painter.drawLine(0, 0, width(), 0);
-}
-
-bool PlayerBar::eventFilter(QObject* watched, QEvent* event)
-{
-    if (watched == m_art && event->type() == QEvent::MouseButtonRelease) {
-        emit artworkClicked();
-        return true;
-    }
-    return QWidget::eventFilter(watched, event);
 }
 
 } // namespace echo

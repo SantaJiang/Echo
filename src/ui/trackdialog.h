@@ -5,7 +5,6 @@
 #include <QDialog>
 
 class QLineEdit;
-class QPlainTextEdit;
 class QSpinBox;
 
 namespace echo {
@@ -24,7 +23,6 @@ private:
     QLineEdit* m_albumArtist = nullptr;
     QSpinBox* m_trackNumber = nullptr;
     QSpinBox* m_year = nullptr;
-    QPlainTextEdit* m_lyrics = nullptr;
     QByteArray m_artwork;
     QString m_mime = QStringLiteral("image/jpeg");
     bool m_artworkChanged = false;

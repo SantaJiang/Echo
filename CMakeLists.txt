@@ -94,7 +94,6 @@ set(ECHO_UI_SOURCES
   src/ui/pages.cpp
   src/ui/playerbar.cpp
   src/ui/queuepanel.cpp
-  src/ui/nowplaying.cpp
   src/ui/miniplayer.cpp
   src/ui/trackdialog.cpp
   src/ui/mainwindow.cpp

@@ -3,11 +3,9 @@
 #include "ui/icons.h"
 #include "ui/theme.h"
 
-#include <QCursor>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QPainter>
-#include <QPushButton>
 #include <QStyledItemDelegate>
 #include <QHash>
 #include <QLabel>
@@ -16,8 +14,6 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
-
-#include <functional>
 
 namespace echo {
 namespace {
@@ -46,47 +42,6 @@ public:
         painter->restore();
     }
 };
-
-void showRoundedMenu(QWidget* anchor, const QList<QPair<QString, std::function<void()>>>& actions)
-{
-    auto* popup = new QWidget(nullptr, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
-    popup->setAttribute(Qt::WA_DeleteOnClose);
-    popup->setAttribute(Qt::WA_TranslucentBackground);
-    const Palette colors = echo::palette();
-    popup->setStyleSheet(QStringLiteral(
-        "QFrame#popupCard { background: %1; border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; }"
-        "QPushButton { background: transparent; border: none; border-radius: 6px; color: %2; padding: 8px 14px; text-align: left; font-size: 13px; }"
-        "QPushButton:hover { background: %3; }")
-                             .arg(colors.sidebar.name(), colors.text.name(), colors.selected.name()));
-    auto* outer = new QVBoxLayout(popup);
-    outer->setContentsMargins(0, 0, 0, 0);
-    auto* card = new QFrame(popup);
-    card->setObjectName(QStringLiteral("popupCard"));
-    card->setAttribute(Qt::WA_StyledBackground);
-    auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(0);
-    for (const auto& action : actions) {
-        auto* button = new QPushButton(action.first, card);
-        button->setObjectName(QStringLiteral("popupItem"));
-        button->setCursor(Qt::PointingHandCursor);
-        button->setFocusPolicy(Qt::NoFocus);
-        button->setFlat(true);
-        button->setMinimumWidth(148);
-        QObject::connect(button, &QPushButton::clicked, popup, [popup, call = action.second] {
-            popup->close();
-            if (call) {
-                call();
-            }
-        });
-        layout->addWidget(button);
-    }
-    outer->addWidget(card);
-    popup->adjustSize();
-    const QPoint origin = anchor->mapToGlobal(QPoint(anchor->width() + 6, 0));
-    popup->move(origin);
-    popup->show();
-}
 
 } // namespace
 
@@ -145,15 +100,9 @@ Sidebar::Sidebar(QWidget* parent)
     addButton->setIconSize(QSize(14, 14));
     addButton->setFixedSize(24, 24);
     addButton->setFocusPolicy(Qt::NoFocus);
-    addButton->setToolTip(QStringLiteral("新建"));
+    addButton->setToolTip(QStringLiteral("新建歌单"));
     header->addWidget(addButton);
-    connect(addButton, &QToolButton::clicked, this, [this, addButton] {
-        showRoundedMenu(addButton, {
-            {QStringLiteral("新建歌单"), [this] { emit createPlaylistRequested(0); }},
-            {QStringLiteral("新建文件夹"), [this] { emit createFolderRequested(); }},
-            {QStringLiteral("添加音乐文件夹"), [this] { emit addFolderRequested(); }},
-        });
-    });
+    connect(addButton, &QToolButton::clicked, this, [this] { emit createPlaylistRequested(0); });
 
     m_playlists = new QTreeWidget(this);
     m_playlists->setObjectName(QStringLiteral("playlistTree"));

@@ -25,7 +25,6 @@ public:
     void setStatus(const QString& text);
 
 protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
 
 signals:
@@ -37,8 +36,6 @@ signals:
     void shuffleToggled();
     void repeatToggled();
     void queueToggled();
-    void lyricsRequested();
-    void artworkClicked();
 
 private:
     QLabel* m_art = nullptr;

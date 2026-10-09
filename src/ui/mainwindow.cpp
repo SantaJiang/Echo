@@ -5,7 +5,6 @@
 #include "platform/platform.h"
 #include "playback/player.h"
 #include "ui/miniplayer.h"
-#include "ui/nowplaying.h"
 #include "ui/icons.h"
 #include "ui/pages.h"
 #include "ui/playerbar.h"
@@ -19,14 +18,13 @@
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
+#include <QDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -36,6 +34,7 @@
 #include <QMouseEvent>
 #include <QMimeData>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QToolButton>
@@ -50,18 +49,72 @@
 namespace echo {
 namespace {
 
-Track withSidecarLyrics(const Track& track)
+QString askName(QWidget* parent, const QString& title, const QString& initial, const QString& confirmLabel)
 {
-    Track copy = track;
-    if (!copy.lyrics.trimmed().isEmpty() || copy.path.isEmpty()) {
-        return copy;
+    QDialog dialog(parent);
+    dialog.setWindowTitle(title);
+    dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+    dialog.setAttribute(Qt::WA_TranslucentBackground);
+    dialog.setAttribute(Qt::WA_NoSystemBackground);
+    dialog.setAutoFillBackground(false);
+    dialog.setModal(true);
+    const Palette colors = palette();
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background: transparent; }"
+        "QFrame#nameCard { background: %1; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; }"
+        "QLabel#nameTitle { font-size: 17px; font-weight: 600; color: %2; background: transparent; }"
+        "QLineEdit#nameField { background: %3; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 0 12px; color: %2; min-height: 36px; selection-background-color: %4; selection-color: white; }"
+        "QLineEdit#nameField:focus { border: 1px solid rgba(255,255,255,0.28); }"
+        "QPushButton#nameCancel { background: transparent; color: %2; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px; min-width: 76px; min-height: 32px; padding: 0 14px; }"
+        "QPushButton#nameCancel:hover { background: %5; }"
+        "QPushButton#nameOk { background: %2; color: %3; border: none; border-radius: 8px; min-width: 76px; min-height: 32px; padding: 0 14px; font-weight: 600; }"
+        "QPushButton#nameOk:hover { background: #ffffff; }")
+                             .arg(colors.sidebar.name(), colors.text.name(), colors.window.name(), colors.accent.name(), colors.hover.name()));
+    auto* outer = new QVBoxLayout(&dialog);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* card = new QFrame(&dialog);
+    card->setObjectName(QStringLiteral("nameCard"));
+    card->setAttribute(Qt::WA_StyledBackground);
+    card->setAutoFillBackground(false);
+    auto* layout = new QVBoxLayout(card);
+    layout->setContentsMargins(20, 18, 20, 16);
+    layout->setSpacing(14);
+    auto* heading = new QLabel(title, card);
+    heading->setObjectName(QStringLiteral("nameTitle"));
+    auto* field = new QLineEdit(initial, card);
+    field->setObjectName(QStringLiteral("nameField"));
+    field->setPlaceholderText(QStringLiteral("名称"));
+    field->selectAll();
+    auto* buttons = new QHBoxLayout();
+    buttons->setSpacing(8);
+    buttons->addStretch();
+    auto* cancel = new QPushButton(QStringLiteral("取消"), card);
+    cancel->setObjectName(QStringLiteral("nameCancel"));
+    cancel->setCursor(Qt::PointingHandCursor);
+    auto* ok = new QPushButton(confirmLabel, card);
+    ok->setObjectName(QStringLiteral("nameOk"));
+    ok->setCursor(Qt::PointingHandCursor);
+    ok->setDefault(true);
+    buttons->addWidget(cancel);
+    buttons->addWidget(ok);
+    layout->addWidget(heading);
+    layout->addWidget(field);
+    layout->addLayout(buttons);
+    outer->addWidget(card);
+    QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+    QObject::connect(field, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+    dialog.setFixedWidth(360);
+    dialog.adjustSize();
+    if (parent) {
+        const QRect frame = parent->frameGeometry();
+        dialog.move(frame.center() - QPoint(dialog.width() / 2, dialog.height() / 2));
     }
-    const QFileInfo info(copy.path);
-    QFile file(info.absolutePath() + QLatin1Char('/') + info.completeBaseName() + QStringLiteral(".lrc"));
-    if (file.open(QIODevice::ReadOnly)) {
-        copy.lyrics = QString::fromUtf8(file.readAll());
+    field->setFocus();
+    if (dialog.exec() != QDialog::Accepted) {
+        return {};
     }
-    return copy;
+    return field->text().trimmed();
 }
 
 QString formatText(int sourceRate, int sourceBits, bool sourceFloat, int deviceRate, bool exclusive)
@@ -167,7 +220,6 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_folders = new FoldersPage(library, this);
     m_playlist = new PlaylistPage(library, this);
     m_searchPage = new SearchPage(library, this);
-    m_now = new NowPlayingPage(this);
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(m_songs);
     m_stack->addWidget(m_albums);
@@ -175,7 +227,6 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_stack->addWidget(m_folders);
     m_stack->addWidget(m_playlist);
     m_stack->addWidget(m_searchPage);
-    m_stack->addWidget(m_now);
 
     m_search = new QLineEdit(this);
     m_search->setObjectName(QStringLiteral("search"));
@@ -257,6 +308,47 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     wire(m_folders->table(), true);
     wire(m_playlist->table(), false);
     wire(m_searchPage->table(), false);
+    const QVector<TrackTable*> tables {m_songs->table(), m_albums->detailTable(), m_artists->table(),
+                                       m_folders->table(), m_playlist->table(), m_searchPage->table()};
+    QVector<int> restored;
+    const QString savedColumns = m_library->setting(QStringLiteral("track_columns"));
+    for (const QString& part : savedColumns.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const int value = part.toInt(&ok);
+        if (ok) {
+            restored.push_back(value);
+        }
+    }
+    if (restored.size() == 5) {
+        for (TrackTable* table : tables) {
+            table->setColumnWidths(restored);
+        }
+    }
+    auto* columnSave = new QTimer(this);
+    columnSave->setSingleShot(true);
+    columnSave->setInterval(200);
+    connect(columnSave, &QTimer::timeout, this, [this, columnSave] {
+        const QString value = columnSave->property("widths").toString();
+        if (!value.isEmpty()) {
+            m_library->setSetting(QStringLiteral("track_columns"), value);
+        }
+    });
+    for (TrackTable* table : tables) {
+        connect(table, &TrackTable::columnWidthsChanged, this, [tables, table, columnSave](const QVector<int>& widths) {
+            QStringList parts;
+            parts.reserve(widths.size());
+            for (const int width : widths) {
+                parts.push_back(QString::number(width));
+            }
+            columnSave->setProperty("widths", parts.join(QLatin1Char(',')));
+            for (TrackTable* other : tables) {
+                if (other != table) {
+                    other->setColumnWidths(widths);
+                }
+            }
+            columnSave->start();
+        });
+    }
     connect(m_songs->table(), &TrackTable::removeRequested, this, [this](const QVector<qint64>& ids) {
         if (QMessageBox::question(this, QStringLiteral("移除"), QStringLiteral("从资料库移除所选歌曲？文件不会被删除。")) == QMessageBox::Yes) {
             m_library->removeFromLibrary(ids);
@@ -284,15 +376,29 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_sidebar, &Sidebar::createPlaylistRequested, this, &MainWindow::promptPlaylist);
     connect(m_sidebar, &Sidebar::createFolderRequested, this, &MainWindow::promptFolder);
     connect(m_sidebar, &Sidebar::renamePlaylistRequested, this, [this](qint64 id) {
-        const QString name = QInputDialog::getText(this, QStringLiteral("重命名歌单"), QStringLiteral("名称"));
-        if (!name.trimmed().isEmpty()) {
-            m_library->renamePlaylist(id, name.trimmed());
+        QString current;
+        for (const Playlist& playlist : m_library->playlists()) {
+            if (playlist.id == id) {
+                current = playlist.name;
+                break;
+            }
+        }
+        const QString name = askName(this, QStringLiteral("重命名歌单"), current, QStringLiteral("完成"));
+        if (!name.isEmpty()) {
+            m_library->renamePlaylist(id, name);
         }
     });
     connect(m_sidebar, &Sidebar::renameFolderRequested, this, [this](qint64 id) {
-        const QString name = QInputDialog::getText(this, QStringLiteral("重命名文件夹"), QStringLiteral("名称"));
-        if (!name.trimmed().isEmpty()) {
-            m_library->renamePlaylistFolder(id, name.trimmed());
+        QString current;
+        for (const PlaylistFolder& folder : m_library->playlistFolders()) {
+            if (folder.id == id) {
+                current = folder.name;
+                break;
+            }
+        }
+        const QString name = askName(this, QStringLiteral("重命名文件夹"), current, QStringLiteral("完成"));
+        if (!name.isEmpty()) {
+            m_library->renamePlaylistFolder(id, name);
         }
     });
     connect(m_sidebar, &Sidebar::deletePlaylistRequested, this, [this](qint64 id) { m_library->deletePlaylist(id); });
@@ -381,19 +487,6 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_player->setRepeat(m_player->repeat() == Player::Repeat::Off ? Player::Repeat::All : Player::Repeat::Off);
     });
     connect(m_bar, &PlayerBar::queueToggled, this, [this] { m_queue->setVisible(!m_queue->isVisible()); });
-    connect(m_bar, &PlayerBar::lyricsRequested, this, [this] {
-        const Track track = withSidecarLyrics(m_player->currentTrack());
-        m_heading->hide();
-        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
-        m_stack->setCurrentWidget(m_now);
-    });
-    connect(m_bar, &PlayerBar::artworkClicked, this, [this] {
-        const Track track = withSidecarLyrics(m_player->currentTrack());
-        m_heading->hide();
-        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
-        m_stack->setCurrentWidget(m_now);
-    });
-    connect(m_now, &NowPlayingPage::editLyricsRequested, this, [this] { showInfo(m_player->currentTrack().id); });
 
     connect(m_queue, &QueuePanel::activated, this, [this](int index) {
         const auto queue = m_player->queue();
@@ -457,12 +550,9 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
 
     auto* timer = new QTimer(this);
     connect(timer, &QTimer::timeout, this, [this] {
-        const Track track = withSidecarLyrics(m_player->currentTrack());
+        const Track track = m_player->currentTrack();
         const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 720);
         m_bar->setPosition(m_player->positionMs(), track.durationMs);
-        if (m_stack->currentWidget() == m_now) {
-            m_now->setTrack(track, art, m_player->positionMs());
-        }
         if (m_mini->isVisible()) {
             m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
         }
@@ -628,7 +718,7 @@ void MainWindow::showLibraryPage(int index)
 
 void MainWindow::syncPlayer()
 {
-    const Track track = withSidecarLyrics(m_player->currentTrack());
+    const Track track = m_player->currentTrack();
     const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 160);
     m_bar->setTrack(track, art);
     m_bar->setPlaying(m_player->state() == AudioEngine::State::Playing);
@@ -638,17 +728,15 @@ void MainWindow::syncPlayer()
     m_bar->setPosition(m_player->positionMs(), track.durationMs);
     m_queue->setQueue(m_player->queue(), m_player->index(), m_library);
     const qint64 id = track.id;
-    m_songs->setPlayingId(id);
-    m_albums->setPlayingId(id);
-    m_artists->setPlayingId(id);
-    m_folders->setPlayingId(id);
-    m_playlist->setPlayingId(id);
-    m_searchPage->setPlayingId(id);
+    const bool playing = m_player->state() == AudioEngine::State::Playing;
+    m_songs->setPlayingId(id, playing);
+    m_albums->setPlayingId(id, playing);
+    m_artists->setPlayingId(id, playing);
+    m_folders->setPlayingId(id, playing);
+    m_playlist->setPlayingId(id, playing);
+    m_searchPage->setPlayingId(id, playing);
     if (track.missing) {
         m_bar->setStatus(QStringLiteral("找不到文件"));
-    }
-    if (m_stack->currentWidget() == m_now) {
-        m_now->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 720), m_player->positionMs());
     }
 }
 
@@ -675,7 +763,7 @@ void MainWindow::addToPlaylist(const QVector<qint64>& ids)
 
 void MainWindow::showInfo(qint64 id)
 {
-    Track track = withSidecarLyrics(m_library->track(id));
+    Track track = m_library->track(id);
     if (track.id == 0) {
         return;
     }
@@ -699,17 +787,17 @@ void MainWindow::reveal(qint64 id)
 
 void MainWindow::promptPlaylist(qint64 folderId)
 {
-    const QString name = QInputDialog::getText(this, QStringLiteral("新建歌单"), QStringLiteral("名称"), QLineEdit::Normal, QStringLiteral("新歌单"));
-    if (!name.trimmed().isEmpty()) {
-        m_library->createPlaylist(name.trimmed(), folderId);
+    const QString name = askName(this, QStringLiteral("新建歌单"), QStringLiteral("新歌单"), QStringLiteral("创建"));
+    if (!name.isEmpty()) {
+        m_library->createPlaylist(name, folderId);
     }
 }
 
 void MainWindow::promptFolder()
 {
-    const QString name = QInputDialog::getText(this, QStringLiteral("新建文件夹"), QStringLiteral("名称"), QLineEdit::Normal, QStringLiteral("新文件夹"));
-    if (!name.trimmed().isEmpty()) {
-        m_library->createPlaylistFolder(name.trimmed());
+    const QString name = askName(this, QStringLiteral("新建文件夹"), QStringLiteral("新文件夹"), QStringLiteral("创建"));
+    if (!name.isEmpty()) {
+        m_library->createPlaylistFolder(name);
     }
 }
 

@@ -137,9 +137,9 @@ void SongsPage::reload()
     m_table->setVisible(!empty);
 }
 
-void SongsPage::setPlayingId(qint64 id)
+void SongsPage::setPlayingId(qint64 id, bool playing)
 {
-    m_table->setPlayingId(id);
+    m_table->setPlayingId(id, playing);
 }
 
 AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
@@ -252,9 +252,9 @@ void AlbumsPage::showArtist(const QString& artistKey)
     reload();
 }
 
-void AlbumsPage::setPlayingId(qint64 id)
+void AlbumsPage::setPlayingId(qint64 id, bool playing)
 {
-    m_detail->setPlayingId(id);
+    m_detail->setPlayingId(id, playing);
 }
 
 void AlbumsPage::openAlbum(const QString& key)
@@ -393,9 +393,9 @@ void ArtistsPage::selectArtist(const QString& key)
     }
 }
 
-void ArtistsPage::setPlayingId(qint64 id)
+void ArtistsPage::setPlayingId(qint64 id, bool playing)
 {
-    m_table->setPlayingId(id);
+    m_table->setPlayingId(id, playing);
 }
 
 FoldersPage::FoldersPage(Library* library, QWidget* parent)
@@ -506,9 +506,9 @@ void FoldersPage::reload()
     }
 }
 
-void FoldersPage::setPlayingId(qint64 id)
+void FoldersPage::setPlayingId(qint64 id, bool playing)
 {
-    m_table->setPlayingId(id);
+    m_table->setPlayingId(id, playing);
 }
 
 PlaylistPage::PlaylistPage(Library* library, QWidget* parent)
@@ -551,9 +551,9 @@ void PlaylistPage::reload()
     m_table->setTracks(tracks);
 }
 
-void PlaylistPage::setPlayingId(qint64 id)
+void PlaylistPage::setPlayingId(qint64 id, bool playing)
 {
-    m_table->setPlayingId(id);
+    m_table->setPlayingId(id, playing);
 }
 
 QWidget* resultSection(const QString& title, QWidget* content, QWidget* parent)
@@ -689,9 +689,9 @@ void SearchPage::search(const QString& text)
     m_emptyText->setText(QStringLiteral("没有找到「%1」").arg(text));
 }
 
-void SearchPage::setPlayingId(qint64 id)
+void SearchPage::setPlayingId(qint64 id, bool playing)
 {
-    m_tracks->setPlayingId(id);
+    m_tracks->setPlayingId(id, playing);
 }
 
 } // namespace echo

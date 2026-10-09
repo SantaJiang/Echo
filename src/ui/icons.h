@@ -19,7 +19,6 @@ enum class Icon {
     Previous,
     Volume,
     Queue,
-    Lyrics,
     Plus,
     Shuffle,
     Repeat,

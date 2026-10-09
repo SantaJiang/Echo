@@ -13,7 +13,7 @@ class TrackModel : public QAbstractTableModel {
 public:
     explicit TrackModel(QObject* parent = nullptr);
     void setTracks(QVector<Track> tracks);
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] Track trackAt(int row) const;
     [[nodiscard]] QVector<qint64> ids() const;
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
@@ -24,6 +24,7 @@ public:
 private:
     QVector<Track> m_tracks;
     qint64 m_playingId = 0;
+    bool m_audible = false;
 };
 
 class TrackTable : public QTableView {
@@ -32,7 +33,9 @@ class TrackTable : public QTableView {
 public:
     explicit TrackTable(QWidget* parent = nullptr);
     void setTracks(QVector<Track> tracks);
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
+    void setColumnWidths(const QVector<int>& widths);
+    [[nodiscard]] QVector<int> columnWidths() const;
     [[nodiscard]] int hoverRow() const { return m_hoverRow; }
     [[nodiscard]] TrackModel* trackModel() const { return m_model; }
 
@@ -44,6 +47,7 @@ signals:
     void infoRequested(qint64 id);
     void revealRequested(qint64 id);
     void removeRequested(const QVector<qint64>& ids);
+    void columnWidthsChanged(const QVector<int>& widths);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -54,6 +58,8 @@ private:
     void applyColumnWidths();
     TrackModel* m_model = nullptr;
     int m_hoverRow = -1;
+    bool m_userSized = false;
+    bool m_applyingWidths = false;
 };
 
 } // namespace echo

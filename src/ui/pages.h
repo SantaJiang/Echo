@@ -19,7 +19,7 @@ class SongsPage : public QWidget {
 public:
     explicit SongsPage(Library* library, QWidget* parent = nullptr);
     void reload();
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
 signals:
@@ -40,7 +40,7 @@ public:
     void reload();
     void showArtist(const QString& artistKey);
     void openAlbum(const QString& albumKey);
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] TrackTable* detailTable() const { return m_detail; }
 
 signals:
@@ -63,7 +63,7 @@ public:
     explicit ArtistsPage(Library* library, QWidget* parent = nullptr);
     void reload();
     void selectArtist(const QString& artistKey);
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
 signals:
@@ -81,7 +81,7 @@ class FoldersPage : public QWidget {
 public:
     explicit FoldersPage(Library* library, QWidget* parent = nullptr);
     void reload();
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
 signals:
@@ -99,7 +99,7 @@ public:
     explicit PlaylistPage(Library* library, QWidget* parent = nullptr);
     void setPlaylist(qint64 id);
     void reload();
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] qint64 playlistId() const { return m_id; }
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
@@ -114,7 +114,7 @@ class SearchPage : public QWidget {
 public:
     explicit SearchPage(Library* library, QWidget* parent = nullptr);
     void search(const QString& text);
-    void setPlayingId(qint64 id);
+    void setPlayingId(qint64 id, bool playing);
     [[nodiscard]] TrackTable* table() const { return m_tracks; }
 
 signals:

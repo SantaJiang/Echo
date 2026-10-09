@@ -8,7 +8,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 
@@ -32,15 +31,12 @@ TrackDialog::TrackDialog(const Track& track, const QPixmap& artwork, QWidget* pa
     m_year = new QSpinBox(this);
     m_year->setRange(0, 9999);
     m_year->setValue(track.year);
-    m_lyrics = new QPlainTextEdit(track.lyrics, this);
-    m_lyrics->setMinimumHeight(120);
     form->addRow(QStringLiteral("标题"), m_title);
     form->addRow(QStringLiteral("艺人"), m_artist);
     form->addRow(QStringLiteral("专辑"), m_album);
     form->addRow(QStringLiteral("专辑艺人"), m_albumArtist);
     form->addRow(QStringLiteral("曲目号"), m_trackNumber);
     form->addRow(QStringLiteral("年份"), m_year);
-    form->addRow(QStringLiteral("歌词"), m_lyrics);
     auto* artRow = new QHBoxLayout();
     auto* art = new QLabel(this);
     art->setFixedSize(72, 72);
@@ -92,8 +88,6 @@ TagEdit TrackDialog::edit() const
     result.albumArtist = m_albumArtist->text();
     result.trackNumber = m_trackNumber->value();
     result.year = m_year->value();
-    result.editLyrics = true;
-    result.lyrics = m_lyrics->toPlainText();
     result.editArtwork = m_artworkChanged;
     result.artwork = m_artwork;
     result.artworkMime = m_mime;
