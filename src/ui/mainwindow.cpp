@@ -562,34 +562,8 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
 
     refreshViews();
     syncPlayer();
-    qApp->installEventFilter(this);
     applyWindowChrome(this);
     installSidebarEffect(m_sidebar);
-}
-
-bool MainWindow::eventFilter(QObject* watched, QEvent* event)
-{
-#ifdef Q_OS_MACOS
-    if (event->type() == QEvent::MouseButtonPress) {
-        auto* mouse = static_cast<QMouseEvent*>(event);
-        auto* widget = qobject_cast<QWidget*>(watched);
-        if (mouse->button() == Qt::LeftButton && widget && widget->window() == this) {
-            const QPoint local = mapFromGlobal(mouse->globalPosition().toPoint());
-            const bool trafficLights = local.x() < 74 && local.y() < 36;
-            const bool titleStrip = local.y() >= 0 && local.y() < 52 && rect().contains(local) && !trafficLights;
-            if (titleStrip && !qobject_cast<QAbstractButton*>(widget) && !qobject_cast<QLineEdit*>(widget)
-                && !qobject_cast<QAbstractItemView*>(widget)) {
-                if (windowHandle() && windowHandle()->startSystemMove()) {
-                    return true;
-                }
-            }
-        }
-    }
-#else
-    Q_UNUSED(watched);
-    Q_UNUSED(event);
-#endif
-    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::openPaths(const QStringList& paths)

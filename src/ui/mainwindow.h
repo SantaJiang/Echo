@@ -31,7 +31,6 @@ public:
     void openPaths(const QStringList& paths);
 
 protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;

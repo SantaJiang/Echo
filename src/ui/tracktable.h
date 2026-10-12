@@ -56,10 +56,10 @@ protected:
 
 private:
     void applyColumnWidths();
+    void resizeColumnBoundary(int column, int delta);
     TrackModel* m_model = nullptr;
     int m_hoverRow = -1;
-    bool m_userSized = false;
-    bool m_applyingWidths = false;
+    QVector<int> m_preferredWidths {46, 440, 280, 280, 72};
 };
 
 } // namespace echo

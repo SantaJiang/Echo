@@ -148,6 +148,9 @@ target_link_libraries(echo-probe PRIVATE echo_core)
 add_executable(echo-selftest tools/selftest.cpp)
 target_link_libraries(echo-selftest PRIVATE echo_core)
 
+add_executable(echo-uitest tools/uitest.cpp src/ui/tracktable.cpp src/ui/theme.cpp)
+target_link_libraries(echo-uitest PRIVATE echo_core Qt6::Widgets)
+
 if(APPLE)
   get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
   find_program(ECHO_MACDEPLOYQT macdeployqt HINTS "${ECHO_QT_BIN}")

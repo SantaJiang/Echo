@@ -12,9 +12,101 @@
 #include <QStyledItemDelegate>
 
 #include <algorithm>
+#include <functional>
 
 namespace echo {
 namespace {
+
+class TrackHeader : public QHeaderView {
+public:
+    explicit TrackHeader(QWidget* parent)
+        : QHeaderView(Qt::Horizontal, parent)
+    {
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+        setSectionResizeMode(QHeaderView::Fixed);
+        setSectionsClickable(true);
+    }
+
+    std::function<void(int, int)> resizeBoundary;
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        const int boundary = boundaryAt(event->position().x());
+        if (event->button() == Qt::LeftButton && boundary >= 0) {
+            m_boundary = boundary;
+            m_lastX = event->position().x();
+            viewport()->setCursor(Qt::SplitHCursor);
+            event->accept();
+            return;
+        }
+        QHeaderView::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (m_boundary >= 0 && (event->buttons() & Qt::LeftButton)) {
+            const int x = qRound(event->position().x());
+            const int delta = x - m_lastX;
+            if (resizeBoundary) {
+                resizeBoundary(m_boundary, delta);
+            }
+            m_lastX = x;
+            event->accept();
+            return;
+        }
+        m_boundary = -1;
+        if (boundaryAt(event->position().x()) >= 0) {
+            viewport()->setCursor(Qt::SplitHCursor);
+        } else {
+            viewport()->unsetCursor();
+        }
+        QHeaderView::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (m_boundary >= 0 && event->button() == Qt::LeftButton) {
+            m_boundary = -1;
+            event->accept();
+            return;
+        }
+        QHeaderView::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override
+    {
+        if (boundaryAt(event->position().x()) >= 0) {
+            event->accept();
+            return;
+        }
+        QHeaderView::mouseDoubleClickEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override
+    {
+        if (m_boundary < 0) {
+            viewport()->unsetCursor();
+        }
+        QHeaderView::leaveEvent(event);
+    }
+
+private:
+    int boundaryAt(qreal x) const
+    {
+        for (int section = 0; section + 1 < count(); ++section) {
+            const int edge = sectionViewportPosition(section) + sectionSize(section);
+            if (qAbs(x - edge) <= 8) {
+                return section;
+            }
+        }
+        return -1;
+    }
+
+    int m_boundary = -1;
+    int m_lastX = 0;
+};
 
 QRectF rowPill(const QStyleOptionViewItem& option, const TrackTable* table)
 {
@@ -86,7 +178,8 @@ public:
                 pen = colors.accent;
             }
             painter->setPen(pen);
-            painter->drawText(textRect, Qt::AlignVCenter | (index.column() == 4 ? Qt::AlignRight : Qt::AlignLeft), value);
+            painter->drawText(textRect, Qt::AlignVCenter | (index.column() == 4 ? Qt::AlignRight : Qt::AlignLeft),
+                              painter->fontMetrics().elidedText(value, Qt::ElideRight, qMax(0, textRect.width())));
         }
         painter->restore();
     }
@@ -218,6 +311,9 @@ TrackTable::TrackTable(QWidget* parent)
     : QTableView(parent)
     , m_model(new TrackModel(this))
 {
+    auto* header = new TrackHeader(this);
+    setHorizontalHeader(header);
+    header->resizeBoundary = [this](int column, int delta) { resizeColumnBoundary(column, delta); };
     setModel(m_model);
     setItemDelegate(new RowDelegate(this));
     setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -233,17 +329,10 @@ TrackTable::TrackTable(QWidget* parent)
     setPalette(viewPalette);
     verticalHeader()->hide();
     horizontalHeader()->setStretchLastSection(false);
-    horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     horizontalHeader()->setMinimumSectionSize(40);
     horizontalHeader()->setCascadingSectionResizes(false);
     setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    connect(horizontalHeader(), &QHeaderView::sectionResized, this, [this](int, int, int) {
-        if (m_applyingWidths) {
-            return;
-        }
-        m_userSized = true;
-        emit columnWidthsChanged(columnWidths());
-    });
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     verticalHeader()->setDefaultSectionSize(40);
     setContextMenuPolicy(Qt::CustomContextMenu);
     connect(this, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -290,12 +379,11 @@ void TrackTable::setColumnWidths(const QVector<int>& widths)
     if (widths.size() != 5) {
         return;
     }
-    m_userSized = true;
-    m_applyingWidths = true;
+    m_preferredWidths = widths;
     for (int column = 0; column < widths.size(); ++column) {
-        setColumnWidth(column, qMax(40, widths.at(column)));
+        m_preferredWidths[column] = qMax(40, widths.at(column));
     }
-    m_applyingWidths = false;
+    applyColumnWidths();
 }
 
 QVector<int> TrackTable::columnWidths() const
@@ -330,24 +418,48 @@ void TrackTable::leaveEvent(QEvent* event)
 void TrackTable::resizeEvent(QResizeEvent* event)
 {
     QTableView::resizeEvent(event);
-    if (!m_userSized) {
-        applyColumnWidths();
-    }
+    applyColumnWidths();
 }
 
 void TrackTable::applyColumnWidths()
 {
-    m_applyingWidths = true;
-    const int available = qMax(0, viewport()->width() - 24);
-    const int number = 46;
-    const int time = 72;
-    const int rest = qMax(0, available - number - time);
+    const int available = viewport()->width();
+    if (available < 200) {
+        return;
+    }
+    // Keep the outside columns compact; share the remaining space between
+    // title, artist and album using the user's saved proportions.
+    const int number = qBound(40, m_preferredWidths[0], available - 160);
+    const int time = qBound(40, m_preferredWidths[4], available - number - 120);
+    const int extra = available - number - time - 120;
+    qint64 titleWeight = m_preferredWidths[1] - 40;
+    qint64 artistWeight = m_preferredWidths[2] - 40;
+    qint64 albumWeight = m_preferredWidths[3] - 40;
+    if (titleWeight + artistWeight + albumWeight == 0) {
+        titleWeight = artistWeight = albumWeight = 1;
+    }
+    const qint64 weight = titleWeight + artistWeight + albumWeight;
+    const int title = 40 + int(extra * titleWeight / weight);
+    const int artist = 40 + int(extra * artistWeight / weight);
     setColumnWidth(0, number);
-    setColumnWidth(1, rest * 44 / 100);
-    setColumnWidth(2, rest * 28 / 100);
-    setColumnWidth(3, rest - (rest * 44 / 100) - (rest * 28 / 100));
+    setColumnWidth(1, title);
+    setColumnWidth(2, artist);
+    setColumnWidth(3, available - number - time - title - artist);
     setColumnWidth(4, time);
-    m_applyingWidths = false;
+}
+
+void TrackTable::resizeColumnBoundary(int column, int delta)
+{
+    const int left = columnWidth(column);
+    const int right = columnWidth(column + 1);
+    delta = qBound(40 - left, delta, right - 40);
+    if (delta == 0) {
+        return;
+    }
+    setColumnWidth(column, left + delta);
+    setColumnWidth(column + 1, right - delta);
+    m_preferredWidths = columnWidths();
+    emit columnWidthsChanged(m_preferredWidths);
 }
 
 } // namespace echo

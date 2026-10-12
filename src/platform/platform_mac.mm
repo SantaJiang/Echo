@@ -1,6 +1,11 @@
 #include "platform/platform.h"
 
 #include <QImage>
+#include <QApplication>
+#include <QAbstractButton>
+#include <QAbstractItemView>
+#include <QLineEdit>
+#include <QPointer>
 #include <QWidget>
 
 #include <dispatch/dispatch.h>
@@ -43,6 +48,67 @@ void applyWindowChrome(QWidget* window)
     native.styleMask |= NSWindowStyleMaskFullSizeContentView;
     native.toolbar = nil;
     native.movableByWindowBackground = NO;
+    native.movable = YES;
+
+    // Track the native press/drag/release sequence, including the first press
+    // that activates the window, rather than handing it back to a second
+    // AppKit drag loop through Qt's startSystemMove().
+    const QPointer<QWidget> guardedWindow(window);
+    __block BOOL dragging = NO;
+    __block NSPoint pressPoint;
+    __block NSPoint windowOrigin;
+    id monitor = [NSEvent addLocalMonitorForEventsMatchingMask:
+        NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+        handler:^NSEvent*(NSEvent* event) {
+            QWidget* target = guardedWindow.data();
+            if (!target || !target->isVisible()) {
+                return event;
+            }
+            NSView* targetView = (__bridge NSView*)reinterpret_cast<void*>(target->winId());
+            if (event.window != targetView.window) {
+                return event;
+            }
+            if (event.type == NSEventTypeLeftMouseUp) {
+                const BOOL wasDragging = dragging;
+                dragging = NO;
+                return wasDragging ? nil : event;
+            }
+            if (event.type == NSEventTypeLeftMouseDragged) {
+                if (!dragging) {
+                    return event;
+                }
+                const NSPoint point = [event.window convertPointToScreen:event.locationInWindow];
+                [targetView.window setFrameOrigin:NSMakePoint(windowOrigin.x + point.x - pressPoint.x,
+                                                             windowOrigin.y + point.y - pressPoint.y)];
+                return nil;
+            }
+            dragging = NO;
+            if (event.clickCount > 1 || (targetView.window.styleMask & NSWindowStyleMaskFullScreen)) {
+                return event;
+            }
+            const NSPoint point = [targetView convertPoint:event.locationInWindow fromView:nil];
+            const qreal y = targetView.isFlipped ? point.y : targetView.bounds.size.height - point.y;
+            const QPoint local(qRound(point.x), qRound(y));
+            const bool trafficLights = local.x() < 74 && local.y() < 36;
+            if (!target->rect().contains(local) || local.y() >= 52 || trafficLights) {
+                return event;
+            }
+            for (QWidget* hit = QApplication::widgetAt(target->mapToGlobal(local)); hit && hit != target;
+                 hit = hit->parentWidget()) {
+                if (qobject_cast<QAbstractButton*>(hit) || qobject_cast<QLineEdit*>(hit)
+                    || qobject_cast<QAbstractItemView*>(hit)) {
+                    return event;
+                }
+            }
+            pressPoint = [event.window convertPointToScreen:event.locationInWindow];
+            windowOrigin = targetView.window.frame.origin;
+            dragging = YES;
+            [targetView.window makeKeyAndOrderFront:nil];
+            return nil;
+        }];
+    QObject::connect(window, &QObject::destroyed, [monitor] {
+        [NSEvent removeMonitor:monitor];
+    });
 }
 
 void installSidebarEffect(QWidget*)

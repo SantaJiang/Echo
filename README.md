@@ -10,6 +10,7 @@
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
 cmake --build build -j
 ./build/echo-selftest
+QT_QPA_PLATFORM=offscreen ./build/echo-uitest
 ./build/Echo.app/Contents/MacOS/Echo
 ```
 
