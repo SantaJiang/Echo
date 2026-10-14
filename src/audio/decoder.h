@@ -23,6 +23,7 @@ public:
     void extendRange(qint64 endFrame);
 
     [[nodiscard]] const SampleFormat& format() const { return m_format; }
+    [[nodiscard]] quint64 channelMask() const;
     [[nodiscard]] const ReplayGain& replayGain() const { return m_gain; }
     [[nodiscard]] qint64 encoderDelay() const { return m_delay; }
     [[nodiscard]] qint64 encoderPadding() const { return m_padding; }

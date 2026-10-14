@@ -61,6 +61,8 @@ QChar codepoint(Icon kind)
         return QChar(0xf074);
     case Icon::Repeat:
         return QChar(0xf363);
+    case Icon::Settings:
+        return QChar(0xf013);
     case Icon::Expand:
         return QChar(0xf077);
     }

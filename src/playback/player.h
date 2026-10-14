@@ -1,6 +1,11 @@
 #pragma once
 
 #include "audio/engine.h"
+#include "audio/loudness.h"
+#include <QFutureWatcher>
+#include <QHash>
+#include <QSet>
+#include <atomic>
 #include "library/library.h"
 
 #include <QObject>
@@ -16,6 +21,11 @@ public:
 
     Player(Library* library, AudioEngine* engine, QObject* parent = nullptr);
 
+    ~Player() override;
+    void setNormalizationEnabled(bool enabled);
+    [[nodiscard]] bool normalizationEnabled() const { return m_normalization; }
+    [[nodiscard]] QString normalizationStatus() const;
+
     void playTracks(const QVector<qint64>& ids, int startIndex, bool albumContext);
     void toggle();
     void next();
@@ -23,6 +33,9 @@ public:
     void seek(qint64 positionMs);
     void setVolume(float slider);
     void setExclusive(bool exclusive);
+    void setSpatialEnabled(bool enabled);
+    [[nodiscard]] bool spatialEnabled() const { return m_spatial; }
+    [[nodiscard]] QString spatialStatus() const;
     void setReplayGainEnabled(bool enabled);
     void setShuffle(bool shuffle);
     void setRepeat(Repeat repeat);
@@ -53,6 +66,8 @@ public:
 
 signals:
     void changed();
+    void normalizationChanged();
+    void spatialChanged();
 
 private:
     void playIndex(int index, bool resumePosition, qint64 positionMs);
@@ -60,6 +75,10 @@ private:
     [[nodiscard]] PlaybackItem itemFor(const Entry& entry) const;
     [[nodiscard]] float gainFor(const Track& track, bool albumContext) const;
     void rememberHistory();
+    void scheduleAnalysis();
+    void updateNormalizationGains();
+    [[nodiscard]] QString loudnessKey(const Track& track) const;
+    [[nodiscard]] LoudnessResult cachedLoudness(const Track& track) const;
 
     Library* m_library = nullptr;
     AudioEngine* m_engine = nullptr;
@@ -71,7 +90,15 @@ private:
     bool m_shuffle = false;
     bool m_replayGain = true;
     bool m_exclusive = false;
+    bool m_spatial = false;
+    QString m_spatialStatus;
     Repeat m_repeat = Repeat::Off;
+    bool m_normalization = false;
+    QFutureWatcher<LoudnessResult> m_analysis;
+    bool m_analysisPending = false;
+    std::atomic<bool> m_cancelAnalysis {false};
+    mutable QHash<QString, LoudnessResult> m_loudness;
+    QSet<QString> m_analysisFailed;
     bool m_advancing = false;
     bool m_skipAfterError = false;
 };

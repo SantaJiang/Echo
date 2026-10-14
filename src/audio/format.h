@@ -18,13 +18,15 @@ struct SampleFormat {
     // Fooyin sample type. Unknown means infer from the fields above.
     Fooyin::SampleFormat pcm = Fooyin::SampleFormat::Unknown;
 
+    quint64 channelMask = 0;
+
     [[nodiscard]] int bytesPerFrame() const { return bytesPerSample * channels; }
     [[nodiscard]] bool valid() const { return sampleRate > 0 && channels > 0 && bytesPerSample > 0; }
     [[nodiscard]] bool operator==(const SampleFormat& other) const
     {
         return sampleRate == other.sampleRate && channels == other.channels && bitsPerSample == other.bitsPerSample
             && bytesPerSample == other.bytesPerSample && isFloat == other.isFloat && highAligned == other.highAligned
-            && pcm == other.pcm;
+            && pcm == other.pcm && channelMask == other.channelMask;
     }
 };
 

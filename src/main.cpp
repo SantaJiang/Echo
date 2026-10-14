@@ -89,9 +89,7 @@ int main(int argc, char** argv)
             client->waitForReadyRead(300);
             const QStringList incoming = QString::fromUtf8(client->readAll()).split(u'\n', Qt::SkipEmptyParts);
             window.openPaths(incoming);
-            window.show();
-            window.raise();
-            window.activateWindow();
+            window.showMainWindow();
             client->deleteLater();
         }
     });

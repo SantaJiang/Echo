@@ -156,7 +156,16 @@ Sidebar::Sidebar(QWidget* parent)
     layout->addWidget(m_playlists, 1);
     layout->addWidget(m_playlistEmpty, 1);
     layout->addWidget(m_status);
-    setFixedWidth(232);
+    auto* settings = new QToolButton(this);
+    settings->setText(QStringLiteral("设置"));
+    settings->setIcon(icon(Icon::Settings, colors.secondary, 16));
+    settings->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    settings->setAutoRaise(true);
+    settings->setFixedHeight(32);
+    settings->setCursor(Qt::PointingHandCursor);
+    connect(settings, &QToolButton::clicked, this, &Sidebar::settingsRequested);
+    layout->addWidget(settings, 0, Qt::AlignLeft);
+    setFixedWidth(260);
 }
 
 void Sidebar::setPlaylists(const QVector<PlaylistFolder>& folders, const QVector<Playlist>& playlists)

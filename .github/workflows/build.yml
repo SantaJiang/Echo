@@ -10,13 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 安装依赖
-        run: brew install cmake ninja pkg-config qtbase ffmpeg taglib
+        run: brew install cmake ninja pkg-config qtbase ffmpeg taglib libebur128
       - name: 配置
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
       - name: 编译
         run: cmake --build build
       - name: 自测
-        run: ./build/echo-selftest
+        run: |
+          ./build/echo-selftest
+          ./build/echo-playbacktest
+          QT_QPA_PLATFORM=offscreen ./build/echo-uitest
 
   ubuntu:
     runs-on: ubuntu-24.04
@@ -27,13 +30,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config qt6-base-dev \
             libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
-            libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
+            libebur128-dev libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
       - name: 配置
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: 编译
         run: cmake --build build
       - name: 自测
-        run: ./build/echo-selftest
+        run: |
+          ./build/echo-selftest
+          ./build/echo-playbacktest
+          QT_QPA_PLATFORM=offscreen ./build/echo-uitest
 
   windows:
     runs-on: windows-latest
@@ -52,6 +58,7 @@ jobs:
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libebur128
             mingw-w64-ucrt-x86_64-taglib
       - uses: actions/checkout@v4
       - name: 配置
@@ -59,4 +66,7 @@ jobs:
       - name: 编译
         run: cmake --build build
       - name: 自测
-        run: ./build/echo-selftest.exe
+        run: |
+          ./build/echo-selftest.exe
+          ./build/echo-playbacktest.exe
+          QT_QPA_PLATFORM=offscreen ./build/echo-uitest.exe

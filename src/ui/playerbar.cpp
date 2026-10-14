@@ -5,6 +5,7 @@
 
 #include <QPaintEvent>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QPainter>
 #include <QPainterPath>
 #include <QLabel>
@@ -77,18 +78,22 @@ PlayerBar::PlayerBar(QWidget* parent)
 {
     setObjectName(QStringLiteral("playerBar"));
     setAttribute(Qt::WA_StyledBackground);
-    setFixedHeight(84);
+    setFixedHeight(92);
     const Palette colors = echo::palette();
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(18, 0, 18, 0);
-    layout->setSpacing(12);
-    layout->setAlignment(Qt::AlignVCenter);
+    auto* layout = new QGridLayout(this);
+    layout->setContentsMargins(18, 12, 18, 12);
+    layout->setHorizontalSpacing(16);
+    layout->setVerticalSpacing(2);
+    layout->setRowMinimumHeight(0, 44);
+    layout->setRowMinimumHeight(1, 20);
+    layout->setColumnStretch(2, 1);
 
     m_art = new QLabel(this);
     m_art->setFixedSize(48, 48);
     m_art->setPixmap(placeholderCover(48));
     auto* meta = new QVBoxLayout();
-    meta->setSpacing(1);
+    meta->setSpacing(2);
+    meta->setContentsMargins(0, 0, 0, 0);
     m_title = new QLabel(QStringLiteral("未在播放"), this);
     m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600;"));
     m_artist = new QLabel(this);
@@ -98,18 +103,16 @@ PlayerBar::PlayerBar(QWidget* parent)
     meta->addStretch();
     meta->addWidget(m_title);
     meta->addWidget(m_artist);
-    meta->addWidget(m_format);
     meta->addStretch();
-    auto* left = new QHBoxLayout();
-    left->setContentsMargins(0, 0, 0, 0);
-    left->setSpacing(12);
-    left->setAlignment(Qt::AlignVCenter);
-    left->addWidget(m_art, 0, Qt::AlignVCenter);
-    left->addLayout(meta);
-    auto* leftWrap = new QWidget(this);
-    leftWrap->setLayout(left);
-    leftWrap->setFixedWidth(280);
-    leftWrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto* metadata = new QWidget(this);
+    metadata->setLayout(meta);
+    metadata->setFixedWidth(200);
+    m_title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_artist->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_format->setFixedWidth(200);
+    m_format->setFixedHeight(20);
+    m_format->setObjectName(QStringLiteral("audioFormat"));
+    m_format->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
     auto make = [&](Icon kind, int size) {
         auto* button = new QToolButton(this);
@@ -159,16 +162,16 @@ PlayerBar::PlayerBar(QWidget* parent)
     seekRow->addWidget(m_elapsed);
     seekRow->addWidget(m_seek, 1);
     seekRow->addWidget(m_duration);
-    auto* transport = new QVBoxLayout();
-    transport->setSpacing(4);
-    transport->setContentsMargins(0, 0, 0, 0);
-    transport->addLayout(buttons);
-    transport->addLayout(seekRow);
-    auto* centerWrap = new QWidget(this);
-    centerWrap->setLayout(transport);
-    centerWrap->setMinimumWidth(360);
-    centerWrap->setMaximumWidth(560);
-    centerWrap->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    auto* controls = new QWidget(this);
+    controls->setLayout(buttons);
+    buttons->setContentsMargins(0, 0, 0, 0);
+    controls->setFixedHeight(44);
+    auto* timeline = new QWidget(this);
+    seekRow->setContentsMargins(0, 0, 0, 0);
+    timeline->setLayout(seekRow);
+    timeline->setMinimumWidth(240);
+    timeline->setFixedHeight(20);
+    m_seek->setObjectName(QStringLiteral("playbackSeek"));
 
     auto* volume = new BarSlider(this);
     volume->fill = colors.text;
@@ -191,14 +194,16 @@ PlayerBar::PlayerBar(QWidget* parent)
     right->addWidget(queue);
     auto* rightWrap = new QWidget(this);
     rightWrap->setLayout(right);
-    rightWrap->setFixedWidth(240);
+    right->setContentsMargins(0, 0, 0, 0);
+    rightWrap->setFixedWidth(154);
     rightWrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-    layout->addWidget(leftWrap, 0, Qt::AlignVCenter);
-    layout->addStretch(1);
-    layout->addWidget(centerWrap, 0, Qt::AlignVCenter);
-    layout->addStretch(1);
-    layout->addWidget(rightWrap, 0, Qt::AlignVCenter);
+    layout->addWidget(m_art, 0, 0, 2, 1, Qt::AlignVCenter);
+    layout->addWidget(metadata, 0, 1);
+    layout->addWidget(m_format, 1, 1);
+    layout->addWidget(controls, 0, 2);
+    layout->addWidget(timeline, 1, 2);
+    layout->addWidget(rightWrap, 0, 3, Qt::AlignVCenter);
 
     connect(m_play, &QToolButton::clicked, this, &PlayerBar::toggleRequested);
     connect(previous, &QToolButton::clicked, this, &PlayerBar::previousRequested);
@@ -219,16 +224,17 @@ void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
     if (track.id == 0) {
         m_title->setText(QStringLiteral("未在播放"));
         m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600; color: %1;").arg(echo::palette().secondary.name()));
-        m_artist->hide();
-        m_format->hide();
+        m_artist->clear();
+        m_format->clear();
         m_art->setPixmap(placeholderCover(48));
         return;
     }
     m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600;"));
+    m_title->setToolTip(track.displayTitle());
+    m_artist->setToolTip(track.displayArtist());
     m_title->setText(track.missing ? track.displayTitle() + QStringLiteral("（找不到文件）") : track.displayTitle());
     m_artist->setText(track.displayArtist());
-    m_artist->setVisible(!track.displayArtist().isEmpty());
-    m_format->setVisible(!m_format->text().isEmpty());
+    m_artist->show();
     m_art->setPixmap(roundedCover(artwork, 48));
 }
 
@@ -244,6 +250,7 @@ void PlayerBar::setPosition(qint64 positionMs, qint64 durationMs)
 
 void PlayerBar::setPlaying(bool playing)
 {
+    m_play->setToolTip(playing ? QStringLiteral("暂停") : QStringLiteral("播放"));
     m_play->setIcon(icon(playing ? Icon::Pause : Icon::Play, echo::palette().text, 18));
     m_play->setIconSize(QSize(18, 18));
 }
@@ -270,12 +277,16 @@ void PlayerBar::setRepeat(int mode)
 void PlayerBar::setFormatText(const QString& text)
 {
     m_format->setText(text);
+    m_format->setToolTip(text);
+    m_format->setVisible(!text.isEmpty());
 }
 
 void PlayerBar::setStatus(const QString& text)
 {
     if (!text.isEmpty()) {
         m_format->setText(text);
+    m_format->setToolTip(text);
+    m_format->setVisible(!text.isEmpty());
     }
 }
 

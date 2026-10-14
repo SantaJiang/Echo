@@ -1,6 +1,7 @@
 #include "audio/convert.h"
 #include "audio/cue.h"
 #include "audio/decoder.h"
+#include "audio/loudness.h"
 #include "library/database.h"
 #include "library/scanner.h"
 #include "library/types.h"
@@ -71,6 +72,54 @@ int main(int argc, char** argv)
             QStringLiteral("sine=frequency=440:duration=1:sample_rate=44100"), QStringLiteral("-c:a"),
             QStringLiteral("pcm_s16le"), wav});
     ffmpeg({QStringLiteral("-y"), QStringLiteral("-i"), wav, QStringLiteral("-c:a"), QStringLiteral("flac"), flac});
+    // Measure files without ReplayGain tags, and verify the audible result rather than just the setting.
+    const QString quiet = dir.filePath(QStringLiteral("quiet.wav"));
+    ffmpeg({QStringLiteral("-y"), QStringLiteral("-i"), wav, QStringLiteral("-af"), QStringLiteral("volume=0.25"), quiet});
+    echo::PlaybackItem loudItem;
+    loudItem.path = wav;
+    echo::PlaybackItem quietItem;
+    quietItem.path = quiet;
+    const auto loudness = echo::analyzeLoudness(loudItem);
+    const auto quietness = echo::analyzeLoudness(quietItem);
+    expect(loudness.valid && quietness.valid, "analyze untagged tracks");
+    expect(std::abs(loudness.lufs - quietness.lufs - 12.0412) < 0.1, "measure relative loudness");
+    expect(std::abs(loudness.lufs + loudness.gainDb() - quietness.lufs - quietness.gainDb()) < 0.1,
+           "normalized tracks have matching loudness");
+    expect(loudness.peak * std::pow(10., loudness.gainDb() / 20.) <= std::pow(10., -1. / 20.) + 0.0001,
+           "normalization reserves true peak headroom");
+    const QString balanced = dir.filePath(QStringLiteral("balanced.wav"));
+    ffmpeg({QStringLiteral("-y"), QStringLiteral("-i"), quiet, QStringLiteral("-af"),
+            QStringLiteral("volume=%1dB").arg(quietness.gainDb()), balanced});
+    quietItem.path = balanced;
+    const auto balancedResult = echo::analyzeLoudness(quietItem);
+    expect(balancedResult.valid && std::abs(balancedResult.lufs + 18.) < 0.1, "rendered audio reaches target LUFS");
+    expect(!echo::analyzeLoudness(loudItem, [] { return true; }).valid, "analysis cancellation");
+    loudItem.path = dir.filePath(QStringLiteral("missing.wav"));
+    expect(!echo::analyzeLoudness(loudItem).valid, "analysis missing file");
+    loudItem.path = wav;
+    loudItem.startMs = 200;
+    loudItem.endMs = 800;
+    expect(echo::analyzeLoudness(loudItem).valid, "analyze CUE segment");
+    const QString silence = dir.filePath(QStringLiteral("silence.wav"));
+    ffmpeg({QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+            QStringLiteral("anullsrc=r=44100:cl=stereo:d=1"), silence});
+    loudItem.path = silence;
+    loudItem.startMs = 0;
+    loudItem.endMs = -1;
+    const auto silentResult = echo::analyzeLoudness(loudItem);
+    expect(silentResult.valid && silentResult.gainDb() == 0, "silence retains unity gain");
+    const echo::LoudnessResult highPeak {true, -30, 0.95};
+    expect(highPeak.gainDb() < 0, "peak protection overrides requested amplification");
+    const QString lfe = dir.filePath(QStringLiteral("lfe.wav"));
+    ffmpeg({QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+            QStringLiteral("aevalsrc=0|0|0|0.5*sin(2*PI*50*t)|0|0:s=48000:d=1:c=5.1"),
+            QStringLiteral("-c:a"), QStringLiteral("pcm_f32le"), lfe});
+    loudItem.path = lfe;
+    const auto lfeResult = echo::analyzeLoudness(loudItem);
+    expect(lfeResult.valid && lfeResult.lufs < -70, "LFE is excluded from integrated loudness");
+    expect(lfeResult.peak > .49 && lfeResult.gainDb() == 0, "LFE peak is still measured without amplifying silence");
+
+
     ffmpeg({QStringLiteral("-y"), QStringLiteral("-i"), wav, QStringLiteral("-c:a"), QStringLiteral("libmp3lame"),
             QStringLiteral("-q:a"), QStringLiteral("2"), mp3});
     ffmpeg({QStringLiteral("-y"), QStringLiteral("-i"), wav, QStringLiteral("-f"), QStringLiteral("s16le"), raw});

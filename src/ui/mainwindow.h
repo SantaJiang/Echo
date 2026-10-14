@@ -6,6 +6,7 @@
 class QLabel;
 class QLineEdit;
 class QStackedWidget;
+class QSystemTrayIcon;
 
 namespace echo {
 
@@ -20,6 +21,7 @@ class PlayerBar;
 class PlaylistPage;
 class QueuePanel;
 class SearchPage;
+class SettingsDialog;
 class Sidebar;
 class SongsPage;
 
@@ -28,9 +30,13 @@ class MainWindow : public QMainWindow {
 
 public:
     MainWindow(Library* library, Player* player, AudioEngine* engine, QWidget* parent = nullptr);
+    ~MainWindow() override;
+    void showMainWindow();
+    void showSettings();
     void openPaths(const QStringList& paths);
 
 protected:
+    void closeEvent(QCloseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
@@ -64,6 +70,8 @@ private:
     PlayerBar* m_bar = nullptr;
     QueuePanel* m_queue = nullptr;
     MiniPlayer* m_mini = nullptr;
+    SettingsDialog* m_settings = nullptr;
+    QSystemTrayIcon* m_tray = nullptr;
     int m_libraryPage = 0;
     qint64 m_playlistId = 0;
     bool m_showingSearch = false;

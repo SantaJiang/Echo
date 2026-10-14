@@ -22,7 +22,8 @@ enum class Icon {
     Plus,
     Shuffle,
     Repeat,
-    Expand
+    Expand,
+    Settings
 };
 
 [[nodiscard]] QIcon icon(Icon kind, const QColor& color, int size = 16);

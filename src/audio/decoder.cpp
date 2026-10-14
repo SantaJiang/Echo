@@ -315,6 +315,7 @@ bool Decoder::open(const QString& path, QString* error)
         m_format.sampleRate /= 8;
     }
     m_format.channels = m_impl->codec->ch_layout.nb_channels;
+    m_format.channelMask = channelMask();
     const int rawBits = m_impl->codec->bits_per_raw_sample;
     m_format.pcm = Fooyin::Utils::sampleFormatFromFFmpeg(packed, rawBits);
     if (m_format.pcm == Fooyin::SampleFormat::Unknown) {
@@ -375,6 +376,12 @@ void Decoder::extendRange(qint64 endFrame)
         m_impl->rangeHold = false;
         m_impl->codecEof = false;
     }
+}
+
+quint64 Decoder::channelMask() const
+{
+    if (!m_impl || !m_impl->codec || m_impl->codec->ch_layout.order != AV_CHANNEL_ORDER_NATIVE) return 0;
+    return m_impl->codec->ch_layout.u.mask;
 }
 
 qint64 Decoder::durationMs() const

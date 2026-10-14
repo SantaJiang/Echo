@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/format.h"
+#include "audio/output.h"
 
 #include <QObject>
 #include <atomic>
@@ -14,6 +15,7 @@ public:
     enum class State { Stopped, Playing, Paused };
 
     explicit AudioEngine(QObject* parent = nullptr);
+    AudioEngine(std::unique_ptr<AudioOutput> output, QObject* parent = nullptr);
     ~AudioEngine() override;
 
     void play(const PlaybackItem& current, const PlaybackItem& upcoming);
@@ -24,6 +26,8 @@ public:
     void seekMs(qint64 positionMs);
     void setVolume(float slider);
     void setExclusive(bool exclusive);
+    void setSpatialEnabled(bool enabled);
+    void setTrackGain(qint64 token, float gainDb);
 
     [[nodiscard]] State state() const;
     [[nodiscard]] qint64 positionMs() const;
@@ -31,6 +35,7 @@ public:
     [[nodiscard]] DeviceFormat deviceFormat() const;
 
 signals:
+    void spatialStatusChanged(const QString& status);
     void stateChanged(int state);
     void trackStarted(qint64 token);
     void finished();

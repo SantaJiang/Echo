@@ -8,6 +8,7 @@
 #include "audio/ringbuffer.h"
 
 #include <QMutex>
+#include <QHash>
 #include <QMutexLocker>
 #include <QThread>
 #include <QWaitCondition>
@@ -35,6 +36,7 @@ struct Marker {
     qint64 token = 0;
     qint64 startMs = 0;
     int sampleRate = 0;
+    PlaybackItem item;
 };
 
 struct Loaded {
@@ -62,7 +64,7 @@ qint64 itemFrames(const Decoder& decoder, const PlaybackItem& item)
 
 struct AudioEngine::Worker {
     AudioEngine* owner = nullptr;
-    std::unique_ptr<AudioOutput> output = createAudioOutput();
+    std::unique_ptr<AudioOutput> output;
     RingBuffer ring;
     QMutex mutex;
     QWaitCondition wait;
@@ -70,14 +72,18 @@ struct AudioEngine::Worker {
     PlaybackItem pendingCurrent;
     PlaybackItem pendingUpcoming;
     qint64 pendingSeekMs = 0;
+    QHash<qint64, float> pendingGains;
     std::atomic<float> volume {1.f};
     std::atomic<bool> exclusive {false};
+    std::atomic<bool> spatial {false};
+    QString lastSpatialStatus;
     bool quit = false;
-    bool wantExclusiveReopen = false;
 
     Loaded current;
     Loaded upcoming;
     DeviceFormat device;
+    SampleFormat configuredSource;
+    bool queuedOutput = false;
     bool deviceReady = false;
     SwrContext* resampler = nullptr;
     int resampleRate = 0;
@@ -85,7 +91,7 @@ struct AudioEngine::Worker {
     float activeGain = 1.f;
     qint64 framesQueued = 0;
     bool draining = false;
-    enum class AfterTail { None, Switch, Stop, Reopen };
+    enum class AfterTail { None, Switch, Stop };
     AfterTail afterTail = AfterTail::None;
     std::vector<uint8_t> raw;
     std::vector<uint8_t> converted;
@@ -100,7 +106,7 @@ struct AudioEngine::Worker {
     std::atomic<int> fadeDone {0};
     float smoothedVolume = 1.f;
 
-    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, Exclusive };
+    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain };
 
     void post(Command command)
     {
@@ -156,6 +162,13 @@ struct AudioEngine::Worker {
             loadUpcoming();
             break;
         case Pause:
+            if (queuedOutput && output) {
+                output->pause();
+                publishPosition();
+                cancelFade();
+                setState(State::Paused);
+                break;
+            }
             if (!beginFade(OutputFade::OutPause, 120)) {
                 if (output) {
                     output->pause();
@@ -165,25 +178,41 @@ struct AudioEngine::Worker {
             break;
         case Resume:
             if (deviceReady && output) {
-                beginFade(OutputFade::In, 120);
+                if (!queuedOutput) beginFade(OutputFade::In, 120);
                 output->start();
                 setState(State::Playing);
             }
             break;
         case Stop:
+            if (queuedOutput) { stopPlayback(); break; }
             if (!beginFade(OutputFade::OutStop, 300)) {
                 stopPlayback();
             }
             break;
         case Seek:
+            if (queuedOutput) { seekCurrent(); break; }
             if (!beginFade(OutputFade::OutSeek, 120)) {
                 seekCurrent();
             }
             break;
         case Volume:
+            if (output) output->setVolume(volumeCurve(volume.load()));
             break;
-        case Exclusive:
-            wantExclusiveReopen = true;
+        case Gain: {
+            QMutexLocker locker(&mutex);
+            const auto apply = [this](PlaybackItem& item) {
+                if (pendingGains.contains(item.token)) item.gainDb = pendingGains.value(item.token);
+            };
+            apply(current.item);
+            apply(upcoming.item);
+            apply(pendingCurrent);
+            apply(pendingUpcoming);
+            for (auto& marker : markers) apply(marker.item);
+            pendingGains.clear();
+            break;
+        }
+        case ConfigureOutput:
+            reconfigureOutput();
             break;
         default:
             break;
@@ -236,6 +265,7 @@ struct AudioEngine::Worker {
     {
         if (output && output->isOpen()) {
             output->pause();
+            output->flush();
         }
         cancelFade();
         ring.clear();
@@ -288,7 +318,7 @@ struct AudioEngine::Worker {
     bool ensureDevice(const SampleFormat& source, bool force = false)
     {
         if (!force && deviceReady && device.sampleRate == source.sampleRate && device.channels == source.channels
-            && !wantExclusiveReopen && compatible(source)) {
+            && source.channelMask == configuredSource.channelMask && compatible(source)) {
             return true;
         }
         if (output->isOpen()) {
@@ -299,6 +329,7 @@ struct AudioEngine::Worker {
         QString error;
         DeviceFormat opened;
         const bool requestedExclusive = exclusive.load();
+        output->setSpatialEnabled(spatial.load());
         if (!output->open(source, requestedExclusive, &opened, &error)) {
             emit owner->errorOccurred(error.isEmpty() ? QStringLiteral("无法打开输出设备") : error);
             setState(State::Stopped);
@@ -307,9 +338,17 @@ struct AudioEngine::Worker {
         if (requestedExclusive && !opened.exclusive) {
             emit owner->exclusiveFallback(QStringLiteral("设备被占用，已改用共享模式"));
         }
+        const QString status = output->spatialStatus();
+        if (status != lastSpatialStatus) {
+            lastSpatialStatus = status;
+            emit owner->spatialStatusChanged(status);
+        }
+        queuedOutput = output->queuedPlayback();
+        if (queuedOutput) smoothedVolume = 1.f;
+        output->setVolume(volumeCurve(volume.load()));
+        configuredSource = source;
         device = opened;
         deviceReady = true;
-        wantExclusiveReopen = false;
         owner->m_deviceRate.store(device.sampleRate);
         owner->m_deviceBits.store(device.bitsPerSample);
         owner->m_deviceExclusive.store(device.exclusive);
@@ -370,26 +409,84 @@ struct AudioEngine::Worker {
 
     void pushMarker(const Loaded& slot)
     {
+        activeGain = std::pow(10.f, slot.item.gainDb / 20.f);
         const int rate = device.sampleRate > 0 ? device.sampleRate : slot.format.sampleRate;
-        markers.push_back(Marker {framesQueued, slot.item.token, slot.item.startMs, rate});
+        markers.push_back(Marker {framesQueued, slot.item.token, slot.item.startMs, rate, slot.item});
         owner->m_activeToken.store(slot.item.token);
+    }
+
+    void reconfigureOutput()
+    {
+        if (!current.decoder || !deviceReady) {
+            output->close();
+            deviceReady = false;
+            freeResampler();
+            owner->m_deviceRate.store(0);
+            owner->m_deviceBits.store(0);
+            owner->m_deviceExclusive.store(false);
+            output->setSpatialEnabled(spatial.load());
+            lastSpatialStatus = output->spatialStatus();
+            emit owner->spatialStatusChanged(lastSpatialStatus);
+            return;
+        }
+        const bool playing = owner->m_state.load() == static_cast<int>(State::Playing);
+        output->pause();
+        publishPosition();
+        const qint64 position = owner->m_positionMs.load();
+        const qint64 token = owner->m_activeToken.load();
+        PlaybackItem item = current.item;
+        PlaybackItem next;
+        bool found = false;
+        for (const auto& marker : markers) {
+            if (marker.token == token && marker.item.valid()) { item = marker.item; found = true; }
+            else if (found && marker.item.valid()) { next = marker.item; break; }
+        }
+        {
+            QMutexLocker locker(&mutex);
+            if (!next.valid() && pendingUpcoming.token != item.token) next = pendingUpcoming;
+            pendingUpcoming = next;
+        }
+        output->flush();
+        ring.clear();
+        cancelFade();
+        draining = false;
+        afterTail = AfterTail::None;
+        if (!load(current, item) || !ensureDevice(current.format, true)) {
+            stopPlayback();
+            emit owner->errorOccurred(QStringLiteral("切换音频输出失败，请重新播放。"));
+            return;
+        }
+        current.decoder->setRange(position * current.format.sampleRate / 1000,
+            item.endMs < 0 ? -1 : item.endMs * current.format.sampleRate / 1000);
+        framesPlayed.store(0);
+        framesQueued = 0;
+        markers.clear();
+        pushMarker(current);
+        markers.back().startMs = position;
+        loadUpcoming();
+        emit owner->trackStarted(current.item.token);
+        output->setPull([this](uint8_t* dst, int frames) { return pull(dst, frames); });
+        if (playing) {
+            beginFade(OutputFade::In, 120);
+            output->start();
+        }
     }
 
     void pump()
     {
+        const QString failure = output->takeError();
+        if (!failure.isEmpty()) {
+            reconfigureOutput();
+            return;
+        }
         if (!current.decoder) {
             stopPlayback();
             emit owner->finished();
             return;
         }
-        if (wantExclusiveReopen && !draining) {
-            wantExclusiveReopen = false;
-            draining = true;
-            afterTail = AfterTail::Reopen;
-            return;
-        }
         if (draining) {
-            if (ring.availableRead() > 0) {
+            if (ring.availableRead() == 0) output->finishInput();
+            if (ring.availableRead() > 0 || output->pendingFrames() > 0) {
                 QMutexLocker locker(&mutex);
                 wait.wait(&mutex, 4);
                 return;
@@ -441,6 +538,20 @@ struct AudioEngine::Worker {
         working.bitsPerSample = 64;
         working.bytesPerSample = 8;
         working.isFloat = true;
+        std::vector<double> ramped;
+        if (std::abs(activeGain - gain) > 0.00001f) {
+            const auto* samples = reinterpret_cast<const double*>(pcm);
+            ramped.assign(samples, samples + count * working.channels);
+            const float step = 1.f / std::max(1, device.sampleRate / 10);
+            for (int frame = 0; frame < count; ++frame) {
+                activeGain += std::clamp(gain - activeGain, -step, step);
+                for (int ch = 0; ch < working.channels; ++ch) ramped[frame * working.channels + ch] *= activeGain;
+            }
+            pcm = reinterpret_cast<const uint8_t*>(ramped.data());
+            gain = 1.f;
+        } else {
+            activeGain = gain;
+        }
         converted.resize(static_cast<size_t>(count) * static_cast<size_t>(device.bytesPerFrame()));
         convertSamples(pcm, working, count, converted.data(), device, gain, &dither);
         enqueueConverted(count);
@@ -472,7 +583,6 @@ struct AudioEngine::Worker {
         if (!std::isfinite(gain) || gain < 0.f) {
             gain = 0.f;
         }
-        activeGain = gain;
         if (resampler && format.sampleRate != device.sampleRate) {
             const uint8_t* resampleInput = src;
             if (format.pcm != Fooyin::SampleFormat::F64) {
@@ -494,6 +604,13 @@ struct AudioEngine::Worker {
             if (got > 0) {
                 writeFloatBlock(floatBlock.data(), got, gain);
             }
+            return;
+        }
+        if (std::abs(activeGain - gain) > 0.00001f) {
+            DeviceFormat wide {format.sampleRate, format.channels, 64, 8, true};
+            sourceFloat.resize(static_cast<size_t>(frames) * format.channels * sizeof(double));
+            convertSamples(src, format, frames, sourceFloat.data(), wide, 1.f, nullptr);
+            writeFloatBlock(sourceFloat.data(), frames, gain);
             return;
         }
         converted.resize(static_cast<size_t>(frames) * static_cast<size_t>(device.bytesPerFrame()));
@@ -523,7 +640,8 @@ struct AudioEngine::Worker {
     {
         const bool sameFormat = !failed && upcoming.decoder && upcoming.format.sampleRate == current.format.sampleRate
             && upcoming.format.channels == current.format.channels && upcoming.format.isFloat == current.format.isFloat
-            && upcoming.format.bitsPerSample == current.format.bitsPerSample && upcoming.format.pcm == current.format.pcm;
+            && upcoming.format.bitsPerSample == current.format.bitsPerSample && upcoming.format.pcm == current.format.pcm
+            && upcoming.format.channelMask == current.format.channelMask;
         const bool contiguous = sameFormat && current.item.path == upcoming.item.path && current.item.endMs >= 0
             && std::abs(upcoming.item.startMs - current.item.endMs) <= 2;
         if (contiguous) {
@@ -578,20 +696,6 @@ struct AudioEngine::Worker {
             loadUpcoming();
             return;
         }
-        if (action == AfterTail::Reopen && current.decoder) {
-            const auto source = current.format;
-            ring.clear();
-            framesPlayed.store(0);
-            framesQueued = 0;
-            if (!ensureDevice(source, true)) {
-                emit owner->finished();
-                return;
-            }
-            output->setPull([this](uint8_t* dst, int frames) { return pull(dst, frames); });
-            output->start();
-            pushMarker(current);
-            return;
-        }
         stopPlayback();
         emit owner->finished();
     }
@@ -607,10 +711,29 @@ struct AudioEngine::Worker {
             return;
         }
         const bool wasPlaying = owner->m_state.load() == static_cast<int>(State::Playing);
-        if (wasPlaying && output) {
-            output->pause();
+        if (output) output->pause();
+        publishPosition();
+        const qint64 audibleToken = owner->m_activeToken.load();
+        if (audibleToken != current.item.token) {
+            PlaybackItem audible;
+            PlaybackItem next;
+            bool found = false;
+            for (const auto& marker : markers) {
+                if (marker.token == audibleToken) { audible = marker.item; found = true; }
+                else if (found) { next = marker.item; break; }
+            }
+            if (audible.valid()) {
+                if (!load(current, audible)) return;
+                {
+                    QMutexLocker locker(&mutex);
+                    if (next.valid()) pendingUpcoming = next;
+                }
+                loadUpcoming();
+                emit owner->trackStarted(current.item.token);
+            }
         }
         const qint64 frame = std::max<qint64>(0, (current.item.startMs + position) * current.format.sampleRate / 1000);
+        if (output) output->flush();
         ring.clear();
         if (resampler) {
             swr_init(resampler);
@@ -622,9 +745,12 @@ struct AudioEngine::Worker {
         Marker marker;
         marker.queuedFrame = 0;
         marker.token = current.item.token;
+        marker.item = current.item;
         marker.startMs = current.item.startMs + position;
         marker.sampleRate = device.sampleRate > 0 ? device.sampleRate : current.format.sampleRate;
         markers.push_back(marker);
+        owner->m_positionMs.store(marker.startMs);
+        owner->m_activeToken.store(marker.token);
         if (wasPlaying && output && deviceReady) {
             output->start();
         }
@@ -658,9 +784,11 @@ struct AudioEngine::Worker {
             return;
         }
         fadeKind.store(static_cast<int>(OutputFade::None));
+        if (output && kind != OutputFade::In) output->drain();
         if (kind == OutputFade::OutPause) {
             if (output) {
                 output->pause();
+                publishPosition();
             }
             setState(State::Paused);
             return;
@@ -680,7 +808,7 @@ struct AudioEngine::Worker {
         if (frames <= 0) {
             return;
         }
-        const float target = volumeCurve(std::clamp(volume.load(), 0.f, 1.f));
+        const float target = queuedOutput ? 1.f : volumeCurve(std::clamp(volume.load(), 0.f, 1.f));
         const int channels = std::max(1, device.channels);
         const int ramp = std::max(1, device.sampleRate / 50);
         const auto kind = static_cast<OutputFade>(fadeKind.load());
@@ -745,7 +873,7 @@ struct AudioEngine::Worker {
     void publishPosition()
     {
         const qint64 played = framesPlayed.load();
-        const qint64 heard = std::max<qint64>(0, played - device.latencyFrames);
+        const qint64 heard = std::max<qint64>(0, played - output->pendingFrames() - device.latencyFrames);
         Marker active;
         bool found = false;
         for (const auto& marker : markers) {
@@ -774,9 +902,15 @@ struct AudioEngine::Worker {
 };
 
 AudioEngine::AudioEngine(QObject* parent)
+    : AudioEngine(createAudioOutput(), parent)
+{
+}
+
+AudioEngine::AudioEngine(std::unique_ptr<AudioOutput> output, QObject* parent)
     : QObject(parent)
 {
     m_worker = new Worker();
+    m_worker->output = std::move(output);
     m_worker->owner = this;
     m_worker->thread = QThread::create([this] { m_worker->run(); });
     m_worker->thread->start();
@@ -841,12 +975,29 @@ void AudioEngine::seekMs(qint64 positionMs)
 void AudioEngine::setVolume(float slider)
 {
     m_worker->volume.store(std::clamp(slider, 0.f, 1.f));
+    m_worker->post(Worker::Volume);
 }
 
 void AudioEngine::setExclusive(bool exclusive)
 {
     m_worker->exclusive.store(exclusive);
-    m_worker->post(Worker::Exclusive);
+    if (exclusive) m_worker->spatial.store(false);
+    m_worker->post(Worker::ConfigureOutput);
+}
+
+void AudioEngine::setSpatialEnabled(bool enabled)
+{
+    m_worker->spatial.store(enabled);
+    if (enabled) m_worker->exclusive.store(false);
+    m_worker->post(Worker::ConfigureOutput);
+}
+
+void AudioEngine::setTrackGain(qint64 token, float gainDb)
+{
+    QMutexLocker locker(&m_worker->mutex);
+    m_worker->pendingGains.insert(token, gainDb);
+    locker.unlock();
+    m_worker->post(Worker::Gain);
 }
 
 AudioEngine::State AudioEngine::state() const

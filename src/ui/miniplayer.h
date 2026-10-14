@@ -23,9 +23,15 @@ signals:
     void expandRequested();
 
 protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
 
 private:
+    QPoint m_dragOffset;
+    bool m_dragging = false;
     QLabel* m_title = nullptr;
     QLabel* m_artist = nullptr;
     QLabel* m_art = nullptr;

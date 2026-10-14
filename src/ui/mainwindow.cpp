@@ -10,6 +10,7 @@
 #include "ui/playerbar.h"
 #include "ui/queuepanel.h"
 #include "ui/sidebar.h"
+#include "ui/settingsdialog.h"
 #include "ui/theme.h"
 #include "ui/trackdialog.h"
 
@@ -18,6 +19,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QCursor>
+#include <QCloseEvent>
+#include <QSystemTrayIcon>
+#include <QSignalBlocker>
 #include <QDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -122,7 +126,7 @@ QString formatText(int sourceRate, int sourceBits, bool sourceFloat, int deviceR
     if (sourceRate <= 0) {
         return {};
     }
-    const QString depth = sourceFloat ? QStringLiteral("32-bit float") : QStringLiteral("%1 bit").arg(sourceBits);
+    const QString depth = sourceFloat ? QStringLiteral("%1-bit float").arg(sourceBits) : QStringLiteral("%1 bit").arg(sourceBits);
     QString text = QStringLiteral("%1 kHz · %2").arg(sourceRate / 1000.0, 0, 'f', 1).arg(depth);
     if (deviceRate > 0 && deviceRate != sourceRate) {
         text += QStringLiteral(" → %1 kHz").arg(deviceRate / 1000.0, 0, 'f', 1);
@@ -208,7 +212,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
 #ifndef Q_OS_MACOS
     setWindowFlag(Qt::FramelessWindowHint);
 #endif
-    setMinimumSize(960, 640);
+    setMinimumSize(1040, 640);
     resize(1180, 760);
     setAcceptDrops(true);
     polish(this);
@@ -289,7 +293,30 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     column->addLayout(body, 1);
     setCentralWidget(root);
 
-    m_mini = new MiniPlayer();
+    m_mini = new MiniPlayer(this);
+    m_settings = new SettingsDialog(m_player, this);
+    qApp->setQuitOnLastWindowClosed(false);
+#ifdef Q_OS_MACOS
+    installMenuBarIcon(this, [this] { showMainWindow(); }, [this] { showSettings(); });
+#else
+    m_tray = new QSystemTrayIcon(this);
+    m_tray->setObjectName(QStringLiteral("echoTray"));
+    QIcon trayIcon = icon(Icon::Songs, echo::palette().accent, 22);
+    trayIcon.setIsMask(true);
+    m_tray->setIcon(trayIcon);
+    m_tray->setToolTip(QStringLiteral("Echo"));
+    auto* trayMenu = new QMenu(this);
+    trayMenu->addAction(QStringLiteral("打开 Echo"), this, &MainWindow::showMainWindow);
+    trayMenu->addAction(QStringLiteral("设置…"), this, &MainWindow::showSettings);
+    trayMenu->addSeparator();
+    trayMenu->addAction(QStringLiteral("退出 Echo"), qApp, &QCoreApplication::quit);
+    m_tray->setContextMenu(trayMenu);
+    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) showMainWindow();
+    });
+    m_tray->show();
+#endif
+    connect(m_sidebar, &Sidebar::settingsRequested, this, &MainWindow::showSettings);
     buildMenus();
 
     auto wire = [this](TrackTable* table, bool albumContext) {
@@ -507,10 +534,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_mini, &MiniPlayer::nextRequested, m_player, &Player::next);
     connect(m_mini, &MiniPlayer::previousRequested, m_player, &Player::previous);
     connect(m_mini, &MiniPlayer::expandRequested, this, [this] {
-        m_mini->hide();
-        show();
-        raise();
-        activateWindow();
+        showMainWindow();
     });
 
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
@@ -564,6 +588,31 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     syncPlayer();
     applyWindowChrome(this);
     installSidebarEffect(m_sidebar);
+}
+
+MainWindow::~MainWindow() = default;
+
+void MainWindow::showMainWindow()
+{
+    m_mini->hide();
+    if (isMinimized()) showNormal();
+    else show();
+    raise();
+    activateWindow();
+}
+
+void MainWindow::showSettings()
+{
+    m_settings->show();
+    m_settings->raise();
+    m_settings->activateWindow();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    m_player->saveSession();
+    hide();
+    event->ignore();
 }
 
 void MainWindow::openPaths(const QStringList& paths)
@@ -623,6 +672,11 @@ void MainWindow::buildMenus()
         }
     });
 
+    auto* settings = file->addAction(QStringLiteral("设置…"), QKeySequence(Qt::CTRL | Qt::Key_Comma), this, &MainWindow::showSettings);
+    settings->setMenuRole(QAction::PreferencesRole);
+    auto* quit = file->addAction(QStringLiteral("退出 Echo"), QKeySequence::Quit, qApp, &QCoreApplication::quit);
+    quit->setMenuRole(QAction::QuitRole);
+
     auto* edit = menuBar()->addMenu(QStringLiteral("编辑"));
     edit->addAction(QStringLiteral("撤销"), QKeySequence::Undo, m_library, &Library::undo);
     edit->addAction(QStringLiteral("重做"), QKeySequence::Redo, m_library, &Library::redo);
@@ -646,6 +700,10 @@ void MainWindow::buildMenus()
     exclusive->setCheckable(true);
     exclusive->setChecked(m_player->exclusive());
     connect(exclusive, &QAction::toggled, m_player, &Player::setExclusive);
+    connect(m_player, &Player::changed, exclusive, [this, exclusive] {
+        const QSignalBlocker blocker(exclusive);
+        exclusive->setChecked(m_player->exclusive());
+    });
     auto* replay = control->addAction(QStringLiteral("ReplayGain"));
     replay->setCheckable(true);
     replay->setChecked(m_player->replayGainEnabled());
@@ -695,6 +753,10 @@ void MainWindow::syncPlayer()
     const Track track = m_player->currentTrack();
     const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 160);
     m_bar->setTrack(track, art);
+    if (m_engine->state() == AudioEngine::State::Stopped) {
+        m_bar->setFormatText(formatText(track.sampleRate, track.bitDepth,
+            track.codec.contains(QStringLiteral("_f32")) || track.codec.contains(QStringLiteral("_f64")), 0, false));
+    }
     m_bar->setPlaying(m_player->state() == AudioEngine::State::Playing);
     m_bar->setVolume(m_player->volume());
     m_bar->setShuffle(m_player->shuffle());

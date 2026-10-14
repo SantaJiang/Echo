@@ -13,6 +13,9 @@ enum class MediaCommand { Toggle, Next, Previous, Seek };
 
 void applyWindowChrome(QWidget* window);
 void useDarkAppearance();
+#ifdef Q_OS_MACOS
+void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const std::function<void()>& settings);
+#endif
 void installSidebarEffect(QWidget* sidebar);
 void showInFileManager(const QString& path);
 void installMediaIntegration(QWidget* window, const std::function<void(MediaCommand, qint64)>& handler);

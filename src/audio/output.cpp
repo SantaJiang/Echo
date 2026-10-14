@@ -73,7 +73,7 @@ private:
 std::unique_ptr<AudioOutput> createAudioOutput()
 {
 #if defined(Q_OS_MACOS)
-    return createCoreAudioOutput();
+    return createMacAudioOutput();
 #elif defined(Q_OS_WIN)
     return createWasapiOutput();
 #else

@@ -6,6 +6,8 @@
 #include <QAbstractItemView>
 #include <QLineEdit>
 #include <QPointer>
+#include <QLoggingCategory>
+#include <QTimer>
 #include <QWidget>
 
 #include <dispatch/dispatch.h>
@@ -16,8 +18,28 @@
 #import <AppKit/AppKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 
+// Handle status-item mouse events directly. macOS 27 can deliver NSButton's
+// action after currentEvent has become a gesture event, losing left/right intent.
+@interface EchoStatusHandler : NSObject {
+@public
+    std::function<void()> openWindow;
+    std::function<void()> openSettings;
+}
+- (void)open:(id)sender;
+- (void)settings:(id)sender;
+- (void)quit:(id)sender;
+@end
+
+@implementation EchoStatusHandler
+- (void)open:(id)sender { Q_UNUSED(sender); [NSApp activateIgnoringOtherApps:YES]; openWindow(); }
+- (void)settings:(id)sender { Q_UNUSED(sender); [NSApp activateIgnoringOtherApps:YES]; openSettings(); }
+- (void)quit:(id)sender { Q_UNUSED(sender); qApp->quit(); }
+@end
+
 namespace echo {
 namespace {
+
+Q_LOGGING_CATEGORY(windowLog, "echo.window", QtWarningMsg)
 
 std::function<void(MediaCommand, qint64)> g_handler;
 
@@ -33,6 +55,47 @@ void dispatchCommand(MediaCommand command, qint64 argument)
 
 } // namespace
 
+void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const std::function<void()>& settings)
+{
+    NSStatusItem* item = [NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
+    NSImage* image = [NSImage imageWithSystemSymbolName:@"music.note" accessibilityDescription:@"Echo"];
+    [image setTemplate:YES];
+    item.button.image = image;
+    item.button.toolTip = @"Echo";
+    [item.button setAccessibilityLabel:@"Echo"];
+    EchoStatusHandler* handler = [EchoStatusHandler new];
+    handler->openWindow = open;
+    handler->openSettings = settings;
+    item.button.target = handler;
+    item.button.action = @selector(open:); // keyboard / accessibility activation
+    NSMenu* menu = [NSMenu new];
+    for (NSArray* spec in @[@[@"打开 Echo", @"open:"], @[@"设置…", @"settings:"], @[@"退出 Echo", @"quit:"]]) {
+        if ([spec[1] isEqual:@"quit:"]) [menu addItem:NSMenuItem.separatorItem];
+        NSMenuItem* entry = [[NSMenuItem alloc] initWithTitle:spec[0] action:NSSelectorFromString(spec[1]) keyEquivalent:@""];
+        entry.target = handler;
+        [menu addItem:entry];
+    }
+    id monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
+        handler:^NSEvent*(NSEvent* event) {
+            if (!item.button.window || event.window != item.button.window) return event;
+            if (event.type == NSEventTypeRightMouseDown || (event.modifierFlags & NSEventModifierFlagControl)) {
+                [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, item.button.bounds.size.height) inView:item.button];
+            } else {
+                [handler open:nil];
+            }
+            return nil;
+        }];
+    QTimer::singleShot(500, owner, [item] {
+        const NSRect frame = item.button.window.frame;
+        qCDebug(windowLog) << "Menu bar icon frame (native)" << frame.origin.x << frame.origin.y << frame.size.width << frame.size.height;
+    });
+    QObject::connect(owner, &QObject::destroyed, [item, monitor, handler, menu] {
+        Q_UNUSED(handler); Q_UNUSED(menu);
+        [NSEvent removeMonitor:monitor];
+        [NSStatusBar.systemStatusBar removeStatusItem:item];
+    });
+}
+
 void useDarkAppearance()
 {
     [NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]];
@@ -43,9 +106,21 @@ void applyWindowChrome(QWidget* window)
     useDarkAppearance();
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
     NSWindow* native = view.window;
+    const bool mini = window->property("echoMiniPlayer").toBool();
+    if (mini) {
+        native.styleMask = NSWindowStyleMaskBorderless;
+        native.level = NSFloatingWindowLevel;
+        native.hidesOnDeactivate = NO;
+        native.collectionBehavior = (native.collectionBehavior & ~NSWindowCollectionBehaviorMoveToActiveSpace
+                                     & ~NSWindowCollectionBehaviorFullScreenPrimary)
+            | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+        native.opaque = NO;
+        native.backgroundColor = NSColor.clearColor;
+        native.hasShadow = YES;
+    }
     native.titlebarAppearsTransparent = YES;
     native.titleVisibility = NSWindowTitleHidden;
-    native.styleMask |= NSWindowStyleMaskFullSizeContentView;
+    if (!mini) native.styleMask |= NSWindowStyleMaskFullSizeContentView;
     native.toolbar = nil;
     native.movableByWindowBackground = NO;
     native.movable = YES;
@@ -69,6 +144,11 @@ void applyWindowChrome(QWidget* window)
                 return event;
             }
             if (event.type == NSEventTypeLeftMouseUp) {
+                if (dragging) {
+                    const NSPoint origin = targetView.window.frame.origin;
+                    qCDebug(windowLog) << (target->property("echoMiniPlayer").toBool() ? "Mini drag" : "Main drag")
+                        << windowOrigin.x << windowOrigin.y << "->" << origin.x << origin.y;
+                }
                 const BOOL wasDragging = dragging;
                 dragging = NO;
                 return wasDragging ? nil : event;
@@ -89,8 +169,9 @@ void applyWindowChrome(QWidget* window)
             const NSPoint point = [targetView convertPoint:event.locationInWindow fromView:nil];
             const qreal y = targetView.isFlipped ? point.y : targetView.bounds.size.height - point.y;
             const QPoint local(qRound(point.x), qRound(y));
-            const bool trafficLights = local.x() < 74 && local.y() < 36;
-            if (!target->rect().contains(local) || local.y() >= 52 || trafficLights) {
+            const bool mini = target->property("echoMiniPlayer").toBool();
+            const bool trafficLights = !mini && local.x() < 74 && local.y() < 36;
+            if (!target->rect().contains(local) || (!mini && local.y() >= 52) || trafficLights) {
                 return event;
             }
             for (QWidget* hit = QApplication::widgetAt(target->mapToGlobal(local)); hit && hit != target;

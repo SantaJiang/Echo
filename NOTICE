@@ -6,6 +6,7 @@ dynamically where those licenses require it:
 - Qt is used under the GNU Lesser General Public License version 3.
 - FFmpeg libraries (libavformat, libavcodec, libavutil, libswresample) are used
   under the GNU Lesser General Public License version 2.1 or later.
+- libebur128 is used under the MIT License: https://github.com/jiixyj/libebur128 .
 - TagLib is used under the Mozilla Public License version 1.1 or the GNU Lesser
   General Public License version 2.1.
 - The PCM format model and sample converter under src/vendor/fooyin are

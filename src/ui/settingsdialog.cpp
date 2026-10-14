@@ -1,0 +1,73 @@
+#include "ui/settingsdialog.h"
+#include "playback/player.h"
+#include "ui/theme.h"
+#include <QCheckBox>
+#include <QLabel>
+#include <QVBoxLayout>
+
+namespace echo {
+SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
+    : QDialog(parent, Qt::Window), m_player(player)
+{
+    setWindowTitle(QStringLiteral("Echo 设置"));
+    setObjectName(QStringLiteral("settingsDialog"));
+    setMinimumWidth(440);
+    resize(480, 280);
+    polish(this);
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(28, 28, 28, 28);
+    layout->setSpacing(16);
+    auto* heading = new QLabel(QStringLiteral("播放"), this);
+    heading->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 600;"));
+    m_normalize = new QCheckBox(QStringLiteral("音量均衡"), this);
+    m_normalize->setObjectName(QStringLiteral("normalizationToggle"));
+    auto* description = new QLabel(QStringLiteral("自动分析当前播放队列，让不同歌曲的听感音量更接近。保持歌曲内部的动态变化，不修改音乐文件。"), this);
+    description->setWordWrap(true);
+    description->setStyleSheet(QStringLiteral("color: #98989D;"));
+    m_status = new QLabel(this);
+    m_status->setWordWrap(true);
+    m_status->setStyleSheet(QStringLiteral("color: #98989D; font-size: 12px;"));
+    layout->addWidget(heading);
+    layout->addWidget(m_normalize);
+    layout->addWidget(description);
+    layout->addWidget(m_status);
+#ifdef Q_OS_MACOS
+    layout->addSpacing(12);
+    m_spatial = new QCheckBox(QStringLiteral("AirPods 空间音频"), this);
+    m_spatial->setObjectName(QStringLiteral("spatialAudioToggle"));
+    auto* spatialDescription = new QLabel(QStringLiteral("连接支持空间音频的 AirPods，播放音乐后在控制中心的声音面板选择「固定」或「头部跟踪」。此功能不能与独占输出同时使用。"), this);
+    spatialDescription->setWordWrap(true);
+    spatialDescription->setStyleSheet(QStringLiteral("color: #98989D;"));
+    m_spatialStatus = new QLabel(this);
+    m_spatialStatus->setObjectName(QStringLiteral("spatialAudioStatus"));
+    m_spatialStatus->setWordWrap(true);
+    m_spatialStatus->setMinimumHeight(54);
+    m_spatialStatus->setStyleSheet(QStringLiteral("color: #98989D; font-size: 12px;"));
+    layout->addWidget(m_spatial);
+    layout->addWidget(spatialDescription);
+    layout->addWidget(m_spatialStatus);
+    connect(m_spatial, &QCheckBox::toggled, player, &Player::setSpatialEnabled);
+    connect(player, &Player::spatialChanged, this, &SettingsDialog::refresh);
+    resize(480, 460);
+#endif
+    layout->addStretch();
+    connect(m_normalize, &QCheckBox::toggled, player, &Player::setNormalizationEnabled);
+    connect(player, &Player::normalizationChanged, this, &SettingsDialog::refresh);
+    connect(player, &Player::changed, this, &SettingsDialog::refresh);
+    refresh();
+}
+
+void SettingsDialog::refresh()
+{
+    m_normalize->blockSignals(true);
+    m_normalize->setChecked(m_player->normalizationEnabled());
+    m_normalize->blockSignals(false);
+    m_status->setText(m_player->normalizationStatus());
+    if (m_spatial) {
+        m_spatial->blockSignals(true);
+        m_spatial->setChecked(m_player->spatialEnabled());
+        m_spatial->blockSignals(false);
+        m_spatialStatus->setText(m_player->spatialStatus());
+    }
+}
+}

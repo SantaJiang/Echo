@@ -21,6 +21,7 @@ public:
     void setSelectedLibrary(int index);
 
 signals:
+    void settingsRequested();
     void librarySelected(int index);
     void playlistSelected(qint64 id);
     void createPlaylistRequested(qint64 folderId);

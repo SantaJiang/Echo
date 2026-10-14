@@ -17,6 +17,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Sql Concurrent Network)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
+pkg_check_modules(EBUR128 REQUIRED IMPORTED_TARGET libebur128)
 
 if(UNIX AND NOT APPLE)
   find_package(Qt6 COMPONENTS DBus)
@@ -33,6 +34,7 @@ set(ECHO_CORE_SOURCES
   src/audio/decoder.cpp
   src/audio/cue.cpp
   src/audio/convert.cpp
+  src/audio/loudness.cpp
   src/audio/engine.cpp
   src/audio/output.cpp
   src/library/types.cpp
@@ -45,7 +47,7 @@ set(ECHO_CORE_SOURCES
 )
 
 if(APPLE)
-  list(APPEND ECHO_CORE_SOURCES src/audio/output_coreaudio.mm)
+  list(APPEND ECHO_CORE_SOURCES src/audio/output_coreaudio.mm src/audio/output_spatial_mac.mm)
 elseif(WIN32)
   list(APPEND ECHO_CORE_SOURCES src/audio/output_wasapi.cpp)
 else()
@@ -60,7 +62,7 @@ endif()
 
 add_library(echo_core STATIC ${ECHO_CORE_SOURCES})
 target_include_directories(echo_core PUBLIC ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vendor/fooyin/include)
-target_link_libraries(echo_core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PkgConfig::FFMPEG PkgConfig::TAGLIB)
+target_link_libraries(echo_core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PkgConfig::FFMPEG PkgConfig::TAGLIB PkgConfig::EBUR128 Qt6::Concurrent)
 get_filename_component(ECHO_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
 target_compile_definitions(echo_core PUBLIC "ECHO_QT_PLUGINS=\"${ECHO_QT_PREFIX}/share/qt/plugins\"")
 if(PIPEWIRE_FOUND)
@@ -74,7 +76,8 @@ if(ALSA_FOUND)
   target_link_libraries(echo_core PUBLIC ${ALSA_LINK_LIBRARIES})
 endif()
 if(APPLE)
-  target_link_libraries(echo_core PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreFoundation")
+  target_link_libraries(echo_core PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreFoundation" "-framework AVFoundation" "-framework CoreMedia")
+  set_source_files_properties(src/audio/output_spatial_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   set_source_files_properties(src/audio/output_coreaudio.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 if(WIN32)
@@ -96,6 +99,7 @@ set(ECHO_UI_SOURCES
   src/ui/queuepanel.cpp
   src/ui/miniplayer.cpp
   src/ui/trackdialog.cpp
+  src/ui/settingsdialog.cpp
   src/ui/mainwindow.cpp
   src/platform/platform.cpp
   resources/echo.qrc
@@ -113,6 +117,8 @@ add_executable(echo-uishot tools/uishot.cpp ${ECHO_UI_SOURCES})
 target_link_libraries(echo PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
 target_link_libraries(echo-uishot PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
 if(APPLE)
+  target_sources(echo-uishot PRIVATE tools/macuitest.mm)
+  set_source_files_properties(tools/macuitest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(echo PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
   target_link_libraries(echo-uishot PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
   set_source_files_properties(src/platform/platform_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -147,6 +153,14 @@ target_link_libraries(echo-probe PRIVATE echo_core)
 
 add_executable(echo-selftest tools/selftest.cpp)
 target_link_libraries(echo-selftest PRIVATE echo_core)
+
+if(APPLE)
+  add_executable(echo-spatialtest tools/spatialtest.cpp)
+  target_link_libraries(echo-spatialtest PRIVATE echo_core)
+endif()
+
+add_executable(echo-playbacktest tools/playbacktest.cpp)
+target_link_libraries(echo-playbacktest PRIVATE echo_core)
 
 add_executable(echo-uitest tools/uitest.cpp src/ui/tracktable.cpp src/ui/theme.cpp)
 target_link_libraries(echo-uitest PRIVATE echo_core Qt6::Widgets)

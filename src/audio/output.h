@@ -8,6 +8,15 @@
 
 namespace echo {
 
+struct OutputDiagnostics {
+    qint64 submittedFrames = 0;
+    qint64 bufferedFrames = 0;
+    qint64 maximumBufferedFrames = 0;
+    bool prerollReached = false;
+    double sourcePeak = 0;
+    float volume = 1;
+};
+
 class AudioOutput {
 public:
     virtual ~AudioOutput() = default;
@@ -20,11 +29,24 @@ public:
     virtual void setPull(Pull pull) = 0;
     virtual void start() = 0;
     virtual void pause() = 0;
+    // Queued renderers expose their unplayed frames so engine positions follow audible output.
+    virtual void flush() {}
+    virtual void drain() {}
+    virtual void finishInput() {}
+    [[nodiscard]] virtual OutputDiagnostics diagnostics() const { return {}; }
+    virtual void setVolume(float) {}
+    [[nodiscard]] virtual bool queuedPlayback() const { return false; }
+    virtual void setSpatialEnabled(bool) {}
+    [[nodiscard]] virtual qint64 pendingFrames() const { return 0; }
+    [[nodiscard]] virtual QString spatialStatus() const { return {}; }
+    [[nodiscard]] virtual QString takeError() { return {}; }
     [[nodiscard]] virtual bool isOpen() const = 0;
 };
 
 std::unique_ptr<AudioOutput> createAudioOutput();
 std::unique_ptr<AudioOutput> createCoreAudioOutput();
+std::unique_ptr<AudioOutput> createMacAudioOutput();
+std::unique_ptr<AudioOutput> createSpatialAudioOutput();
 std::unique_ptr<AudioOutput> createWasapiOutput();
 std::unique_ptr<AudioOutput> createPipeWireOutput();
 std::unique_ptr<AudioOutput> createAlsaOutput();
