@@ -66,7 +66,7 @@ void polish(QWidget* root)
         "QListWidget#albumGrid, QListWidget#artistList, QTreeWidget#folderTree { background: transparent; border: none; }"
         "QListWidget#artistList::item { padding: 6px 10px; border-radius: 6px; }"
         "QListWidget#artistList::item:selected { background: %8; }"
-        "QListWidget#libraryNav { background: transparent; padding: 0 10px; }"
+        "QListWidget#libraryNav { background: transparent; padding: 0; }"
         "QListWidget#libraryNav::item { background: transparent; border: none; }"
         "QListWidget#libraryNav::item:selected { background: transparent; }"
         "QListWidget#libraryNav::item:hover { background: transparent; }"

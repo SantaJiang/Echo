@@ -95,6 +95,40 @@ int main(int argc, char** argv)
                "Columns must fill the viewport after a vertical scrollbar appears")) {
         return 1;
     }
+    int favorites = 0;
+    int plays = 0;
+    qint64 requestedId = 0;
+    QObject::connect(&table, &echo::TrackTable::favoriteRequested, [&](qint64 id) { ++favorites; requestedId = id; });
+    QObject::connect(&table, &echo::TrackTable::tracksActivated, [&] { ++plays; });
+    table.selectionModel()->select(table.trackModel()->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    table.selectionModel()->select(table.trackModel()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    const QPoint heart = table.favoriteRect(1).center();
+    mouse(table.viewport(), QEvent::MouseMove, heart, Qt::NoButton, Qt::NoButton);
+    mouse(table.viewport(), QEvent::MouseButtonPress, heart, Qt::LeftButton, Qt::LeftButton);
+    mouse(table.viewport(), QEvent::MouseButtonRelease, heart, Qt::LeftButton, Qt::NoButton);
+    mouse(table.viewport(), QEvent::MouseButtonDblClick, heart, Qt::LeftButton, Qt::LeftButton);
+    mouse(table.viewport(), QEvent::MouseButtonRelease, heart, Qt::LeftButton, Qt::NoButton);
+    if (!check(favorites == 1 && requestedId == 2 && plays == 0 && table.selectionModel()->selectedRows().size() == 2,
+               "Heart click and double click must not play or change multiselection")) return 1;
+    table.setFavorites({2});
+    if (!check(table.trackModel()->index(1, 1).data(Qt::UserRole + 4).toBool(), "Favorite role updates")) return 1;
+    table.verticalScrollBar()->setValue(15);
+    const int savedScroll = table.verticalScrollBar()->value();
+    auto reordered = tracks;
+    auto newTrack = tracks.front();
+    newTrack.id = 1001;
+    reordered.prepend(newTrack);
+    table.setTracksPreservingView(reordered);
+    if (!check(table.verticalScrollBar()->value() == savedScroll && table.selectionModel()->selectedRows().size() == 2
+               && table.selectionModel()->isRowSelected(1, {}) && table.selectionModel()->isRowSelected(3, {}),
+               "Favorites membership refresh preserves scroll and selected track identities")) return 1;
+    table.verticalScrollBar()->setValue(0);
+    table.setColumnWidths({46, 40, 280, 280, 72});
+    table.resize(300, 400);
+    QApplication::processEvents();
+    if (!check(table.favoriteRect(0).width() >= 20 && fillsViewport(table), "Heart remains hittable in narrow title")) return 1;
+    table.resize(1100, 400);
+    table.setColumnWidths(after);
     table.setTracks({});
     QApplication::processEvents();
     if (!check(fillsViewport(table), "Columns must fill the viewport after the scrollbar disappears")) {

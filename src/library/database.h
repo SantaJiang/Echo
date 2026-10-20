@@ -36,6 +36,8 @@ public:
     [[nodiscard]] QVector<Track> searchTracks(const QString& ftsQuery, int limit) const;
     [[nodiscard]] bool hasFts() const { return m_fts; }
 
+    [[nodiscard]] qint64 favoritesPlaylistId() const;
+    bool setFavorites(const QVector<qint64>& ids, bool liked, QString* error = nullptr);
     [[nodiscard]] QVector<Playlist> playlists() const;
     [[nodiscard]] QVector<PlaylistFolder> playlistFolders() const;
     qint64 createPlaylist(const QString& name, qint64 folderId);
@@ -54,6 +56,9 @@ public:
     void setSetting(const QString& key, const QString& value);
 
 private:
+    friend class Library;
+    bool restoreFavorites(const QVector<qint64>& ids, QString* error);
+    bool writeFavorites(const QVector<qint64>& ids, QString* error); // Caller holds writeLock.
     [[nodiscard]] Track trackFromQuery(const QSqlQuery& query) const;
     QSqlDatabase m_db;
     QString m_path;

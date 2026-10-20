@@ -15,6 +15,7 @@ class PlayerBar : public QWidget {
 
 public:
     explicit PlayerBar(QWidget* parent = nullptr);
+    void setFavorite(bool liked, bool enabled);
     void setTrack(const Track& track, const QPixmap& artwork);
     void setPosition(qint64 positionMs, qint64 durationMs);
     void setPlaying(bool playing);
@@ -28,6 +29,7 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
 signals:
+    void favoriteRequested();
     void toggleRequested();
     void nextRequested();
     void previousRequested();
@@ -47,6 +49,7 @@ private:
     QSlider* m_seek = nullptr;
     QSlider* m_volume = nullptr;
     QToolButton* m_play = nullptr;
+    QToolButton* m_favorite = nullptr;
     QToolButton* m_shuffle = nullptr;
     QToolButton* m_repeat = nullptr;
     bool m_seeking = false;

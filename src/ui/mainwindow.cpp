@@ -326,6 +326,13 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         connect(table, &TrackTable::playNextRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueueNext(ids); });
         connect(table, &TrackTable::enqueueRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueue(ids); });
         connect(table, &TrackTable::playlistRequested, this, [this](const QVector<qint64>& ids) { addToPlaylist(ids); });
+        table->setFavorites(m_library->favoriteIds());
+        connect(m_library, &Library::favoritesChanged, table, [this, table] {
+            table->setFavorites(m_library->favoriteIds());
+        });
+        connect(table, &TrackTable::favoriteRequested, this, [this](qint64 id) {
+            m_library->setFavorites({id}, !m_library->isFavorite(id));
+        });
         connect(table, &TrackTable::infoRequested, this, &MainWindow::showInfo);
         connect(table, &TrackTable::revealRequested, this, &MainWindow::reveal);
     };
@@ -381,7 +388,11 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
             m_library->removeFromLibrary(ids);
         }
     });
-    connect(m_playlist->table(), &TrackTable::removeRequested, this, [this] {
+    connect(m_playlist->table(), &TrackTable::removeRequested, this, [this](const QVector<qint64>& ids) {
+        if (m_playlist->playlistId() == m_library->favoritesPlaylistId()) {
+            m_library->setFavorites(ids, false);
+            return;
+        }
         QVector<int> positions;
         for (const QModelIndex& row : m_playlist->table()->selectionModel()->selectedRows()) {
             positions.push_back(row.row());
@@ -486,6 +497,10 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_search->clear();
         m_playlistId = id;
         m_playlist->setPlaylist(id);
+        for (const auto& playlist : m_library->playlists()) {
+            if (playlist.id == id) m_heading->setText(playlist.name);
+        }
+        m_heading->show();
         m_stack->setCurrentWidget(m_playlist);
     });
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
@@ -537,6 +552,23 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         showMainWindow();
     });
 
+    auto updateFavoriteButtons = [this] {
+        const auto track = m_player->currentTrack();
+        const bool liked = m_library->isFavorite(track.id);
+        const bool enabled = track.id > 0 && m_library->track(track.id).id > 0;
+        m_bar->setFavorite(liked, enabled);
+        m_mini->setFavorite(liked, enabled);
+    };
+    auto toggleCurrentFavorite = [this] {
+        const qint64 id = m_player->currentTrack().id;
+        if (id > 0) m_library->setFavorites({id}, !m_library->isFavorite(id));
+    };
+    connect(m_bar, &PlayerBar::favoriteRequested, this, toggleCurrentFavorite);
+    connect(m_mini, &MiniPlayer::favoriteRequested, this, toggleCurrentFavorite);
+    connect(m_library, &Library::favoritesChanged, this, updateFavoriteButtons);
+    connect(m_library, &Library::favoritesFailed, this, [this](const QString& message) {
+        QMessageBox::warning(this, QStringLiteral("收藏失败"), message);
+    });
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
     connect(m_library, &Library::scanProgress, this, [this](int done, int total) {
         if (total <= 0 || done >= total) {
@@ -579,6 +611,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_bar->setPosition(m_player->positionMs(), track.durationMs);
         if (m_mini->isVisible()) {
             m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
+            m_mini->setFavorite(m_library->isFavorite(track.id), track.id > 0 && m_library->track(track.id).id > 0);
         }
         updateSystemNowPlaying(track, art.toImage(), m_player->positionMs(), track.durationMs, m_player->state() == AudioEngine::State::Playing);
     });
@@ -646,7 +679,7 @@ void MainWindow::buildMenus()
             return;
         }
         qint64 id = m_playlistId;
-        if (id <= 0) {
+        if (id <= 0 || id == m_library->favoritesPlaylistId()) {
             id = m_library->createPlaylist(QFileInfo(path).completeBaseName());
             m_playlistId = id;
         }
@@ -655,6 +688,10 @@ void MainWindow::buildMenus()
             QMessageBox::warning(this, QStringLiteral("导入失败"), error);
         } else {
             m_playlist->setPlaylist(id);
+            if (auto* title = m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))) {
+                m_heading->setText(title->text());
+            }
+            m_heading->show();
             m_stack->setCurrentWidget(m_playlist);
         }
     });
@@ -753,6 +790,10 @@ void MainWindow::syncPlayer()
     const Track track = m_player->currentTrack();
     const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 160);
     m_bar->setTrack(track, art);
+    const bool canFavorite = track.id > 0 && m_library->track(track.id).id > 0;
+    m_bar->setFavorite(m_library->isFavorite(track.id), canFavorite);
+    m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
+    m_mini->setFavorite(m_library->isFavorite(track.id), canFavorite);
     if (m_engine->state() == AudioEngine::State::Stopped) {
         m_bar->setFormatText(formatText(track.sampleRate, track.bitDepth,
             track.codec.contains(QStringLiteral("_f32")) || track.codec.contains(QStringLiteral("_f64")), 0, false));

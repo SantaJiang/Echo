@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QToolButton>
+#include <QSignalBlocker>
 #include <QWindow>
 
 namespace echo {
@@ -56,6 +57,18 @@ MiniPlayer::MiniPlayer(QWidget* parent)
         button->setStyleSheet(QStringLiteral("QToolButton { background: transparent; border: none; border-radius: 16px; } QToolButton:hover { background: #3A3A3C; } QToolButton:pressed { background: #48484A; }"));
         return button;
     };
+    m_favorite = make(Icon::Heart, QStringLiteral("添加到我喜欢的"), 18);
+    m_favorite->setObjectName(QStringLiteral("favoriteButton"));
+    m_favorite->setCursor(Qt::PointingHandCursor);
+    setFavorite(false, false);
+    connect(m_favorite, &QToolButton::toggled, this, [this](bool checked) {
+        // Accessibility invokes toggle directly. Restore committed state until the write succeeds.
+        {
+            const QSignalBlocker blocker(m_favorite);
+            m_favorite->setChecked(!checked);
+        }
+        emit favoriteRequested();
+    });
     auto* previous = make(Icon::Previous, QStringLiteral("上一首"), 15);
     m_play = make(Icon::Play, QStringLiteral("播放"), 18);
     m_play->setFixedSize(38, 38);
@@ -69,6 +82,7 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     controls->addWidget(previous);
     controls->addWidget(m_play);
     controls->addWidget(next);
+    layout->addWidget(m_favorite);
     layout->addLayout(controls);
     layout->addWidget(expand);
     connect(previous, &QToolButton::clicked, this, &MiniPlayer::previousRequested);
@@ -79,8 +93,14 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     applyWindowChrome(this);
 }
 
+void MiniPlayer::setFavorite(bool liked, bool enabled)
+{
+    setFavoriteButton(m_favorite, liked, enabled);
+}
+
 void MiniPlayer::setTrack(const Track& track, const QPixmap& artwork, bool playing)
 {
+    m_favorite->setEnabled(track.id > 0);
     const QString title = track.id ? track.displayTitle() : QStringLiteral("未在播放");
     m_title->setText(m_title->fontMetrics().elidedText(title, Qt::ElideRight, m_title->width()));
     m_title->setToolTip(title);

@@ -162,7 +162,7 @@ endif()
 add_executable(echo-playbacktest tools/playbacktest.cpp)
 target_link_libraries(echo-playbacktest PRIVATE echo_core)
 
-add_executable(echo-uitest tools/uitest.cpp src/ui/tracktable.cpp src/ui/theme.cpp)
+add_executable(echo-uitest tools/uitest.cpp src/ui/tracktable.cpp src/ui/theme.cpp src/ui/icons.cpp resources/echo.qrc)
 target_link_libraries(echo-uitest PRIVATE echo_core Qt6::Widgets)
 
 if(APPLE)

@@ -14,9 +14,11 @@ class MiniPlayer : public QWidget {
 
 public:
     explicit MiniPlayer(QWidget* parent = nullptr);
+    void setFavorite(bool liked, bool enabled);
     void setTrack(const Track& track, const QPixmap& artwork, bool playing);
 
 signals:
+    void favoriteRequested();
     void toggleRequested();
     void nextRequested();
     void previousRequested();
@@ -36,6 +38,7 @@ private:
     QLabel* m_artist = nullptr;
     QLabel* m_art = nullptr;
     QToolButton* m_play = nullptr;
+    QToolButton* m_favorite = nullptr;
 };
 
 } // namespace echo

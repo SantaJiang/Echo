@@ -1,6 +1,10 @@
 #include "ui/tracktable.h"
 
 #include "ui/theme.h"
+#include "ui/icons.h"
+#include <QScrollBar>
+#include <QHelpEvent>
+#include <QToolTip>
 
 #include <QAbstractItemView>
 #include <QHeaderView>
@@ -161,7 +165,16 @@ public:
         }
         const QString value = index.data(Qt::DisplayRole).toString();
         const int rightPad = index.column() == 4 ? 20 : 8;
-        const QRect textRect = option.rect.adjusted(12, 0, -rightPad, 0);
+        QRect textRect = option.rect.adjusted(12, 0, -rightPad, 0);
+        if (index.column() == 1 && table) {
+            const QRect heart = table->favoriteRect(index.row());
+            textRect.setLeft(heart.right() + 8);
+            const bool liked = index.data(Qt::UserRole + 4).toBool();
+            if (liked || hover) {
+                icon(liked ? Icon::HeartFilled : Icon::Heart, liked ? colors.accent : colors.secondary, 16)
+                    .paint(painter, heart.adjusted(4, 4, -4, -4));
+            }
+        }
         if (audible && index.column() == 0) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(colors.accent);
@@ -215,6 +228,16 @@ void TrackModel::setPlayingId(qint64 id, bool playing)
     }
 }
 
+void TrackModel::setFavorites(const QSet<qint64>& ids)
+{
+    const auto previous = m_favorites;
+    m_favorites = ids;
+    for (int row = 0; row < m_tracks.size(); ++row) {
+        if (previous.contains(m_tracks[row].id) != ids.contains(m_tracks[row].id))
+            emit dataChanged(index(row, 1), index(row, 1));
+    }
+}
+
 Track TrackModel::trackAt(int row) const
 {
     if (row < 0 || row >= m_tracks.size()) {
@@ -261,6 +284,9 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const
     if (role == Qt::UserRole + 3) {
         return track.id == m_playingId && m_audible;
     }
+    if (role == Qt::UserRole + 4) return m_favorites.contains(track.id);
+    if (role == Qt::AccessibleDescriptionRole && index.column() == 1)
+        return m_favorites.contains(track.id) ? QStringLiteral("已喜欢，取消喜欢") : QStringLiteral("添加到我喜欢的");
     if (role != Qt::DisplayRole) {
         return {};
     }
@@ -359,7 +385,7 @@ TrackTable::TrackTable(QWidget* parent)
         menu.addSeparator();
         menu.addAction(QStringLiteral("歌曲信息"), this, [this, index] { emit infoRequested(m_model->trackAt(index.row()).id); });
         menu.addAction(QStringLiteral("在文件夹中显示"), this, [this, index] { emit revealRequested(m_model->trackAt(index.row()).id); });
-        menu.addAction(QStringLiteral("移除"), this, [this, ids] { emit removeRequested(ids); });
+        menu.addAction(m_favoritesContext ? QStringLiteral("取消喜欢") : QStringLiteral("移除"), this, [this, ids] { emit removeRequested(ids); });
         menu.exec(viewport()->mapToGlobal(position));
     });
 }
@@ -367,6 +393,82 @@ TrackTable::TrackTable(QWidget* parent)
 void TrackTable::setTracks(QVector<Track> tracks)
 {
     m_model->setTracks(std::move(tracks));
+}
+
+void TrackTable::setTracksPreservingView(QVector<Track> tracks)
+{
+    QSet<qint64> selected;
+    for (const auto& row : selectionModel()->selectedRows()) selected.insert(m_model->trackAt(row.row()).id);
+    const qint64 current = m_model->trackAt(currentIndex().row()).id;
+    const int scroll = verticalScrollBar()->value();
+    setTracks(std::move(tracks));
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        const qint64 id = m_model->trackAt(row).id;
+        if (selected.contains(id)) selectionModel()->select(m_model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        if (id == current) selectionModel()->setCurrentIndex(m_model->index(row, 0), QItemSelectionModel::NoUpdate);
+    }
+    verticalScrollBar()->setValue(scroll);
+}
+
+QRect TrackTable::favoriteRect(int row) const
+{
+    const QRect cell = visualRect(m_model->index(row, 1));
+    return QRect(cell.left() + 4, cell.center().y() - 12, 24, 24).intersected(cell);
+}
+
+void TrackTable::mousePressEvent(QMouseEvent* event)
+{
+    const auto index = indexAt(event->position().toPoint());
+    if (event->button() == Qt::LeftButton && index.isValid() && index.column() == 1
+        && favoriteRect(index.row()).contains(event->position().toPoint())) {
+        m_pressedFavorite = m_model->trackAt(index.row()).id;
+        event->accept();
+        return;
+    }
+    m_pressedFavorite = 0;
+    QTableView::mousePressEvent(event);
+}
+
+void TrackTable::mouseReleaseEvent(QMouseEvent* event)
+{
+    const auto index = indexAt(event->position().toPoint());
+    const qint64 pressed = m_pressedFavorite;
+    m_pressedFavorite = 0;
+    if (event->button() == Qt::LeftButton && (pressed || (index.isValid() && index.column() == 1
+        && favoriteRect(index.row()).contains(event->position().toPoint())))) {
+        if (pressed && index.isValid() && index.column() == 1 && m_model->trackAt(index.row()).id == pressed
+            && favoriteRect(index.row()).contains(event->position().toPoint())) emit favoriteRequested(pressed);
+        event->accept();
+        return;
+    }
+    QTableView::mouseReleaseEvent(event);
+}
+
+void TrackTable::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    const auto index = indexAt(event->position().toPoint());
+    if (event->button() == Qt::LeftButton && index.isValid() && index.column() == 1
+        && favoriteRect(index.row()).contains(event->position().toPoint())) {
+        m_pressedFavorite = 0;
+        event->accept();
+        return;
+    }
+    QTableView::mouseDoubleClickEvent(event);
+}
+
+bool TrackTable::viewportEvent(QEvent* event)
+{
+    if (event->type() == QEvent::ToolTip) {
+        const auto* help = static_cast<QHelpEvent*>(event);
+        const auto index = indexAt(help->pos());
+        if (index.isValid() && index.column() == 1 && favoriteRect(index.row()).contains(help->pos())) {
+            QToolTip::showText(help->globalPos(), index.data(Qt::UserRole + 4).toBool()
+                ? QStringLiteral("取消喜欢") : QStringLiteral("添加到我喜欢的"), viewport());
+            return true;
+        }
+        QToolTip::hideText();
+    }
+    return QTableView::viewportEvent(event);
 }
 
 void TrackTable::setPlayingId(qint64 id, bool playing)

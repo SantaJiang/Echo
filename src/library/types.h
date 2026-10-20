@@ -73,6 +73,8 @@ struct Playlist {
     QString name;
     qint64 folderId = 0;
     int sortOrder = 0;
+    QString systemKey;
+    [[nodiscard]] bool isFavorites() const { return systemKey == QLatin1String("favorites"); }
 };
 
 struct PlaylistFolder {

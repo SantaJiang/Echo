@@ -519,6 +519,15 @@ PlaylistPage::PlaylistPage(Library* library, QWidget* parent)
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(28, 18, 18, 8);
     auto* title = new QLabel(QStringLiteral("歌单"), this);
+    m_emptyFavorites = new QLabel(QStringLiteral("还没有喜欢的歌曲\n点击歌曲旁或播放栏的爱心，收藏喜欢的音乐"), this);
+    m_emptyFavorites->setObjectName(QStringLiteral("emptyFavorites"));
+    m_emptyFavorites->setAlignment(Qt::AlignCenter);
+    m_emptyFavorites->setStyleSheet(QStringLiteral("color: %1; font-size: 13px;").arg(echo::palette().secondary.name()));
+    m_emptyFavorites->hide();
+    layout->addWidget(m_emptyFavorites, 1);
+    connect(m_library, &Library::favoritesChanged, this, [this] {
+        if (m_id == m_library->favoritesPlaylistId()) reload();
+    });
     title->setObjectName(QStringLiteral("playlistTitle"));
     title->hide();
     layout->addWidget(m_table, 1);
@@ -548,7 +557,12 @@ void PlaylistPage::reload()
     for (const qint64 id : m_library->playlistTrackIds(m_id)) {
         tracks.push_back(m_library->track(id));
     }
-    m_table->setTracks(tracks);
+    const bool favorites = m_id == m_library->favoritesPlaylistId();
+    m_table->setFavoritesContext(favorites);
+    m_emptyFavorites->setVisible(favorites && tracks.isEmpty());
+    m_table->setVisible(!favorites || !tracks.isEmpty());
+    if (favorites) m_table->setTracksPreservingView(tracks);
+    else m_table->setTracks(tracks);
 }
 
 void PlaylistPage::setPlayingId(qint64 id, bool playing)

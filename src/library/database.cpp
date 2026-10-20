@@ -122,6 +122,30 @@ bool Database::open(const QString& filePath, const QString& connectionName, QStr
             return false;
         }
     }
+    // Older libraries have no system_key. Migrate atomically on either connection.
+    {
+        QMutexLocker locker(&writeLock());
+        if (!m_db.transaction()) return false;
+        auto fail = [&] {
+            if (error) *error = query.lastError().text();
+            m_db.rollback();
+            return false;
+        };
+        bool hasSystemKey = false;
+        query.exec(QStringLiteral("PRAGMA table_info(playlists)"));
+        while (query.next()) hasSystemKey |= query.value(1).toString() == QLatin1String("system_key");
+        if (!hasSystemKey && !query.exec(QStringLiteral("ALTER TABLE playlists ADD COLUMN system_key TEXT"))) return fail();
+        const QStringList statements {
+            QStringLiteral("CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_system_key ON playlists(system_key)"),
+            QStringLiteral("INSERT OR IGNORE INTO playlists(name, sort_order, system_key) VALUES ('我喜欢的', 0, 'favorites')"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS tracks_cleanup_playlists AFTER DELETE ON tracks BEGIN DELETE FROM playlist_items WHERE track_id=old.id; END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS protect_system_playlist_delete BEFORE DELETE ON playlists WHEN old.system_key IS NOT NULL BEGIN SELECT RAISE(ABORT, 'System playlist is protected'); END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS protect_system_playlist_update BEFORE UPDATE ON playlists WHEN old.system_key IS NOT NULL BEGIN SELECT RAISE(ABORT, 'System playlist is protected'); END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS unique_favorite BEFORE INSERT ON playlist_items WHEN new.playlist_id=(SELECT id FROM playlists WHERE system_key='favorites') AND EXISTS(SELECT 1 FROM playlist_items WHERE playlist_id=new.playlist_id AND track_id=new.track_id) BEGIN SELECT RAISE(ABORT, 'Duplicate favorite'); END")
+        };
+        for (const auto& statement : statements) if (!query.exec(statement)) return fail();
+        if (!m_db.commit()) return fail();
+    }
     m_fts = query.exec(QStringLiteral(
         "CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5("
         "title, artist, album_artist, album, folder, content='tracks', content_rowid='id', "
@@ -467,14 +491,70 @@ QVector<Track> Database::searchTracks(const QString& ftsQuery, int limit) const
     return tracksByIds(ids);
 }
 
+qint64 Database::favoritesPlaylistId() const
+{
+    QSqlQuery query(m_db);
+    query.exec(QStringLiteral("SELECT id FROM playlists WHERE system_key='favorites'"));
+    return query.next() ? query.value(0).toLongLong() : 0;
+}
+
+bool Database::setFavorites(const QVector<qint64>& ids, bool liked, QString* error)
+{
+    QMutexLocker locker(&writeLock());
+    auto items = playlistItems(favoritesPlaylistId());
+    QVector<qint64> added;
+    for (qint64 id : ids) {
+        if (liked) {
+            if (!items.contains(id) && !added.contains(id) && track(id).id) added.push_back(id);
+        } else {
+            items.removeAll(id);
+        }
+    }
+    return writeFavorites(added + items, error);
+}
+
+bool Database::restoreFavorites(const QVector<qint64>& ids, QString* error)
+{
+    QMutexLocker locker(&writeLock());
+    return writeFavorites(ids, error);
+}
+
+bool Database::writeFavorites(const QVector<qint64>& ids, QString* error)
+{
+    const qint64 playlistId = favoritesPlaylistId();
+    if (!playlistId || !m_db.transaction()) {
+        if (error) *error = m_db.lastError().text();
+        return false;
+    }
+    QSqlQuery query(m_db);
+    auto fail = [&] {
+        if (error) *error = query.lastError().text();
+        m_db.rollback();
+        return false;
+    };
+    query.prepare(QStringLiteral("DELETE FROM playlist_items WHERE playlist_id=?"));
+    query.addBindValue(playlistId);
+    if (!query.exec()) return fail();
+    query.prepare(QStringLiteral("INSERT INTO playlist_items(playlist_id, track_id, sort_order) SELECT ?,id,? FROM tracks WHERE id=?"));
+    int index = 0;
+    for (qint64 id : ids) {
+        query.bindValue(0, playlistId);
+        query.bindValue(1, index++);
+        query.bindValue(2, id);
+        if (!query.exec()) return fail();
+    }
+    if (!m_db.commit()) return fail();
+    return true;
+}
+
 QVector<Playlist> Database::playlists() const
 {
     QVector<Playlist> result;
     QSqlQuery query(m_db);
-    query.exec(QStringLiteral("SELECT id, name, folder_id, sort_order FROM playlists ORDER BY sort_order, name"));
+    query.exec(QStringLiteral("SELECT id, name, folder_id, sort_order, system_key FROM playlists ORDER BY system_key IS NULL, sort_order, name"));
     while (query.next()) {
         result.push_back(Playlist {query.value(0).toLongLong(), query.value(1).toString(), query.value(2).toLongLong(),
-                                   query.value(3).toInt()});
+                                   query.value(3).toInt(), query.value(4).toString()});
     }
     return result;
 }
@@ -515,6 +595,7 @@ qint64 Database::createPlaylistFolder(const QString& name, qint64 parentId)
 
 void Database::renamePlaylist(qint64 id, const QString& name)
 {
+    if (id == favoritesPlaylistId()) return;
     QMutexLocker locker(&writeLock());
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("UPDATE playlists SET name=? WHERE id=?"));
@@ -535,6 +616,7 @@ void Database::renamePlaylistFolder(qint64 id, const QString& name)
 
 void Database::deletePlaylist(qint64 id)
 {
+    if (id == favoritesPlaylistId()) return;
     QMutexLocker locker(&writeLock());
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("DELETE FROM playlist_items WHERE playlist_id=?"));
@@ -562,6 +644,7 @@ void Database::deletePlaylistFolder(qint64 id)
 
 void Database::movePlaylist(qint64 id, qint64 folderId)
 {
+    if (id == favoritesPlaylistId()) return;
     QMutexLocker locker(&writeLock());
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("UPDATE playlists SET folder_id=? WHERE id=?"));
@@ -585,6 +668,7 @@ QVector<qint64> Database::playlistItems(qint64 playlistId) const
 
 void Database::setPlaylistItems(qint64 playlistId, const QVector<qint64>& trackIds)
 {
+    if (playlistId == favoritesPlaylistId()) return;
     QMutexLocker locker(&writeLock());
     m_db.transaction();
     QSqlQuery query(m_db);
@@ -603,6 +687,7 @@ void Database::setPlaylistItems(qint64 playlistId, const QVector<qint64>& trackI
 
 void Database::insertPlaylistItems(qint64 playlistId, int index, const QVector<qint64>& trackIds)
 {
+    if (playlistId == favoritesPlaylistId()) return;
     auto items = playlistItems(playlistId);
     index = std::clamp(index, 0, static_cast<int>(items.size()));
     for (int offset = 0; offset < trackIds.size(); ++offset) {
@@ -613,6 +698,7 @@ void Database::insertPlaylistItems(qint64 playlistId, int index, const QVector<q
 
 void Database::removePlaylistItems(qint64 playlistId, const QVector<int>& positions)
 {
+    if (playlistId == favoritesPlaylistId()) return;
     auto items = playlistItems(playlistId);
     QVector<int> sorted = positions;
     std::sort(sorted.begin(), sorted.end(), std::greater<int>());

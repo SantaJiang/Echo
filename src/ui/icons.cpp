@@ -1,4 +1,7 @@
 #include "ui/icons.h"
+#include "ui/theme.h"
+#include <QToolButton>
+#include <QSignalBlocker>
 
 #include <algorithm>
 
@@ -31,6 +34,9 @@ GlyphFont& glyphs()
 QChar codepoint(Icon kind)
 {
     switch (kind) {
+    case Icon::Heart:
+    case Icon::HeartFilled:
+        return QChar(0xf004);
     case Icon::Songs:
         return QChar(0xf001);
     case Icon::Albums:
@@ -90,6 +96,19 @@ QIcon icon(Icon kind, const QColor& color, int size)
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::TextAntialiasing);
+    if (kind == Icon::Heart || kind == Icon::HeartFilled) {
+        painter.scale(side / 20.0, side / 20.0);
+        QPainterPath heart;
+        heart.moveTo(10, 17);
+        heart.cubicTo(8, 15, 2.5, 11.5, 2.5, 7);
+        heart.cubicTo(2.5, 2.5, 8, 2, 10, 6);
+        heart.cubicTo(12, 2, 17.5, 2.5, 17.5, 7);
+        heart.cubicTo(17.5, 11.5, 12, 15, 10, 17);
+        painter.setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(kind == Icon::HeartFilled ? QBrush(color) : Qt::NoBrush);
+        painter.drawPath(heart);
+        return QIcon(pixmap);
+    }
     const QString glyph(codepoint(kind));
     const QFont font = iconFont(std::max(8, side * 4 / 5));
     painter.setFont(font);
@@ -100,6 +119,19 @@ QIcon icon(Icon kind, const QColor& color, int size)
     const qreal y = (side - bounds.height()) / 2.0 - bounds.y();
     painter.drawText(QPointF(x, y), glyph);
     return QIcon(pixmap);
+}
+
+void setFavoriteButton(QToolButton* button, bool liked, bool enabled)
+{
+    const QSignalBlocker blocker(button);
+    button->setCheckable(true);
+    button->setChecked(liked);
+    button->setEnabled(enabled);
+    button->setIcon(icon(liked ? Icon::HeartFilled : Icon::Heart,
+                         liked ? palette().accent : palette().secondary, 18));
+    const QString tip = liked ? QStringLiteral("取消喜欢") : QStringLiteral("添加到我喜欢的");
+    button->setToolTip(tip);
+    button->setAccessibleName(tip);
 }
 
 QPixmap placeholderCover(int side)

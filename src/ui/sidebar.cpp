@@ -4,6 +4,7 @@
 #include "ui/theme.h"
 
 #include <QFrame>
+#include <QFontMetricsF>
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QStyledItemDelegate>
@@ -11,12 +12,55 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 namespace echo {
 namespace {
+
+class PlaylistTree : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    void drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        QTreeWidget::drawRow(painter, option, index);
+        if (!index.parent().isValid() && model()->hasChildren(index)) {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(QPen(echo::palette().secondary, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            const int y = option.rect.center().y();
+            const QPolygonF arrow = isExpanded(index)
+                ? QPolygonF {QPointF(4, y - 2), QPointF(7, y + 1), QPointF(10, y - 2)}
+                : QPolygonF {QPointF(5, y - 3), QPointF(8, y), QPointF(5, y + 3)};
+            painter->drawPolyline(arrow);
+            painter->restore();
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        const QModelIndex index = indexAt(event->position().toPoint());
+        if (event->button() == Qt::LeftButton && event->position().x() < 12
+            && index.isValid() && !index.parent().isValid() && model()->hasChildren(index)) {
+            setExpanded(index, !isExpanded(index));
+            event->accept();
+            return;
+        }
+        QTreeWidget::mousePressEvent(event);
+    }
+
+    void drawBranches(QPainter* painter, const QRect& rect, const QModelIndex& index) const override
+    {
+        // The native row panel also highlights the indentation. Clear that rectangle
+        // before drawing disclosure arrows; the item keeps its rounded background.
+        painter->fillRect(rect, echo::palette().sidebar);
+        QTreeWidget::drawBranches(painter, rect, index);
+    }
+};
 
 class NavDelegate : public QStyledItemDelegate {
 public:
@@ -27,18 +71,25 @@ public:
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
         const Palette colors = echo::palette();
-        const QRect pill = option.rect.adjusted(2, 2, -14, -2);
+        const QRect pill = option.rect.adjusted(0, 1, 0, -1);
         if (option.state & (QStyle::State_Selected | QStyle::State_MouseOver)) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(option.state & QStyle::State_Selected ? colors.selected : colors.hover);
-            painter->drawRoundedRect(pill, 6, 6);
+            painter->drawRoundedRect(pill, 8, 8);
         }
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-        const QRect iconRect(pill.left() + 8, pill.center().y() - 8, 16, 16);
+        const QRect iconRect(pill.left() + 18, pill.top() + (pill.height() - 16) / 2, 16, 16);
         icon.paint(painter, iconRect);
         painter->setPen(colors.text);
-        painter->drawText(QRect(iconRect.right() + 8, pill.top(), pill.width() - 36, pill.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft, index.data(Qt::DisplayRole).toString());
+        QFont itemFont = option.font;
+        itemFont.setWeight(QFont::Normal);
+        painter->setFont(itemFont);
+        const QFontMetricsF metrics(itemFont);
+        const QString text = metrics.elidedText(index.data(Qt::DisplayRole).toString(), Qt::ElideRight,
+                                               qMax(0, pill.width() - 50));
+        const QRectF bounds = metrics.tightBoundingRect(text);
+        const qreal baseline = pill.top() + (pill.height() - bounds.height()) / 2.0 - bounds.top();
+        painter->drawText(QPointF(iconRect.x() + iconRect.width() + 8, baseline), text);
         painter->restore();
     }
 };
@@ -57,15 +108,17 @@ Sidebar::Sidebar(QWidget* parent)
 #else
     layout->setContentsMargins(10, 8, 10, 12);
 #endif
-    layout->setSpacing(6);
+    layout->setSpacing(2);
     auto* libraryLabel = new QLabel(QStringLiteral("资料库"), this);
     auto* playlistLabel = new QLabel(QStringLiteral("播放列表"), this);
     const Palette colors = echo::palette();
-    const QString sectionStyle = QStringLiteral("color: %1; font-size: 11px; font-weight: 600; padding-left: 14px;").arg(colors.secondary.name());
+    const QString sectionStyle = QStringLiteral("color: %1; font-size: 11px; font-weight: 500; padding-left: 6px;").arg(colors.secondary.name());
     libraryLabel->setStyleSheet(sectionStyle);
     playlistLabel->setStyleSheet(sectionStyle);
-    libraryLabel->setFixedHeight(22);
-    playlistLabel->setFixedHeight(22);
+    libraryLabel->setIndent(0);
+    playlistLabel->setIndent(0);
+    libraryLabel->setFixedHeight(20);
+    playlistLabel->setFixedHeight(24);
 
     m_library = new QListWidget(this);
     m_library->setObjectName(QStringLiteral("libraryNav"));
@@ -74,11 +127,11 @@ Sidebar::Sidebar(QWidget* parent)
     m_library->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_library->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_library->setItemDelegate(new NavDelegate(m_library));
-    m_library->setFixedHeight(36 * 4 + 6);
+    m_library->setFixedHeight(32 * 4);
     const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺人"), QStringLiteral("文件夹")};
     const QList<Icon> icons {Icon::Songs, Icon::Albums, Icon::Artists, Icon::Folders};
     for (int index = 0; index < titles.size(); ++index) {
-        auto* item = new QListWidgetItem(icon(icons[index], colors.text, 16), titles[index]);
+        auto* item = new QListWidgetItem(icon(icons[index], colors.accent, 16), titles[index]);
         item->setSizeHint(QSize(0, 32));
         m_library->addItem(item);
     }
@@ -104,16 +157,18 @@ Sidebar::Sidebar(QWidget* parent)
     header->addWidget(addButton);
     connect(addButton, &QToolButton::clicked, this, [this] { emit createPlaylistRequested(0); });
 
-    m_playlists = new QTreeWidget(this);
+    m_playlists = new PlaylistTree(this);
     m_playlists->setObjectName(QStringLiteral("playlistTree"));
     m_playlists->setHeaderHidden(true);
     m_playlists->setFocusPolicy(Qt::NoFocus);
     m_playlists->setFrameShape(QFrame::NoFrame);
     m_playlists->setIndentation(14);
+    m_playlists->setRootIsDecorated(false);
+    m_playlists->setItemDelegate(new NavDelegate(m_playlists));
     m_playlists->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_playlists, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
         if (item->data(0, Qt::UserRole + 1).toString() == QLatin1String("playlist")) {
-            m_library->clearSelection();
+            m_library->setCurrentRow(-1);
             emit playlistSelected(item->data(0, Qt::UserRole).toLongLong());
         }
     });
@@ -122,6 +177,7 @@ Sidebar::Sidebar(QWidget* parent)
         if (!item) {
             return;
         }
+        if (item->data(0, Qt::UserRole + 2).toBool()) return;
         const qint64 id = item->data(0, Qt::UserRole).toLongLong();
         const bool folder = item->data(0, Qt::UserRole + 1).toString() == QLatin1String("folder");
         QMenu menu(this);
@@ -141,14 +197,9 @@ Sidebar::Sidebar(QWidget* parent)
     m_status->setWordWrap(true);
     m_status->hide();
 
-    auto* rule = new QFrame(this);
-    rule->setObjectName(QStringLiteral("sidebarRule"));
-    rule->setFixedHeight(1);
     layout->addWidget(libraryLabel);
     layout->addWidget(m_library);
-    layout->addSpacing(8);
-    layout->addWidget(rule);
-    layout->addSpacing(8);
+    layout->addSpacing(24);
     layout->addLayout(header);
     m_playlistEmpty = new QLabel(QStringLiteral("还没有歌单"), this);
     m_playlistEmpty->setAlignment(Qt::AlignCenter);
@@ -181,8 +232,8 @@ void Sidebar::setPlaylists(const QVector<PlaylistFolder>& folders, const QVector
             auto* item = new QTreeWidgetItem(QStringList {folder.name});
             item->setData(0, Qt::UserRole, folder.id);
             item->setData(0, Qt::UserRole + 1, QStringLiteral("folder"));
-            item->setIcon(0, icon(Icon::Folders, echo::palette().secondary, 14));
-            item->setSizeHint(0, QSize(0, 30));
+            item->setIcon(0, icon(Icon::Folders, echo::palette().accent, 14));
+            item->setSizeHint(0, QSize(0, 32));
             if (folder.parentId <= 0) {
                 m_playlists->addTopLevelItem(item);
                 folderItems.insert(folder.id, item);
@@ -200,9 +251,13 @@ void Sidebar::setPlaylists(const QVector<PlaylistFolder>& folders, const QVector
         auto* item = new QTreeWidgetItem(QStringList {playlist.name});
         item->setData(0, Qt::UserRole, playlist.id);
         item->setData(0, Qt::UserRole + 1, QStringLiteral("playlist"));
-        item->setIcon(0, icon(Icon::Playlist, echo::palette().text, 14));
-        item->setSizeHint(0, QSize(0, 30));
-        if (playlist.folderId > 0 && folderItems.contains(playlist.folderId)) {
+        item->setData(0, Qt::UserRole + 2, playlist.isFavorites());
+        item->setIcon(0, icon(playlist.isFavorites() ? Icon::HeartFilled : Icon::Playlist,
+                             echo::palette().accent, 14));
+        item->setSizeHint(0, QSize(0, 32));
+        if (playlist.isFavorites()) {
+            m_playlists->insertTopLevelItem(0, item);
+        } else if (playlist.folderId > 0 && folderItems.contains(playlist.folderId)) {
             folderItems.value(playlist.folderId)->addChild(item);
         } else {
             m_playlists->addTopLevelItem(item);

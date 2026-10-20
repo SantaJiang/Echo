@@ -4,6 +4,7 @@
 
 #include <QAbstractTableModel>
 #include <QTableView>
+#include <QSet>
 
 namespace echo {
 
@@ -14,6 +15,7 @@ public:
     explicit TrackModel(QObject* parent = nullptr);
     void setTracks(QVector<Track> tracks);
     void setPlayingId(qint64 id, bool playing);
+    void setFavorites(const QSet<qint64>& ids);
     [[nodiscard]] Track trackAt(int row) const;
     [[nodiscard]] QVector<qint64> ids() const;
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
@@ -25,6 +27,7 @@ private:
     QVector<Track> m_tracks;
     qint64 m_playingId = 0;
     bool m_audible = false;
+    QSet<qint64> m_favorites;
 };
 
 class TrackTable : public QTableView {
@@ -33,6 +36,10 @@ class TrackTable : public QTableView {
 public:
     explicit TrackTable(QWidget* parent = nullptr);
     void setTracks(QVector<Track> tracks);
+    void setTracksPreservingView(QVector<Track> tracks);
+    void setFavorites(const QSet<qint64>& ids) { m_model->setFavorites(ids); }
+    void setFavoritesContext(bool enabled) { m_favoritesContext = enabled; }
+    [[nodiscard]] QRect favoriteRect(int row) const;
     void setPlayingId(qint64 id, bool playing);
     void setColumnWidths(const QVector<int>& widths);
     [[nodiscard]] QVector<int> columnWidths() const;
@@ -44,6 +51,7 @@ signals:
     void playNextRequested(const QVector<qint64>& ids);
     void enqueueRequested(const QVector<qint64>& ids);
     void playlistRequested(const QVector<qint64>& ids);
+    void favoriteRequested(qint64 id);
     void infoRequested(qint64 id);
     void revealRequested(qint64 id);
     void removeRequested(const QVector<qint64>& ids);
@@ -52,6 +60,10 @@ signals:
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    bool viewportEvent(QEvent* event) override;
     void leaveEvent(QEvent* event) override;
 
 private:
@@ -59,6 +71,8 @@ private:
     void resizeColumnBoundary(int column, int delta);
     TrackModel* m_model = nullptr;
     int m_hoverRow = -1;
+    qint64 m_pressedFavorite = 0;
+    bool m_favoritesContext = false;
     QVector<int> m_preferredWidths {46, 440, 280, 280, 72};
 };
 

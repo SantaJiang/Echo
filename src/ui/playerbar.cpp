@@ -12,6 +12,7 @@
 #include <QSizePolicy>
 #include <QSlider>
 #include <QToolButton>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -101,13 +102,12 @@ PlayerBar::PlayerBar(QWidget* parent)
     m_format = new QLabel(this);
     m_format->setStyleSheet(QStringLiteral("color: %1; font-size: 11px;").arg(colors.secondary.name()));
     meta->addStretch();
-    meta->addWidget(m_title);
     meta->addWidget(m_artist);
     meta->addStretch();
     auto* metadata = new QWidget(this);
     metadata->setLayout(meta);
     metadata->setFixedWidth(200);
-    m_title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_title->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_artist->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_format->setFixedWidth(200);
     m_format->setFixedHeight(20);
@@ -123,6 +123,27 @@ PlayerBar::PlayerBar(QWidget* parent)
         button->setFocusPolicy(Qt::NoFocus);
         return button;
     };
+    m_favorite = make(Icon::Heart, 18);
+    m_favorite->setObjectName(QStringLiteral("favoriteButton"));
+    m_favorite->setFixedSize(28, 28);
+    auto* titleRow = new QHBoxLayout();
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(6);
+    titleRow->addWidget(m_title);
+    titleRow->addWidget(m_favorite);
+    titleRow->addStretch();
+    meta->insertLayout(1, titleRow);
+
+    m_favorite->setCursor(Qt::PointingHandCursor);
+    setFavorite(false, false);
+    connect(m_favorite, &QToolButton::toggled, this, [this](bool checked) {
+        // Accessibility invokes toggle directly. Restore committed state until the write succeeds.
+        {
+            const QSignalBlocker blocker(m_favorite);
+            m_favorite->setChecked(!checked);
+        }
+        emit favoriteRequested();
+    });
     auto* buttons = new QHBoxLayout();
     buttons->setSpacing(2);
     m_shuffle = make(Icon::Shuffle, 16);
@@ -219,10 +240,17 @@ PlayerBar::PlayerBar(QWidget* parent)
     });
 }
 
+void PlayerBar::setFavorite(bool liked, bool enabled)
+{
+    setFavoriteButton(m_favorite, liked, enabled);
+}
+
 void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
 {
+    m_favorite->setEnabled(track.id > 0);
     if (track.id == 0) {
         m_title->setText(QStringLiteral("未在播放"));
+        m_title->setFixedWidth(m_title->fontMetrics().horizontalAdvance(m_title->text()));
         m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600; color: %1;").arg(echo::palette().secondary.name()));
         m_artist->clear();
         m_format->clear();
@@ -232,7 +260,11 @@ void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
     m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600;"));
     m_title->setToolTip(track.displayTitle());
     m_artist->setToolTip(track.displayArtist());
-    m_title->setText(track.missing ? track.displayTitle() + QStringLiteral("（找不到文件）") : track.displayTitle());
+    const QString title = track.missing ? track.displayTitle() + QStringLiteral("（找不到文件）") : track.displayTitle();
+    const QFontMetrics metrics(m_title->font());
+    const int titleWidth = std::min(142, metrics.horizontalAdvance(title) + 2);
+    m_title->setFixedWidth(titleWidth);
+    m_title->setText(metrics.elidedText(title, Qt::ElideRight, titleWidth));
     m_artist->setText(track.displayArtist());
     m_artist->show();
     m_art->setPixmap(roundedCover(artwork, 48));

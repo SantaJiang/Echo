@@ -45,6 +45,7 @@ QString ftsQuery(const QString& text)
 Library::Library(QObject* parent)
     : QObject(parent)
 {
+    connect(this, &Library::changed, this, &Library::refreshFavorites);
     m_rescanTimer.setSingleShot(true);
     m_rescanTimer.setInterval(800);
     m_suppressTimer.setSingleShot(true);
@@ -97,6 +98,7 @@ bool Library::open(QString* error)
     if (!m_database->open(base + QStringLiteral("/library.sqlite"), QStringLiteral("library"), error)) {
         return false;
     }
+    refreshFavorites();
     const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/artwork");
     m_artwork = std::make_unique<ArtworkCache>(cache);
     m_scanThread = new QThread(this);
@@ -333,6 +335,45 @@ QVector<Playlist> Library::searchPlaylists(const QString& text) const
     return result;
 }
 
+qint64 Library::favoritesPlaylistId() const
+{
+    return m_database ? m_database->favoritesPlaylistId() : 0;
+}
+
+void Library::refreshFavorites()
+{
+    const auto ids = playlistTrackIds(favoritesPlaylistId());
+    const QSet<qint64> updated(ids.begin(), ids.end());
+    if (updated == m_favorites) return;
+    m_favorites = updated;
+    emit favoritesChanged();
+}
+
+bool Library::setFavorites(const QVector<qint64>& ids, bool liked)
+{
+    if (!m_database) return false;
+    const auto before = playlistTrackIds(favoritesPlaylistId());
+    bool needsChange = false;
+    for (qint64 id : ids) {
+        if (id > 0 && (liked ? !isFavorite(id) && track(id).id : isFavorite(id))) needsChange = true;
+    }
+    if (!needsChange) return true;
+    QString error;
+    if (!m_database->setFavorites(ids, liked, &error)) {
+        emit favoritesFailed(QStringLiteral("无法更新我喜欢的：%1").arg(error));
+        return false;
+    }
+    if (!m_applyingUndo) {
+        UndoStep step;
+        step.kind = UndoStep::Favorites;
+        step.beforeFavorites = before;
+        step.afterFavorites = playlistTrackIds(favoritesPlaylistId());
+        remember(step);
+    }
+    refreshFavorites();
+    return true;
+}
+
 QVector<Playlist> Library::playlists() const
 {
     return m_database ? m_database->playlists() : QVector<Playlist> {};
@@ -380,6 +421,7 @@ qint64 Library::createPlaylistFolder(const QString& name, qint64 parentId)
 
 void Library::renamePlaylist(qint64 id, const QString& name)
 {
+    if (id == favoritesPlaylistId()) return;
     if (!m_database) {
         return;
     }
@@ -426,6 +468,7 @@ void Library::renamePlaylistFolder(qint64 id, const QString& name)
 
 void Library::deletePlaylist(qint64 id)
 {
+    if (id == favoritesPlaylistId()) return;
     if (!m_database) {
         return;
     }
@@ -461,6 +504,7 @@ void Library::deletePlaylistFolder(qint64 id)
 
 void Library::movePlaylistToFolder(qint64 id, qint64 folderId)
 {
+    if (id == favoritesPlaylistId()) return;
     if (m_database) {
         m_database->movePlaylist(id, folderId);
         emit changed();
@@ -474,6 +518,7 @@ QVector<qint64> Library::playlistTrackIds(qint64 id) const
 
 void Library::addToPlaylist(qint64 playlistId, const QVector<qint64>& trackIds)
 {
+    if (playlistId == favoritesPlaylistId()) { setFavorites(trackIds, true); return; }
     if (!m_database || trackIds.isEmpty()) {
         return;
     }
@@ -502,6 +547,7 @@ void Library::removePlaylistPositions(qint64 playlistId, const QVector<int>& pos
             removed.push_back(items[position]);
         }
     }
+    if (playlistId == favoritesPlaylistId()) { setFavorites(removed, false); return; }
     m_database->removePlaylistItems(playlistId, positions);
     if (!m_applyingUndo) {
         UndoStep step;
@@ -516,6 +562,7 @@ void Library::removePlaylistPositions(qint64 playlistId, const QVector<int>& pos
 
 void Library::movePlaylistItem(qint64 playlistId, int from, int to)
 {
+    if (playlistId == favoritesPlaylistId()) return;
     if (!m_database || from == to) {
         return;
     }
@@ -551,9 +598,10 @@ void Library::undo()
     if (m_undo.isEmpty()) {
         return;
     }
-    const UndoStep step = m_undo.takeLast();
+    const UndoStep step = m_undo.last();
+    if (!apply(step, true)) return;
+    m_undo.removeLast();
     m_redo.push_back(step);
-    apply(step, true);
 }
 
 void Library::redo()
@@ -561,15 +609,26 @@ void Library::redo()
     if (m_redo.isEmpty()) {
         return;
     }
-    const UndoStep step = m_redo.takeLast();
+    const UndoStep step = m_redo.last();
+    if (!apply(step, false)) return;
+    m_redo.removeLast();
     m_undo.push_back(step);
-    apply(step, false);
 }
 
-void Library::apply(const UndoStep& step, bool inverse)
+bool Library::apply(const UndoStep& step, bool inverse)
 {
     m_applyingUndo = true;
     switch (step.kind) {
+    case UndoStep::Favorites: {
+        QString error;
+        if (!m_database->restoreFavorites(inverse ? step.beforeFavorites : step.afterFavorites, &error)) {
+            m_applyingUndo = false;
+            emit favoritesFailed(QStringLiteral("无法更新我喜欢的：%1").arg(error));
+            return false;
+        }
+        refreshFavorites();
+        break;
+    }
     case UndoStep::Add:
         if (inverse) {
             QVector<int> positions;
@@ -627,10 +686,15 @@ void Library::apply(const UndoStep& step, bool inverse)
         break;
     }
     m_applyingUndo = false;
+    return true;
 }
 
 bool Library::importM3u(qint64 playlistId, const QString& path, QString* error)
 {
+    if (playlistId == favoritesPlaylistId()) {
+        if (error) *error = QStringLiteral("请将播放列表导入普通歌单");
+        return false;
+    }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {

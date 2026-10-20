@@ -9,6 +9,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QVector>
+#include <QSet>
 #include <memory>
 
 namespace echo {
@@ -48,6 +49,10 @@ public:
     [[nodiscard]] QVector<Artist> searchArtists(const QString& text) const;
     [[nodiscard]] QVector<Playlist> searchPlaylists(const QString& text) const;
 
+    [[nodiscard]] qint64 favoritesPlaylistId() const;
+    [[nodiscard]] bool isFavorite(qint64 id) const { return m_favorites.contains(id); }
+    [[nodiscard]] const QSet<qint64>& favoriteIds() const { return m_favorites; }
+    bool setFavorites(const QVector<qint64>& ids, bool liked);
     [[nodiscard]] QVector<Playlist> playlists() const;
     [[nodiscard]] QVector<PlaylistFolder> playlistFolders() const;
     qint64 createPlaylist(const QString& name, qint64 folderId = 0);
@@ -75,25 +80,30 @@ public:
 
 signals:
     void changed();
+    void favoritesChanged();
+    void favoritesFailed(const QString& message);
     void scanProgress(int done, int total);
     void scanFinished();
     void scanFailed(const QString& message);
 
 private:
     struct UndoStep {
-        enum Kind { Add, Remove, Move, RenamePlaylist, RenameFolder, DeletePlaylist, CreatePlaylist, CreateFolder } kind;
+        enum Kind { Add, Remove, Move, RenamePlaylist, RenameFolder, DeletePlaylist, CreatePlaylist, CreateFolder, Favorites } kind;
         qint64 playlistId = 0;
         qint64 folderId = 0;
         QString name;
         QString previousName;
         QVector<qint64> trackIds;
         QVector<int> positions;
+        QVector<qint64> beforeFavorites;
+        QVector<qint64> afterFavorites;
         int from = 0;
         int to = 0;
     };
 
     void remember(const UndoStep& step);
-    void apply(const UndoStep& step, bool inverse);
+    bool apply(const UndoStep& step, bool inverse);
+    void refreshFavorites();
     void scanRoot(qint64 id, const QString& path);
     void watchRoots();
     void suppressWatch(int milliseconds);
@@ -113,6 +123,7 @@ private:
     QVector<UndoStep> m_undo;
     QVector<UndoStep> m_redo;
     bool m_applyingUndo = false;
+    QSet<qint64> m_favorites;
 };
 
 } // namespace echo

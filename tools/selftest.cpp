@@ -11,6 +11,8 @@
 #include <QFile>
 #include <QProcess>
 #include <QTemporaryDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 
 #include <algorithm>
 #include <cmath>
@@ -171,7 +173,25 @@ int main(int argc, char** argv)
 
     echo::Database database;
     const QString dbPath = dir.filePath(QStringLiteral("library.sqlite"));
+    {
+        auto legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("legacy"));
+        legacy.setDatabaseName(dbPath);
+        expect(legacy.open(), "legacy db open");
+        QSqlQuery query(legacy);
+        expect(query.exec(QStringLiteral("CREATE TABLE playlists(id INTEGER PRIMARY KEY, name TEXT NOT NULL, folder_id INTEGER, sort_order INTEGER NOT NULL DEFAULT 0)")), "legacy schema");
+        expect(query.exec(QStringLiteral("INSERT INTO playlists(id,name) VALUES (42,'我喜欢的')")), "legacy same-name playlist");
+    }
     expect(database.open(dbPath, QStringLiteral("selftest"), &error), "db open");
+    const auto favorites = database.favoritesPlaylistId();
+    expect(favorites > 0 && favorites != 42, "system favorite has independent identity");
+    expect(database.playlists().first().isFavorites(), "system favorite ordered first");
+    expect(database.playlists().size() == 2, "same-name ordinary playlist preserved");
+    expect(database.open(dbPath, QStringLiteral("selftest"), &error), "db reopened");
+    expect(database.favoritesPlaylistId() == favorites && database.playlists().size() == 2, "idempotent migration");
+    echo::Database fresh;
+    expect(fresh.open(dir.filePath(QStringLiteral("fresh.sqlite")), QStringLiteral("fresh"), &error), "fresh db open");
+    expect(fresh.playlists().size() == 1 && fresh.playlists().first().isFavorites(), "fresh default favorite");
+
     const qint64 root = database.addRoot(dir.path());
     echo::Scanner scanner(dbPath, dir.filePath(QStringLiteral("art")));
     scanner.scanRoot(root, dir.path());
@@ -190,6 +210,62 @@ int main(int argc, char** argv)
     expect(sawWav, "wav indexed");
     const auto found = database.searchTracks(QStringLiteral("\"First\"*"), 10);
     expect(!found.isEmpty(), "fts");
+    const qint64 first = tracks[0].id;
+    const qint64 second = tracks[1].id;
+    expect(database.setFavorites({first, first}, true, &error), "favorite insert");
+    expect(database.playlistItems(favorites) == QVector<qint64>{first}, "favorite deduplicated");
+    expect(database.setFavorites({second}, true, &error), "favorite second");
+    expect(database.setFavorites({first}, true, &error), "favorite existing no reorder");
+    expect(database.playlistItems(favorites) == QVector<qint64>({second, first}), "recent favorites first");
+    expect(database.setFavorites({first}, false, &error) && database.setFavorites({first}, true, &error), "unlike and relike");
+    const QVector<qint64> favoriteOrder {first, second};
+    expect(database.playlistItems(favorites) == favoriteOrder, "relike moves first");
+    database.renamePlaylist(favorites, QStringLiteral("changed"));
+    database.movePlaylist(favorites, database.createPlaylistFolder(QStringLiteral("folder"), 0));
+    database.deletePlaylist(favorites);
+    database.setPlaylistItems(favorites, {second});
+    database.insertPlaylistItems(favorites, 0, {second});
+    database.removePlaylistItems(favorites, {0});
+    expect(database.playlists().first().name == QStringLiteral("我喜欢的") && database.playlists().first().folderId == 0,
+           "favorite metadata protected");
+    expect(database.playlistItems(favorites) == favoriteOrder, "generic mutation protected");
+    database.setPlaylistItems(42, {first, first});
+    expect(database.playlistItems(42).size() == 2, "ordinary duplicates retained");
+    database.renamePlaylist(42, QStringLiteral("ordinary"));
+    expect(database.playlists().last().name == QLatin1String("ordinary"), "ordinary playlist editable");
+    QSqlQuery favoriteSql(QSqlDatabase::database(QStringLiteral("selftest")));
+    expect(favoriteSql.exec(QStringLiteral("CREATE TRIGGER reject_favorite BEFORE INSERT ON playlist_items WHEN new.playlist_id=%1 BEGIN SELECT RAISE(ABORT, 'injected write failure'); END").arg(favorites)), "failure injection");
+    expect(!database.setFavorites({first}, false, &error) && !error.isEmpty(), "write failure surfaced");
+    expect(database.playlistItems(favorites) == favoriteOrder, "write failure rolls back deletion");
+    favoriteSql.exec(QStringLiteral("DROP TRIGGER reject_favorite"));
+    expect(!favoriteSql.exec(QStringLiteral("DELETE FROM playlists WHERE id=%1").arg(favorites)), "SQL delete protected");
+    expect(!favoriteSql.exec(QStringLiteral("UPDATE playlists SET name='bad' WHERE id=%1").arg(favorites)), "SQL rename protected");
+    echo::Database reopened;
+    expect(reopened.open(dbPath, QStringLiteral("reopened"), &error) && reopened.playlistItems(favorites) == favoriteOrder,
+           "favorite persisted across connections");
+    // A temporarily absent file preserves its favorite; all real DELETE paths clean up.
+    echo::Track disposable = tracks[0];
+    disposable.path = dir.filePath(QStringLiteral("disposable.wav"));
+    disposable.rootId = database.addRoot(dir.filePath(QStringLiteral("other-root")));
+    disposable.cueStartMs = -1;
+    const qint64 disposableId = database.upsertTrack(disposable);
+    database.setFavorites({disposableId}, true, &error);
+    database.markRootMissing(disposable.rootId);
+    expect(database.playlistItems(favorites).contains(disposableId), "missing file keeps favorite");
+    database.removeRoot(disposable.rootId);
+    expect(!database.playlistItems(favorites).contains(disposableId), "root deletion cleans favorites");
+    disposable.rootId = root;
+    disposable.cueStartMs = 500;
+    const qint64 cueId = database.upsertTrack(disposable);
+    disposable.cueStartMs = -1;
+    const qint64 wholeId = database.upsertTrack(disposable);
+    database.setFavorites({cueId, wholeId}, true, &error);
+    expect(favoriteSql.exec(QStringLiteral("UPDATE tracks SET missing=1 WHERE id=%1").arg(cueId)), "mark stale cue");
+    database.deleteStaleCueRows(root);
+    expect(!database.playlistItems(favorites).contains(cueId) && database.playlistItems(favorites).contains(wholeId), "stale cue cleanup");
+    database.removeTracks({wholeId});
+    expect(database.playlistItems(favorites) == favoriteOrder, "track deletion cleans favorite");
+
 
     echo::SampleFormat pcm16;
     pcm16.sampleRate = 44100;

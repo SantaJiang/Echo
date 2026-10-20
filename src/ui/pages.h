@@ -107,6 +107,7 @@ private:
     Library* m_library = nullptr;
     TrackTable* m_table = nullptr;
     qint64 m_id = 0;
+    QLabel* m_emptyFavorites = nullptr;
 };
 
 class SearchPage : public QWidget {
