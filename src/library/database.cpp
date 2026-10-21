@@ -95,7 +95,7 @@ QMutex& Database::writeLock()
     return mutex;
 }
 
-bool Database::open(const QString& filePath, const QString& connectionName, QString* error)
+bool Database::open(const QString& filePath, const QString& connectionName, QString* error, bool readOnly)
 {
 #ifdef ECHO_QT_PLUGINS
     QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
@@ -105,6 +105,7 @@ bool Database::open(const QString& filePath, const QString& connectionName, QStr
     } else {
         m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
     }
+    m_db.setConnectOptions(readOnly ? QStringLiteral("QSQLITE_OPEN_READONLY") : QString());
     m_db.setDatabaseName(filePath);
     if (!m_db.open()) {
         if (error) {
@@ -114,6 +115,11 @@ bool Database::open(const QString& filePath, const QString& connectionName, QStr
     }
     m_path = filePath;
     QSqlQuery query(m_db);
+    if (readOnly) {
+        query.exec(QStringLiteral("PRAGMA busy_timeout=1000"));
+        m_fts = query.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE name='tracks_fts'")) && query.next();
+        return true;
+    }
     query.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
     query.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
     query.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
@@ -731,6 +737,25 @@ QVector<Track> Database::searchTracks(const QString& ftsQuery, int limit) const
     QVector<qint64> ids;
     while (query.next()) {
         ids.push_back(query.value(0).toLongLong());
+    }
+    return tracksByIds(ids);
+}
+
+QVector<Track> Database::searchTracksContaining(const QString& text, int limit) const
+{
+    QSqlQuery query(m_db);
+    if (limit <= 0 || !query.exec(QStringLiteral("SELECT id,title,artist,album FROM tracks WHERE ")
+            + libraryScope() + QStringLiteral(" ORDER BY title,id"))) return {};
+    QVector<qint64> ids;
+    // SQLite lower() only folds ASCII. Keep the original Unicode case-insensitive semantics,
+    // streaming small metadata rows instead of loading every track (including lyrics).
+    while (query.next()) {
+        if (query.value(1).toString().contains(text, Qt::CaseInsensitive)
+            || query.value(2).toString().contains(text, Qt::CaseInsensitive)
+            || query.value(3).toString().contains(text, Qt::CaseInsensitive)) {
+            ids << query.value(0).toLongLong();
+            if (ids.size() >= limit) break;
+        }
     }
     return tracksByIds(ids);
 }

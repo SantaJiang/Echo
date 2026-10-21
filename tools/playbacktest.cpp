@@ -1,4 +1,5 @@
 #include "audio/engine.h"
+#include "audio/convert.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QProcess>
@@ -20,12 +21,13 @@ struct Capture {
 };
 class CaptureOutput final : public echo::AudioOutput {
 public:
-    explicit CaptureOutput(Capture* capture, int forcedRate = 0) : capture(capture), forcedRate(forcedRate) {}
+    explicit CaptureOutput(Capture* capture, int forcedRate = 0, int bits = 0, int bytes = 0, bool aligned = false, int outputChannels = 0)
+        : capture(capture), forcedRate(forcedRate), bits(bits), bytes(bytes), aligned(aligned), outputChannels(outputChannels) {}
     ~CaptureOutput() override { close(); }
     bool open(const echo::SampleFormat& source, bool, echo::DeviceFormat* opened, QString*) override
     {
-        *opened = {forcedRate ? forcedRate : source.sampleRate, source.channels, 32, 4, true};
-        channels = source.channels;
+        channels = outputChannels ? outputChannels : source.channels;
+        *opened = {forcedRate ? forcedRate : source.sampleRate, channels, bits ? bits : 32, bytes ? bytes : 4, !bits, aligned};
         rate = opened->sampleRate;
         isOpened = true;
         ++capture->opens;
@@ -41,8 +43,14 @@ public:
         thread = std::thread([this] {
             const int frames = rate / 200;
             std::vector<float> block(frames * channels);
+            std::vector<uint8_t> raw(frames * channels * (bytes ? bytes : 4));
+            echo::SampleFormat input;
+            input.sampleRate = rate; input.channels = channels; input.bitsPerSample = bits ? bits : 32;
+            input.bytesPerSample = bytes ? bytes : 4; input.isFloat = !bits; input.highAligned = aligned;
+            echo::DeviceFormat floating {rate, channels, 32, 4, true};
             while (running) {
-                const int got = pull(reinterpret_cast<uint8_t*>(block.data()), frames);
+                const int got = pull(raw.data(), frames);
+                echo::convertSamples(raw.data(), input, got, reinterpret_cast<uint8_t*>(block.data()), floating, 1, nullptr);
                 { std::lock_guard lock(capture->mutex); capture->samples.insert(capture->samples.end(), block.begin(), block.begin() + got * channels); }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
@@ -54,6 +62,9 @@ private:
     Capture* capture;
     Pull pull;
     int forcedRate = 0;
+    int bits = 0, bytes = 0;
+    bool aligned = false;
+    int outputChannels = 0;
     int channels = 0;
     int rate = 0;
     bool isOpened = false;
@@ -155,5 +166,54 @@ int main(int argc, char** argv)
     check(waitFor([&] { return tailRms(resampled) > .08; }), "resampled PCM reaches output");
     resampleEngine.setTrackGain(1, -12);
     check(waitFor([&] { const auto rms = tailRms(resampled); return rms > .021 && rms < .023; }), "live gain works through resampling");
+    for (const auto format : {echo::DeviceFormat{48000, 1, 24, 3, false},
+             echo::DeviceFormat{48000, 1, 24, 4, false}, echo::DeviceFormat{48000, 1, 24, 4, false, true},
+             echo::DeviceFormat{48000, 1, 16, 2, false}, echo::DeviceFormat{48000, 1, 32, 4, false}}) {
+        Capture integer;
+        echo::AudioEngine integerEngine(std::make_unique<CaptureOutput>(&integer, 0, format.bitsPerSample,
+            format.containerBytes, format.highAligned));
+        integerEngine.play(item, {});
+        check(waitFor([&] { return tailRms(integer) > .08; }), "integer PCM starts at correct level");
+        integerEngine.setVolume(0);
+        check(waitFor([&] { return tailRms(integer) < .000001; }), "all integer container formats mute");
+        integerEngine.setVolume(1);
+        check(waitFor([&] { return tailRms(integer) > .08; }), "integer volume restores");
+        integerEngine.pause();
+        check(waitFor([&] { return integerEngine.state() == echo::AudioEngine::State::Paused; }), "integer pause fade completes");
+        check(tailRms(integer) < .06, "integer pause actually fades the PCM");
+        integerEngine.seekMs(1200);
+        integerEngine.resume();
+        check(waitFor([&] { return integerEngine.positionMs() > 1300 && tailRms(integer) > .08; }), "integer seek and resume restore PCM");
+    }
+    const QString multichannel = directory.filePath("center.wav");
+    ffmpeg.start(QStringLiteral("ffmpeg"), {"-v", "error", "-y", "-f", "lavfi", "-i",
+        "aevalsrc=0|0|0.4*sin(2*PI*440*t)|0|0|0:s=48000:d=3:c=5.1", "-c:a", "pcm_f32le", multichannel});
+    check(ffmpeg.waitForFinished(10000) && ffmpeg.exitCode() == 0, "generate multichannel fixture");
+    Capture centerCapture;
+    echo::AudioEngine centerEngine(std::make_unique<CaptureOutput>(&centerCapture, 48000, 0, 0, false, 2));
+    echo::PlaybackItem centerItem; centerItem.path = multichannel; centerItem.token = 90;
+    centerEngine.play(centerItem, {});
+    check(waitFor([&] { return tailRms(centerCapture) > .05; }), "same-rate engine downmix retains center content");
+    // A contiguous CUE boundary must not drain/restart the resampling filter mid-stream.
+    Capture fullResampled, splitResampled;
+    echo::AudioEngine fullResampleEngine(std::make_unique<CaptureOutput>(&fullResampled, 44100));
+    echo::AudioEngine splitResampleEngine(std::make_unique<CaptureOutput>(&splitResampled, 44100));
+    echo::PlaybackItem whole; whole.path = path; whole.token = 300; whole.endMs = 2000;
+    echo::PlaybackItem firstRange = whole; firstRange.endMs = 1000;
+    echo::PlaybackItem secondRange = whole; secondRange.token = 301; secondRange.startMs = 1000;
+    fullResampleEngine.play(whole, {});
+    splitResampleEngine.play(firstRange, secondRange);
+    check(waitFor([&] { return fullResampleEngine.state() == echo::AudioEngine::State::Playing
+        && splitResampleEngine.state() == echo::AudioEngine::State::Playing; }), "resampled CUE comparison starts");
+    check(waitFor([&] { return fullResampleEngine.state() == echo::AudioEngine::State::Stopped
+        && splitResampleEngine.state() == echo::AudioEngine::State::Stopped; }, 5000), "resampled CUE comparison drains");
+    {
+        std::scoped_lock lock(fullResampled.mutex, splitResampled.mutex);
+        check(fullResampled.samples.size() == splitResampled.samples.size(), "resampled CUE keeps total sample count");
+        double maximumError = 0;
+        for (size_t i = 0; i < fullResampled.samples.size(); ++i)
+            maximumError = std::max(maximumError, double(std::abs(fullResampled.samples[i] - splitResampled.samples[i])));
+        check(maximumError < .000001, "resampled CUE seam equals continuous decode PCM");
+    }
     qInfo() << "Live normalization PCM, position, pause, gapless and resampling checks passed";
 }

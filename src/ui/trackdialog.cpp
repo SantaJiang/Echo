@@ -51,6 +51,7 @@ TrackDialog::TrackDialog(const Track& track, const QPixmap& artwork, QWidget* pa
     form->addRow(QStringLiteral("年份"), m_year);
     auto* artRow = new QHBoxLayout();
     auto* art = new QLabel(this);
+    m_art = art;
     art->setFixedSize(72, 72);
     art->setPixmap((artwork.isNull() ? placeholderCover(72) : artwork).scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     auto* pick = new QPushButton(QStringLiteral("更换封面"), this);
@@ -91,6 +92,12 @@ TrackDialog::TrackDialog(const Track& track, const QPixmap& artwork, QWidget* pa
         pixmap.loadFromData(m_artwork);
         art->setPixmap(pixmap.scaled(72, 72, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
     });
+}
+
+void TrackDialog::setArtwork(const QPixmap& artwork)
+{
+    if (!m_artworkChanged && !artwork.isNull())
+        m_art->setPixmap(artwork.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
 TagEdit TrackDialog::edit() const

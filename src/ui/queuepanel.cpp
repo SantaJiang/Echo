@@ -45,10 +45,29 @@ QueuePanel::QueuePanel(QWidget* parent)
 
 void QueuePanel::setQueue(const QVector<Player::Entry>& queue, int index, Library* library)
 {
+    QVector<Track> tracks = m_tracks;
+    if (queue != m_queue || m_revision != library->revision()) {
+        QVector<qint64> ids;
+        for (const auto& entry : queue) ids << entry.trackId;
+        tracks = library->tracks(ids);
+        m_revision = library->revision();
+    }
+    if (queue == m_queue && tracks == m_tracks) {
+        if (index != m_index) {
+            for (const int row : {m_index, index})
+                if (row >= 0 && row < tracks.size()) m_list->item(row)->setForeground(tracks[row].missing
+                    ? echo::palette().secondary : row == index ? echo::palette().accent : echo::palette().text);
+            m_index = index;
+        }
+        return;
+    }
+    m_queue = queue;
+    m_tracks = tracks;
+    m_index = index;
     m_filling = true;
     m_list->clear();
     for (int row = 0; row < queue.size(); ++row) {
-        const Track track = library->track(queue[row].trackId);
+        const Track& track = tracks[row];
         auto* item = new QListWidgetItem(track.displayTitle() + QStringLiteral(" — ") + track.displayArtist());
         item->setToolTip(track.path);
         if (track.missing) {

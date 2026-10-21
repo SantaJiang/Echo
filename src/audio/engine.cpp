@@ -17,6 +17,7 @@
 #include <atomic>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <deque>
 #include <utility>
 #include <vector>
@@ -88,6 +89,7 @@ struct AudioEngine::Worker {
     SwrContext* resampler = nullptr;
     int resampleRate = 0;
     uint32_t dither = 0xC0FFEEU;
+    uint32_t outputDither = 0x1234567U;
     float activeGain = 1.f;
     qint64 framesQueued = 0;
     bool draining = false;
@@ -97,6 +99,7 @@ struct AudioEngine::Worker {
     std::vector<uint8_t> converted;
     std::vector<uint8_t> floatBlock;
     std::vector<uint8_t> sourceFloat;
+    std::vector<double> ramped;
     std::atomic<qint64> framesPlayed {0};
     std::vector<Marker> markers;
     QThread* thread = nullptr;
@@ -321,8 +324,18 @@ struct AudioEngine::Worker {
 
     bool ensureDevice(const SampleFormat& source, bool force = false)
     {
-        if (!force && deviceReady && device.sampleRate == source.sampleRate && device.channels == source.channels
-            && source.channelMask == configuredSource.channelMask && compatible(source)) {
+        if (!force && deviceReady && source == configuredSource) {
+            if (!resampler && (source.sampleRate != device.sampleRate || source.channels != device.channels
+                || (source.channelMask && device.channelMask && source.channelMask != device.channelMask))) {
+                setupResampler(source);
+                if (!resampler) {
+                    emit owner->errorOccurred(QStringLiteral("无法初始化音频重采样或声道混音"));
+                    output->close();
+                    deviceReady = false;
+                    setState(State::Stopped);
+                    return false;
+                }
+            }
             return true;
         }
         if (output->isOpen()) {
@@ -358,22 +371,16 @@ struct AudioEngine::Worker {
         owner->m_deviceExclusive.store(device.exclusive);
         emit owner->deviceOpened(source.sampleRate, source.bitsPerSample, source.isFloat, device.sampleRate, device.exclusive);
         freeResampler();
-        if (source.sampleRate != device.sampleRate) {
+        if (source.sampleRate != device.sampleRate || source.channels != device.channels
+            || (source.channelMask && device.channelMask && source.channelMask != device.channelMask)) {
             setupResampler(source);
-        }
-        return true;
-    }
-
-    bool compatible(const SampleFormat& source) const
-    {
-        if (source.sampleRate != device.sampleRate) {
-            return false;
-        }
-        if (source.channels != device.channels) {
-            return false;
-        }
-        if (source.isFloat != device.isFloat) {
-            return false;
+            if (!resampler) {
+                emit owner->errorOccurred(QStringLiteral("无法初始化音频重采样或声道混音"));
+                output->close();
+                deviceReady = false;
+                setState(State::Stopped);
+                return false;
+            }
         }
         return true;
     }
@@ -383,17 +390,30 @@ struct AudioEngine::Worker {
         freeResampler();
         AVChannelLayout inLayout;
         AVChannelLayout outLayout;
-        av_channel_layout_default(&inLayout, source.channels);
-        av_channel_layout_default(&outLayout, device.channels);
+        if (source.channelMask) av_channel_layout_from_mask(&inLayout, source.channelMask);
+        else av_channel_layout_default(&inLayout, source.channels);
+        if (device.channelMask) av_channel_layout_from_mask(&outLayout, device.channelMask);
+        else av_channel_layout_default(&outLayout, device.channels);
         swr_alloc_set_opts2(&resampler, &outLayout, AV_SAMPLE_FMT_DBL, device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
                             source.sampleRate, 0, nullptr);
-        if (resampler && av_opt_set(resampler, "resampler", "soxr", 0) == 0) {
-            av_opt_set_double(resampler, "precision", 20.0, 0);
+        if (resampler && std::strstr(swresample_configuration(), "--enable-libsoxr")
+            && av_opt_set(resampler, "resampler", "soxr", 0) == 0) {
+            av_opt_set_double(resampler, "precision", 28.0, 0);
+        }
+        if (resampler) {
+            av_opt_set_int(resampler, "filter_size", 64, 0);
+            av_opt_set_int(resampler, "exact_rational", 1, 0);
+            av_opt_set_double(resampler, "rematrix_maxval", 1., 0);
         }
         if (!resampler || swr_init(resampler) < 0) {
             freeResampler();
             swr_alloc_set_opts2(&resampler, &outLayout, AV_SAMPLE_FMT_DBL, device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
                                 source.sampleRate, 0, nullptr);
+            if (resampler) {
+                av_opt_set_int(resampler, "filter_size", 64, 0);
+                av_opt_set_int(resampler, "exact_rational", 1, 0);
+                av_opt_set_double(resampler, "rematrix_maxval", 1., 0);
+            }
             if (!resampler || swr_init(resampler) < 0) {
                 freeResampler();
             }
@@ -411,11 +431,12 @@ struct AudioEngine::Worker {
         resampleRate = 0;
     }
 
-    void pushMarker(const Loaded& slot)
+    void pushMarker(const Loaded& slot, bool includeFilterDelay = false)
     {
         activeGain = std::pow(10.f, slot.item.gainDb / 20.f);
         const int rate = device.sampleRate > 0 ? device.sampleRate : slot.format.sampleRate;
-        markers.push_back(Marker {framesQueued, slot.item.token, slot.item.startMs, rate, slot.item});
+        const qint64 delayed = includeFilterDelay && resampler ? swr_get_delay(resampler, rate) : 0;
+        markers.push_back(Marker {framesQueued + delayed, slot.item.token, slot.item.startMs, rate, slot.item});
         owner->m_activeToken.store(slot.item.token);
     }
 
@@ -526,39 +547,43 @@ struct AudioEngine::Worker {
             return;
         }
         if (read == 0) {
-            flushResampler();
             advance(false);
             return;
         }
         writeFrames(raw.data(), read, current.format, current.item.gainDb);
     }
 
-    void writeFloatBlock(const uint8_t* pcm, int count, float gain)
+    void queueFloatBlock(const uint8_t* pcm, int count, float gain = 1.f)
     {
         SampleFormat working;
         working.sampleRate = device.sampleRate;
-        working.channels = device.channels > 0 ? device.channels : current.format.channels;
+        working.channels = device.channels;
         working.pcm = Fooyin::SampleFormat::F64;
         working.bitsPerSample = 64;
         working.bytesPerSample = 8;
         working.isFloat = true;
-        std::vector<double> ramped;
+        working.channelMask = device.channelMask;
+        converted.resize(static_cast<size_t>(count) * static_cast<size_t>(device.bytesPerFrame()));
+        convertSamples(pcm, working, count, converted.data(), device, gain, &dither);
+        enqueueConverted(count);
+    }
+
+    void writeFloatBlock(const uint8_t* pcm, int count, float gain)
+    {
         if (std::abs(activeGain - gain) > 0.00001f) {
             const auto* samples = reinterpret_cast<const double*>(pcm);
-            ramped.assign(samples, samples + count * working.channels);
+            ramped.assign(samples, samples + count * device.channels);
             const float step = 1.f / std::max(1, device.sampleRate / 10);
             for (int frame = 0; frame < count; ++frame) {
                 activeGain += std::clamp(gain - activeGain, -step, step);
-                for (int ch = 0; ch < working.channels; ++ch) ramped[frame * working.channels + ch] *= activeGain;
+                for (int ch = 0; ch < device.channels; ++ch) ramped[frame * device.channels + ch] *= activeGain;
             }
             pcm = reinterpret_cast<const uint8_t*>(ramped.data());
             gain = 1.f;
         } else {
             activeGain = gain;
         }
-        converted.resize(static_cast<size_t>(count) * static_cast<size_t>(device.bytesPerFrame()));
-        convertSamples(pcm, working, count, converted.data(), device, gain, &dither);
-        enqueueConverted(count);
+        queueFloatBlock(pcm, count, gain);
     }
 
     void enqueueConverted(int count)
@@ -587,26 +612,39 @@ struct AudioEngine::Worker {
         if (!std::isfinite(gain) || gain < 0.f) {
             gain = 0.f;
         }
-        if (resampler && format.sampleRate != device.sampleRate) {
+        if (resampler) {
             const uint8_t* resampleInput = src;
-            if (format.pcm != Fooyin::SampleFormat::F64) {
+            const bool scale = gain != 1.f || std::abs(activeGain - gain) > 0.00001f;
+            if (format.pcm != Fooyin::SampleFormat::F64 || scale) {
                 DeviceFormat wide;
                 wide.sampleRate = format.sampleRate;
                 wide.channels = format.channels;
                 wide.bitsPerSample = 64;
                 wide.containerBytes = 8;
                 wide.isFloat = true;
+                wide.channelMask = format.channelMask;
                 sourceFloat.resize(static_cast<size_t>(frames) * static_cast<size_t>(std::max(format.channels, 1)) * sizeof(double));
                 convertSamples(src, format, frames, sourceFloat.data(), wide, 1.f, nullptr);
+                if (scale) {
+                    // Apply gain to input samples so buffered filter tails keep their track's gain.
+                    auto* samples = reinterpret_cast<double*>(sourceFloat.data());
+                    const float step = 1.f / std::max(1, format.sampleRate / 10);
+                    for (int frame = 0; frame < frames; ++frame) {
+                        activeGain += std::clamp(gain - activeGain, -step, step);
+                        for (int ch = 0; ch < format.channels; ++ch) samples[frame * format.channels + ch] *= activeGain;
+                    }
+                }
                 resampleInput = sourceFloat.data();
             }
-            const int outEstimate = static_cast<int>(av_rescale_rnd(frames, device.sampleRate, format.sampleRate, AV_ROUND_UP)) + 64;
+            const int estimated = swr_get_out_samples(resampler, frames);
+            const int outEstimate = estimated > 0 ? estimated : static_cast<int>(av_rescale_rnd(
+                swr_get_delay(resampler, format.sampleRate) + frames, device.sampleRate, format.sampleRate, AV_ROUND_UP)) + 256;
             floatBlock.resize(static_cast<size_t>(outEstimate) * static_cast<size_t>(std::max(device.channels, 1)) * sizeof(double));
             uint8_t* outputPlanes[] = {floatBlock.data()};
             const uint8_t* inputPlanes[] = {resampleInput};
             const int got = swr_convert(resampler, outputPlanes, outEstimate, inputPlanes, frames);
             if (got > 0) {
-                writeFloatBlock(floatBlock.data(), got, gain);
+                queueFloatBlock(floatBlock.data(), got);
             }
             return;
         }
@@ -636,7 +674,7 @@ struct AudioEngine::Worker {
             if (got <= 0) {
                 break;
             }
-            writeFloatBlock(floatBlock.data(), got, activeGain);
+            queueFloatBlock(floatBlock.data(), got);
         }
     }
 
@@ -656,7 +694,7 @@ struct AudioEngine::Worker {
             current.format = upcoming.format;
             current.audibleFrames = itemFrames(*current.decoder, current.item);
             upcoming = {};
-            pushMarker(current);
+            pushMarker(current, true);
             emit owner->trackStarted(current.item.token);
             loadUpcoming();
             return;
@@ -664,11 +702,13 @@ struct AudioEngine::Worker {
         if (sameFormat) {
             current = std::move(upcoming);
             upcoming = {};
-            pushMarker(current);
+            pushMarker(current, true);
             emit owner->trackStarted(current.item.token);
             loadUpcoming();
             return;
         }
+        // End the filter only at the end of this output stream, never at a gapless boundary.
+        flushResampler();
         draining = true;
         afterTail = upcoming.decoder ? AfterTail::Switch : AfterTail::Stop;
         if (failed && upcoming.decoder) {
@@ -755,6 +795,7 @@ struct AudioEngine::Worker {
         markers.push_back(marker);
         owner->m_positionMs.store(marker.startMs);
         owner->m_activeToken.store(marker.token);
+        emit owner->positionChanged();
         if (wasPlaying && output && deviceReady) {
             output->start();
         }
@@ -821,6 +862,7 @@ struct AudioEngine::Worker {
         const int sampleBytes = std::max(1, device.containerBytes);
         for (int frame = 0; frame < frames; ++frame) {
             smoothedVolume += (target - smoothedVolume) * std::min(1.f, 1.f / static_cast<float>(ramp));
+            if (std::fabs(target - smoothedVolume) < 0.0000001f) smoothedVolume = target;
             float envelope = smoothedVolume;
             if (kind != OutputFade::None && total > 0) {
                 const double progress = std::clamp(static_cast<double>(done + frame) / static_cast<double>(total), 0.0, 1.0);
@@ -831,32 +873,16 @@ struct AudioEngine::Worker {
                 continue;
             }
             uint8_t* sample = dst + static_cast<size_t>(frame) * static_cast<size_t>(device.bytesPerFrame());
-            for (int channel = 0; channel < channels; ++channel) {
-                uint8_t* word = sample + static_cast<size_t>(channel) * static_cast<size_t>(sampleBytes);
-                if (device.isFloat && sampleBytes == 4) {
-                    float value = 0;
-                    std::memcpy(&value, word, sizeof(value));
-                    value = std::clamp(value * envelope, -1.f, 1.f);
-                    std::memcpy(word, &value, sizeof(value));
-                } else if (device.isFloat && sampleBytes == 8) {
-                    double value = 0;
-                    std::memcpy(&value, word, sizeof(value));
-                    value = std::clamp(value * static_cast<double>(envelope), -1.0, 1.0);
-                    std::memcpy(word, &value, sizeof(value));
-                } else if (sampleBytes == 2) {
-                    int16_t value = 0;
-                    std::memcpy(&value, word, sizeof(value));
-                    const auto scaled = static_cast<int32_t>(std::lround(static_cast<float>(value) * envelope));
-                    value = static_cast<int16_t>(std::clamp(scaled, -32768, 32767));
-                    std::memcpy(word, &value, sizeof(value));
-                } else if (sampleBytes == 4) {
-                    int32_t value = 0;
-                    std::memcpy(&value, word, sizeof(value));
-                    const auto scaled = std::llround(static_cast<double>(value) * static_cast<double>(envelope));
-                    value = static_cast<int32_t>(std::clamp(scaled, static_cast<long long>(INT32_MIN), static_cast<long long>(INT32_MAX)));
-                    std::memcpy(word, &value, sizeof(value));
-                }
-            }
+            SampleFormat source;
+            source.sampleRate = device.sampleRate;
+            source.channels = channels;
+            source.bitsPerSample = device.bitsPerSample;
+            source.bytesPerSample = sampleBytes;
+            source.isFloat = device.isFloat;
+            source.highAligned = device.highAligned;
+            source.channelMask = device.channelMask;
+            // Quantize at the actual device depth, including packed 24-bit and aligned containers.
+            convertSamples(sample, source, 1, sample, device, envelope, &outputDither);
         }
         if (kind != OutputFade::None) {
             fadeDone.store(done + frames);
@@ -886,6 +912,8 @@ struct AudioEngine::Worker {
                 found = true;
             }
         }
+        // Retain only the audible marker and its successors during long-running playback.
+        while (markers.size() > 1 && markers[1].queuedFrame <= heard) markers.erase(markers.begin());
         if (!found || active.sampleRate <= 0) {
             return;
         }
@@ -1003,10 +1031,17 @@ void AudioEngine::setSpatialEnabled(bool enabled)
 
 void AudioEngine::setTrackGain(qint64 token, float gainDb)
 {
+    setTrackGains({{token, gainDb}});
+}
+
+void AudioEngine::setTrackGains(const QHash<qint64, float>& gains)
+{
+    if (gains.isEmpty()) return;
     QMutexLocker locker(&m_worker->mutex);
-    m_worker->pendingGains.insert(token, gainDb);
-    locker.unlock();
-    m_worker->post(Worker::Gain);
+    for (auto it = gains.cbegin(); it != gains.cend(); ++it) m_worker->pendingGains.insert(it.key(), it.value());
+    if (std::find(m_worker->commands.begin(), m_worker->commands.end(), Worker::Gain) == m_worker->commands.end())
+        m_worker->commands.push_back(Worker::Gain);
+    m_worker->wait.wakeAll();
 }
 
 AudioEngine::State AudioEngine::state() const

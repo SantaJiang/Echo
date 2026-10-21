@@ -123,6 +123,7 @@ QIcon icon(Icon kind, const QColor& color, int size)
 
 void setFavoriteButton(QToolButton* button, bool liked, bool enabled)
 {
+    if (!button->icon().isNull() && button->isChecked() == liked && button->isEnabled() == enabled) return;
     const QSignalBlocker blocker(button);
     button->setCheckable(true);
     button->setChecked(liked);

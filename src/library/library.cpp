@@ -16,14 +16,10 @@
 #include <QFutureWatcher>
 #include <QtConcurrent>
 #include <QUrl>
+#include <QUuid>
 
 namespace echo {
 namespace {
-
-QString containsPattern(const QString& text)
-{
-    return text.trimmed().toLower();
-}
 
 bool matches(const QString& haystack, const QString& needle)
 {
@@ -50,6 +46,8 @@ QString ftsQuery(const QString& text)
 Library::Library(QObject* parent)
     : QObject(parent)
 {
+    connect(this, &Library::changed, this, [this] { ++m_revision; });
+    connect(this, &Library::sourceChanged, this, [this](qint64) { ++m_revision; });
     connect(this, &Library::changed, this, &Library::refreshFavorites);
     m_rescanTimer.setSingleShot(true);
     m_rescanTimer.setInterval(800);
@@ -492,6 +490,33 @@ bool Library::saveTags(qint64 id, const TagEdit& edit, QString* error)
     return true;
 }
 
+SearchResults Library::searchDatabase(const QString& path, const QString& text)
+{
+    SearchResults result;
+    const QString connection = QStringLiteral("search-") + QUuid::createUuid().toString(QUuid::Id128);
+    {
+        Database db;
+        if (db.open(path, connection, nullptr, true)) {
+            QSqlQuery snapshot(QSqlDatabase::database(connection));
+            snapshot.exec(QStringLiteral("BEGIN"));
+            const QString query = ftsQuery(text);
+            if (db.hasFts() && !query.isEmpty()) result.tracks = db.searchTracks(query, 200);
+            if (!db.hasFts() || query.isEmpty() || (result.tracks.isEmpty() && text.trimmed().size() <= 1)) {
+                result.tracks = db.searchTracksContaining(text, 200);
+            }
+            for (const auto& album : db.albums({}))
+                if (matches(album.title, text) || matches(album.artist, text)) result.albums << album;
+            for (const auto& artist : db.artists())
+                if (matches(artist.name, text)) result.artists << artist;
+            for (const auto& playlist : db.playlists())
+                if (matches(playlist.name, text)) result.playlists << playlist;
+            snapshot.exec(QStringLiteral("COMMIT"));
+        }
+    }
+    QSqlDatabase::removeDatabase(connection);
+    return result;
+}
+
 QVector<Track> Library::searchTracks(const QString& text) const
 {
     if (!m_database) {
@@ -504,17 +529,7 @@ QVector<Track> Library::searchTracks(const QString& text) const
             return found;
         }
     }
-    const QString needle = containsPattern(text);
-    QVector<Track> result;
-    for (const Track& track : allTracks(QStringLiteral("title"), false)) {
-        if (matches(track.title, needle) || matches(track.artist, needle) || matches(track.album, needle)) {
-            result.push_back(track);
-        }
-        if (result.size() >= 200) {
-            break;
-        }
-    }
-    return result;
+    return m_database->searchTracksContaining(text.trimmed(), 200);
 }
 
 QVector<Album> Library::searchAlbums(const QString& text) const

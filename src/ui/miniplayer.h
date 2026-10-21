@@ -3,6 +3,7 @@
 #include "library/types.h"
 
 #include <QWidget>
+#include <QPixmap>
 
 class QLabel;
 class QToolButton;
@@ -28,6 +29,7 @@ signals:
     void expandRequested();
 
 protected:
+    bool event(QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -38,6 +40,12 @@ private:
     QSlider* m_seek = nullptr;
     qint64 m_trackId = 0;
     bool m_canSeek = false;
+    Track m_lastTrack;
+    qint64 m_artworkKey = -1;
+    qreal m_artworkDpr = 0;
+    QPixmap m_lastArtwork;
+    bool m_lastPlaying = false;
+    bool m_initialized = false;
     QPoint m_dragOffset;
     bool m_dragging = false;
     QLabel* m_title = nullptr;

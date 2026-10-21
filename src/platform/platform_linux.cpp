@@ -18,7 +18,7 @@ namespace echo {
 
 void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qint64)>&) {}
 
-void updateSystemNowPlaying(const Track&, const QImage&, qint64, qint64, bool) {}
+void updateSystemNowPlaying(const Track&, const QImage&, qint64, qint64, bool, bool) {}
 
 } // namespace echo
 
@@ -163,7 +163,7 @@ void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qi
     bus.registerObject(QStringLiteral("/org/mpris/MediaPlayer2"), g_object, QDBusConnection::ExportAdaptors);
 }
 
-void updateSystemNowPlaying(const Track& track, const QImage&, qint64 positionMs, qint64 durationMs, bool playing)
+void updateSystemNowPlaying(const Track& track, const QImage&, qint64 positionMs, qint64 durationMs, bool playing, bool)
 {
     const bool changed = g_playing != playing || g_title != track.displayTitle();
     g_positionMs = positionMs;

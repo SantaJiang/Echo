@@ -164,6 +164,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_stack->addWidget(m_folders);
     m_stack->addWidget(m_playlist);
     m_stack->addWidget(m_searchPage);
+    connect(m_stack, &QStackedWidget::currentChanged, this, [this] { refreshCurrentPage(); });
 
     m_search = new QLineEdit(this);
     m_search->setObjectName(QStringLiteral("search"));
@@ -445,6 +446,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
         if (text.trimmed().isEmpty()) {
             m_showingSearch = false;
+            m_searchPage->search({}); // Invalidate any in-flight result before returning to the library.
             m_heading->show();
             m_stack->setCurrentIndex(m_playlistId > 0 && m_stack->currentWidget() == m_searchPage ? 4 : m_libraryPage);
             if (m_stack->currentWidget() == m_playlist) {
@@ -501,13 +503,8 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     });
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
     connect(m_library, &Library::sourceChanged, this, [this](qint64) {
-        m_songs->reload();
-        m_folders->reload();
-        m_albums->reload();
-        m_artists->reload();
-        m_playlist->reload();
-        if (m_showingSearch)
-            m_searchPage->search(m_search->text().trimmed());
+        for (int i = 0; i < m_stack->count(); ++i) m_stack->widget(i)->setProperty("echoDirty", true);
+        refreshCurrentPage();
         syncPlayer();
     });
     connect(m_library, &Library::scanWarning, this, [this](const QString& message) { m_bar->setStatus(message); });
@@ -555,18 +552,18 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     });
 
     auto* timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, [this] {
-        const Track track = m_player->currentTrack();
-        const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 720);
-        m_bar->setPosition(m_player->positionMs(), track.durationMs);
-        if (m_mini->isVisible()) {
-            m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
-            m_mini->setPosition(m_player->positionMs(), track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
-            m_mini->setFavorite(m_library->isFavorite(track.id), track.id > 0 && m_library->track(track.id).id > 0);
-        }
-        updateSystemNowPlaying(track, art.toImage(), m_player->positionMs(), track.durationMs, m_player->state() == AudioEngine::State::Playing);
+    connect(timer, &QTimer::timeout, this, [this] { updatePlaybackProgress(); });
+    connect(m_engine, &AudioEngine::positionChanged, this, [this] { updatePlaybackProgress(false, true); });
+    connect(m_engine, &AudioEngine::stateChanged, timer, [timer](int state) {
+        if (state == static_cast<int>(AudioEngine::State::Playing)) timer->start(250);
+        else timer->stop();
     });
-    timer->start(250);
+    if (m_engine->state() == AudioEngine::State::Playing) timer->start(250);
+    connect(m_library->artwork(), &ArtworkCache::ready, this, [this](const QString& hash, int size) {
+        if (hash != m_player->currentTrack().artworkHash) return;
+        if (size == 160) syncPlayer();
+        if (size == 720) updatePlaybackProgress();
+    });
 
     refreshViews();
     syncPlayer();
@@ -675,7 +672,7 @@ void MainWindow::buildMenus()
     control->addAction(QStringLiteral("迷你播放器"), this, [this] {
         hide();
         const Track track = m_player->currentTrack();
-        m_mini->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 128), m_player->state() == AudioEngine::State::Playing);
+        m_mini->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 160), m_player->state() == AudioEngine::State::Playing);
         m_mini->setPosition(m_player->positionMs(), track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
         m_mini->show();
     });
@@ -710,16 +707,39 @@ void MainWindow::buildMenus()
 
 void MainWindow::refreshViews()
 {
-    m_songs->reload();
-    m_albums->reload();
-    m_artists->reload();
-    m_folders->reload();
-    m_playlist->reload();
-    if (m_showingSearch) {
-        m_searchPage->search(m_search->text().trimmed());
-    }
+    for (int i = 0; i < m_stack->count(); ++i) m_stack->widget(i)->setProperty("echoDirty", true);
+    refreshCurrentPage();
     m_sidebar->setPlaylists(m_library->playlistFolders(), m_library->playlists());
     syncPlayer();
+}
+
+void MainWindow::refreshCurrentPage()
+{
+    QWidget* page = m_stack->currentWidget();
+    if (!page || !page->property("echoDirty").toBool()) return;
+    page->setProperty("echoDirty", false);
+    if (page == m_songs) m_songs->reload();
+    else if (page == m_albums) m_albums->reload();
+    else if (page == m_artists) m_artists->reload();
+    else if (page == m_folders) m_folders->reload();
+    else if (page == m_playlist) m_playlist->reload();
+    else if (page == m_searchPage) m_searchPage->search(m_search->text());
+}
+
+void MainWindow::updatePlaybackProgress(bool refreshTrack, bool forceSystem)
+{
+    const Track track = m_player->currentTrack();
+    if (refreshTrack && track.id != m_displayedTrackId) {
+        // The audible token can change after the decoder has already announced the next track.
+        syncPlayer();
+        return;
+    }
+    const bool playing = m_player->state() == AudioEngine::State::Playing;
+    const qint64 position = m_player->positionMs();
+    if (isVisible()) m_bar->setPosition(position, track.durationMs);
+    if (m_mini->isVisible()) m_mini->setPosition(position, track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
+    updateSystemNowPlaying(track, m_library->artwork()->pixmap(track.artworkHash, 720).toImage(),
+                           position, track.durationMs, playing, forceSystem);
 }
 
 void MainWindow::showLibraryPage(int index)
@@ -740,6 +760,7 @@ void MainWindow::showLibraryPage(int index)
 void MainWindow::syncPlayer()
 {
     const Track track = m_player->currentTrack();
+    m_displayedTrackId = track.id;
     const QPixmap art = m_library->artwork()->pixmap(track.artworkHash, 160);
     m_bar->setTrack(track, art);
     const bool canFavorite = track.id > 0 && m_library->track(track.id).id > 0;
@@ -765,6 +786,7 @@ void MainWindow::syncPlayer()
     m_folders->setPlayingId(id, playing);
     m_playlist->setPlayingId(id, playing);
     m_searchPage->setPlayingId(id, playing);
+    updatePlaybackProgress(false);
     if (track.missing) {
         m_bar->setStatus(QStringLiteral("找不到文件"));
     }
@@ -799,6 +821,9 @@ void MainWindow::showInfo(qint64 id)
         return;
     }
     TrackDialog dialog(track, m_library->artwork()->pixmap(track.artworkHash, 160), this);
+    connect(m_library->artwork(), &ArtworkCache::ready, &dialog, [this, &dialog, hash = track.artworkHash](const QString& readyHash, int size) {
+        if (hash == readyHash && size == 160) dialog.setArtwork(m_library->artwork()->pixmap(hash, size));
+    });
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }

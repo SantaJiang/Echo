@@ -299,7 +299,21 @@ int main(int argc, char** argv)
     const int32_t low24 = 0x00123456;
     int32_t high24 = 0;
     echo::convertSamples(reinterpret_cast<const uint8_t*>(&low24), pcm24, 1, reinterpret_cast<uint8_t*>(&high24), aligned24, 1.f, &dither);
-    expect(high24 == low24, "24-bit word preserved");
+    expect(high24 == low24 * 256, "low-aligned 24-bit input is shifted into high-aligned output");
+    pcm24.highAligned = true;
+    int32_t preserved24 = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&high24), pcm24, 1,
+        reinterpret_cast<uint8_t*>(&preserved24), aligned24, 1.f, &dither);
+    expect(preserved24 == high24, "high-aligned 24-bit passthrough preserves every bit");
+    echo::DeviceFormat lowAligned24 = aligned24; lowAligned24.highAligned = false;
+    int32_t roundTrip24 = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&high24), pcm24, 1,
+        reinterpret_cast<uint8_t*>(&roundTrip24), lowAligned24, 1.f, &dither);
+    expect(roundTrip24 == low24, "high-aligned to low-aligned 24-bit round trip");
+    const int32_t negativeHigh = -low24 * 256;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&negativeHigh), pcm24, 1,
+        reinterpret_cast<uint8_t*>(&roundTrip24), lowAligned24, 1.f, &dither);
+    expect(roundTrip24 == -low24, "24-bit alignment conversion retains negative amplitude");
 
     echo::SampleFormat ffmpeg24;
     ffmpeg24.sampleRate = 48000;
@@ -323,6 +337,49 @@ int main(int argc, char** argv)
     echo::convertSamples(reinterpret_cast<const uint8_t*>(&fullScale), ffmpeg24, 1, reinterpret_cast<uint8_t*>(&fullFloat), floatOut,
                          1.f, &dither);
     expect(std::fabs(fullFloat - (8388607.f / 8388608.f)) < 1e-6f, "24-bit full scale");
+
+    echo::SampleFormat surround;
+    surround.sampleRate = 48000; surround.channels = 6; surround.bitsPerSample = 64;
+    surround.bytesPerSample = 8; surround.isFloat = true; surround.channelMask = 0x3f;
+    echo::DeviceFormat stereo {48000, 2, 64, 8, true};
+    const double center[] {0, 0, 0.5, 0, 0, 0};
+    double mixed[2] {};
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(center), surround, 1,
+        reinterpret_cast<uint8_t*>(mixed), stereo, 1, nullptr);
+    expect(mixed[0] > 0.1 && mixed[0] == mixed[1], "5.1 center is mixed into both stereo channels");
+    const double lfeOnly[] {0, 0, 0, 0.5, 0, 0};
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(lfeOnly), surround, 1,
+        reinterpret_cast<uint8_t*>(mixed), stereo, 1, nullptr);
+    expect(mixed[0] == 0 && mixed[1] == 0, "stereo downmix excludes LFE by default");
+    echo::SampleFormat precise = surround; precise.channels = 1; precise.channelMask = 0;
+    echo::DeviceFormat doubleOut {48000, 1, 64, 8, true};
+    const double fine = 0.123456789123456;
+    double gained = 0;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(&fine), precise, 1,
+        reinterpret_cast<uint8_t*>(&gained), doubleOut, 0.5f, nullptr);
+    expect(std::abs(gained - fine * .5) < 1e-15, "gain retains double precision");
+    echo::DeviceFormat packed24 {48000, 1, 24, 3, false};
+    std::vector<double> lowLevel(32768, 0.25 / 8388608.);
+    std::vector<uint8_t> quantized(lowLevel.size() * 3);
+    uint32_t noiseState = 123;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(lowLevel.data()), precise, lowLevel.size(),
+        quantized.data(), packed24, 1.f, &noiseState);
+    double average = 0; bool varied = false;
+    for (int i = 0; i < int(lowLevel.size()); ++i) {
+        int32_t word = quantized[i*3] | (quantized[i*3+1] << 8) | (quantized[i*3+2] << 16);
+        if (word & 0x800000) word |= static_cast<int32_t>(0xff000000);
+        average += word; varied |= word != 0;
+    }
+    average /= lowLevel.size();
+    expect(varied && std::abs(average - .25) < .02 && noiseState != 123, "24-bit TPDF preserves sub-LSB mean without truncation bias");
+    echo::DeviceFormat reduced16 {48000, 1, 16, 2, false};
+    echo::SampleFormat signed32 = precise; signed32.isFloat = false; signed32.bitsPerSample = 32; signed32.bytesPerSample = 4;
+    const int32_t quiet32[] {12345, -12345, 45678, -45678};
+    int16_t reduced[4] {};
+    noiseState = 123;
+    echo::convertSamples(reinterpret_cast<const uint8_t*>(quiet32), signed32, 4,
+        reinterpret_cast<uint8_t*>(reduced), reduced16, 1.f, &noiseState);
+    expect(noiseState != 123, "integer bit-depth reduction is dithered");
 
     const QString wav24 = dir.filePath(QStringLiteral("tone24.wav"));
     ffmpeg({QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),

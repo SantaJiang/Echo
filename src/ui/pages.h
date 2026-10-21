@@ -197,6 +197,12 @@ signals:
     void playlistSelected(qint64 id);
 
 private:
+    void launchSearch();
+    void applySearch(const SearchResults& result, const QString& text);
+    QTimer* m_searchTimer = nullptr;
+    QString m_query;
+    quint64 m_searchRevision = 0;
+    bool m_searchRunning = false;
     void showSection(QWidget* section, QListWidget* list);
     Library* m_library = nullptr;
     QWidget* m_empty = nullptr;

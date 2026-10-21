@@ -14,7 +14,7 @@ class Database {
 public:
     static QMutex& writeLock();
 
-    bool open(const QString& filePath, const QString& connectionName, QString* error = nullptr);
+    bool open(const QString& filePath, const QString& connectionName, QString* error = nullptr, bool readOnly = false);
     [[nodiscard]] bool isOpen() const;
     [[nodiscard]] QString filePath() const { return m_path; }
 
@@ -43,6 +43,7 @@ public:
     [[nodiscard]] QVector<Album> albums(const QString& artistKey) const;
     [[nodiscard]] QVector<Artist> artists() const;
     [[nodiscard]] QVector<Track> searchTracks(const QString& ftsQuery, int limit) const;
+    [[nodiscard]] QVector<Track> searchTracksContaining(const QString& text, int limit) const;
     [[nodiscard]] bool hasFts() const { return m_fts; }
 
     [[nodiscard]] qint64 favoritesPlaylistId() const;

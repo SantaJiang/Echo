@@ -5,6 +5,7 @@
 #include "ui/dialogs.h"
 
 class QLineEdit;
+class QLabel;
 class QSpinBox;
 
 namespace echo {
@@ -15,8 +16,10 @@ class TrackDialog : public DialogShell {
 public:
     explicit TrackDialog(const Track& track, const QPixmap& artwork, QWidget* parent = nullptr);
     [[nodiscard]] TagEdit edit() const;
+    void setArtwork(const QPixmap& artwork);
 
 private:
+    QLabel* m_art = nullptr;
     QLineEdit* m_title = nullptr;
     QLineEdit* m_artist = nullptr;
     QLineEdit* m_album = nullptr;

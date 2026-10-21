@@ -8,6 +8,7 @@
 #include <QPointer>
 #include <QLoggingCategory>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QWidget>
 
 #include <dispatch/dispatch.h>
@@ -103,6 +104,7 @@ void useDarkAppearance()
 
 void applyWindowChrome(QWidget* window)
 {
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
     useDarkAppearance();
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
     NSWindow* native = view.window;
@@ -235,18 +237,21 @@ void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qi
     }];
 }
 
-void updateSystemNowPlaying(const Track& track, const QImage& artwork, qint64 positionMs, qint64 durationMs, bool playing)
+void updateSystemNowPlaying(const Track& track, const QImage& artwork, qint64 positionMs, qint64 durationMs, bool playing, bool force)
 {
-    static QString lastTitle;
+    static Track lastTrack;
     static bool lastPlaying = false;
-    static qint64 lastPosition = -100000;
-    const qint64 delta = positionMs > lastPosition ? positionMs - lastPosition : lastPosition - positionMs;
-    if (track.displayTitle() == lastTitle && playing == lastPlaying && delta < 1000) {
-        return;
-    }
-    lastTitle = track.displayTitle();
+    static bool hadArtwork = false;
+    static qint64 lastPosition = 0;
+    static QElapsedTimer elapsed;
+    const qint64 expected = lastPosition + (lastPlaying && elapsed.isValid() ? elapsed.elapsed() : 0);
+    if (!force && elapsed.isValid() && track == lastTrack && playing == lastPlaying && hadArtwork == !artwork.isNull()
+        && std::abs(positionMs - expected) < 1000) return;
+    lastTrack = track;
     lastPlaying = playing;
     lastPosition = positionMs;
+    hadArtwork = !artwork.isNull();
+    elapsed.start();
     NSMutableDictionary* info = [NSMutableDictionary dictionary];
     info[MPMediaItemPropertyTitle] = track.displayTitle().toNSString();
     info[MPMediaItemPropertyArtist] = track.displayArtist().toNSString();
@@ -254,16 +259,20 @@ void updateSystemNowPlaying(const Track& track, const QImage& artwork, qint64 po
     info[MPMediaItemPropertyPlaybackDuration] = @(durationMs / 1000.0);
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(positionMs / 1000.0);
     info[MPNowPlayingInfoPropertyPlaybackRate] = @(playing ? 1.0 : 0.0);
-    if (!artwork.isNull()) {
+    static QString cachedHash;
+    static MPMediaItemArtwork* cachedArtwork = nil;
+    if (cachedHash != track.artworkHash || artwork.isNull()) { cachedHash = track.artworkHash; cachedArtwork = nil; }
+    if (!artwork.isNull() && !cachedArtwork) {
         QImage image = artwork.convertToFormat(QImage::Format_ARGB32);
         CGImageRef cg = image.toCGImage();
         if (cg) {
             NSImage* native = [[NSImage alloc] initWithCGImage:cg size:NSMakeSize(image.width(), image.height())];
             CGImageRelease(cg);
-            info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithBoundsSize:native.size
+            cachedArtwork = [[MPMediaItemArtwork alloc] initWithBoundsSize:native.size
                                                                                 requestHandler:^NSImage*(NSSize) { return native; }];
         }
     }
+    if (cachedArtwork) info[MPMediaItemPropertyArtwork] = cachedArtwork;
     MPNowPlayingInfoCenter* center = [MPNowPlayingInfoCenter defaultCenter];
     center.nowPlayingInfo = info;
     center.playbackState = playing ? MPNowPlayingPlaybackStatePlaying : MPNowPlayingPlaybackStatePaused;

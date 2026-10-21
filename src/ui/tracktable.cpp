@@ -245,11 +245,14 @@ void TrackModel::setTracks(QVector<Track> tracks)
 
 void TrackModel::setPlayingId(qint64 id, bool playing)
 {
+    const bool audible = playing && id > 0;
+    if (m_playingId == id && m_audible == audible) return;
+    const qint64 previous = m_playingId;
     m_playingId = id;
-    m_audible = playing && id > 0;
-    if (!m_tracks.isEmpty()) {
-        emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1));
-    }
+    m_audible = audible;
+    for (int row = 0; row < m_tracks.size(); ++row)
+        if (m_tracks[row].id == previous || m_tracks[row].id == id)
+            emit dataChanged(index(row, 0), index(row, columnCount() - 1));
 }
 
 void TrackModel::setFavorites(const QSet<qint64>& ids)

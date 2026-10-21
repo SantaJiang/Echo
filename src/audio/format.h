@@ -39,6 +39,7 @@ struct DeviceFormat {
     bool highAligned = false;
     bool exclusive = false;
     int latencyFrames = 0;
+    quint64 channelMask = 0;
 
     [[nodiscard]] int bytesPerFrame() const { return containerBytes * channels; }
     [[nodiscard]] bool valid() const { return sampleRate > 0 && channels > 0 && containerBytes > 0; }

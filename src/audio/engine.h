@@ -4,6 +4,7 @@
 #include "audio/output.h"
 
 #include <QObject>
+#include <QHash>
 #include <atomic>
 
 namespace echo {
@@ -29,6 +30,7 @@ public:
     void setExclusive(bool exclusive);
     void setSpatialEnabled(bool enabled);
     void setTrackGain(qint64 token, float gainDb);
+    void setTrackGains(const QHash<qint64, float>& gains);
 
     [[nodiscard]] State state() const;
     [[nodiscard]] qint64 positionMs() const;
@@ -37,6 +39,7 @@ public:
 
 signals:
     void filesReleased();
+    void positionChanged();
     void spatialStatusChanged(const QString& status);
     void stateChanged(int state);
     void trackStarted(qint64 token);

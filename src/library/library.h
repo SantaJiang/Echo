@@ -15,6 +15,12 @@
 namespace echo {
 
 class Scanner;
+struct SearchResults {
+    QVector<Track> tracks;
+    QVector<Album> albums;
+    QVector<Artist> artists;
+    QVector<Playlist> playlists;
+};
 
 class Library : public QObject {
     Q_OBJECT
@@ -24,6 +30,7 @@ public:
     ~Library() override;
 
     bool open(QString* error = nullptr);
+    [[nodiscard]] quint64 revision() const { return m_revision; }
     [[nodiscard]] ArtworkCache* artwork() const { return m_artwork.get(); }
     [[nodiscard]] QString databasePath() const { return m_database ? m_database->filePath() : QString(); }
 
@@ -59,6 +66,7 @@ public:
     [[nodiscard]] QVector<Track> tracks(const QVector<qint64>& ids) const;
     bool saveTags(qint64 id, const TagEdit& edit, QString* error);
 
+    [[nodiscard]] static SearchResults searchDatabase(const QString& path, const QString& text);
     [[nodiscard]] QVector<Track> searchTracks(const QString& text) const;
     [[nodiscard]] QVector<Album> searchAlbums(const QString& text) const;
     [[nodiscard]] QVector<Artist> searchArtists(const QString& text) const;
@@ -107,6 +115,7 @@ signals:
     void scanFailed(const QString& message);
 
 private:
+    quint64 m_revision = 0;
     struct UndoStep {
         enum Kind {
             SnapshotPlaylist,

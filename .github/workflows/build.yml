@@ -19,6 +19,7 @@ jobs:
         run: |
           ./build/echo-selftest
           ./build/echo-playbacktest
+          ./build/echo-foldertest
           QT_QPA_PLATFORM=offscreen ./build/echo-uitest
 
   ubuntu:

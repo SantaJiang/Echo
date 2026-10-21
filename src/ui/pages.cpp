@@ -5,6 +5,8 @@
 #include "ui/theme.h"
 
 #include <QHash>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -171,9 +173,10 @@ QPixmap roundedArtwork(const QPixmap& source, int side)
 
 class AlbumCardDelegate : public QStyledItemDelegate {
 public:
-    explicit AlbumCardDelegate(QObject* parent = nullptr)
-        : QStyledItemDelegate(parent)
+    explicit AlbumCardDelegate(ArtworkCache* cache, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), m_cache(cache)
     {
+        connect(cache, &ArtworkCache::ready, this, [parent] { if (auto* view = qobject_cast<QAbstractItemView*>(parent)) view->viewport()->update(); });
     }
 
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
@@ -188,8 +191,11 @@ public:
             painter->setBrush(option.state & QStyle::State_Selected ? colors.selected : colors.hover);
             painter->drawRoundedRect(QRectF(option.rect.adjusted(2, 0, -2, -2)), 10, 10);
         }
-        const QIcon artwork = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-        const QPixmap pixmap = artwork.pixmap(320, 320);
+        QPixmap pixmap = m_cache->pixmap(index.data(Qt::UserRole + 3).toString(), 320);
+        if (pixmap.isNull()) {
+            static const QPixmap placeholder = placeholderCover(160);
+            pixmap = placeholder;
+        }
         QPainterPath clip;
         clip.addRoundedRect(QRectF(cover), 8, 8);
         painter->setClipPath(clip);
@@ -222,20 +228,30 @@ public:
     {
         return QSize(176, 214);
     }
+private:
+    ArtworkCache* m_cache;
 };
 
-void fillAlbumItem(QListWidget* list, const Album& album, ArtworkCache* cache, QSize size = QSize(176, 214))
+void updateAlbumItem(QListWidgetItem* item, const Album& album, QSize size)
 {
-    auto* item = new QListWidgetItem(album.title + QStringLiteral("\n") + album.artist);
+    item->setText(album.title + QStringLiteral("\n") + album.artist);
     item->setData(Qt::UserRole, album.key);
+    item->setData(Qt::UserRole + 3, album.artworkHash);
     item->setSizeHint(size);
     item->setToolTip(album.title + QStringLiteral("\n") + album.artist + QStringLiteral(" · %1 首歌曲").arg(album.tracks));
-    if (cache && !album.artworkHash.isEmpty()) {
-        item->setIcon(QIcon(cache->pixmap(album.artworkHash, 320)));
-    } else {
-        item->setIcon(QIcon(placeholderCover(320)));
+}
+
+void syncAlbumItems(QListWidget* list, const QVector<Album>& albums, QSize size = QSize(176, 214))
+{
+    QHash<QString, QListWidgetItem*> existing;
+    for (int i = 0; i < list->count(); ++i) existing.insert(list->item(i)->data(Qt::UserRole).toString(), list->item(i));
+    for (int row = 0; row < albums.size(); ++row) {
+        auto* item = existing.take(albums[row].key);
+        if (!item) { item = new QListWidgetItem; list->insertItem(row, item); }
+        else if (list->row(item) != row) list->insertItem(row, list->takeItem(list->row(item)));
+        updateAlbumItem(item, albums[row], size);
     }
-    list->addItem(item);
+    for (auto* item : existing) delete list->takeItem(list->row(item));
 }
 
 } // namespace
@@ -321,8 +337,10 @@ TrackListPage::TrackListPage(Library* library, Source source, QWidget* parent)
             saveView();
     });
     connect(m_library, &Library::favoritesChanged, this, [this] {
-        if (m_source == Source::Playlist && m_id == m_library->favoritesPlaylistId())
-            reload();
+        if (m_source == Source::Playlist && m_id == m_library->favoritesPlaylistId()) {
+            if (isVisible()) reload();
+            else setProperty("echoDirty", true);
+        }
     });
 }
 
@@ -458,7 +476,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     m_grid->setUniformItemSizes(true);
     m_grid->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_grid->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_grid->setItemDelegate(new AlbumCardDelegate(m_grid));
+    m_grid->setItemDelegate(new AlbumCardDelegate(m_library->artwork(), m_grid));
     gridLayout->addWidget(m_grid, 1);
     auto* albumsEmpty = new QLabel(QStringLiteral("还没有专辑\n添加音乐文件夹后，专辑会按封面排在这里。"), gridPage);
     albumsEmpty->setObjectName(QStringLiteral("albumsEmpty"));
@@ -549,6 +567,9 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
         openAlbum(item->data(Qt::UserRole).toString());
     });
     connect(back, &QPushButton::clicked, this, [this] { m_stack->setCurrentIndex(0); });
+    connect(m_library->artwork(), &ArtworkCache::ready, this, [this](const QString&, int size) {
+        if (size == 360 && m_stack->currentIndex() == 1) showAlbum(m_detail->property("albumKey").toString());
+    });
     connect(play, &QPushButton::clicked, this, [this] {
         emit albumPlayRequested(m_detail->property("albumKey").toString(), false);
     });
@@ -562,10 +583,7 @@ void AlbumsPage::reload()
 {
     const auto selected = m_grid->currentItem() ? m_grid->currentItem()->data(Qt::UserRole).toString() : QString();
     const int scroll = m_grid->verticalScrollBar()->value();
-    m_grid->clear();
-    for (const Album& album : m_library->albums(m_artistFilter)) {
-        fillAlbumItem(m_grid, album, m_library->artwork());
-    }
+    syncAlbumItems(m_grid, m_library->albums(m_artistFilter));
     for (int i = 0; i < m_grid->count(); ++i)
         if (m_grid->item(i)->data(Qt::UserRole).toString() == selected)
             m_grid->setCurrentRow(i);
@@ -735,7 +753,7 @@ ArtistsPage::ArtistsPage(Library* library, QWidget* parent)
     m_albums->setMouseTracking(true);
     m_albums->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_albums->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    m_albums->setItemDelegate(new AlbumCardDelegate(m_albums));
+    m_albums->setItemDelegate(new AlbumCardDelegate(m_library->artwork(), m_albums));
     right->addWidget(m_albums);
     m_table = new TrackTable(m_details);
     right->addWidget(m_table, 1);
@@ -770,9 +788,7 @@ void ArtistsPage::showArtistRow(int row)
     const bool sameArtist = m_selectedArtist == key;
     const int albumsScroll = sameArtist ? m_albums->horizontalScrollBar()->value() : 0;
     m_selectedArtist = key;
-    m_albums->clear();
-    for (const auto& album : m_library->albums(key))
-        fillAlbumItem(m_albums, album, m_library->artwork(), QSize(120, 152));
+    syncAlbumItems(m_albums, m_library->albums(key), QSize(120, 152));
     m_albums->horizontalScrollBar()->setValue(albumsScroll);
     const auto tracks = m_library->artistTracks(key);
     int playable = 0;
@@ -916,8 +932,8 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
         if (m_stack->currentIndex() == 1)
             emit titleChanged(title);
     });
-    connect(m_library, &Library::scanStarted, this, [this](qint64) { reload(); });
-    connect(m_library, &Library::scanFinished, this, &FoldersPage::reload);
+    connect(m_library, &Library::scanStarted, this, [this](qint64) { if (isVisible()) reload(); else setProperty("echoDirty", true); });
+    connect(m_library, &Library::scanFinished, this, [this] { if (isVisible()) reload(); else setProperty("echoDirty", true); });
     connect(m_tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& point) {
         auto* item = m_tree->itemAt(point);
         if (!item)
@@ -1077,6 +1093,10 @@ SearchPage::SearchPage(Library* library, QWidget* parent)
     : QWidget(parent)
     , m_library(library)
 {
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    m_searchTimer->setInterval(180);
+    connect(m_searchTimer, &QTimer::timeout, this, &SearchPage::launchSearch);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(ContentLeftMargin, 28, 16, 8);
     m_empty = new QWidget(this);
@@ -1141,7 +1161,32 @@ void SearchPage::showSection(QWidget* section, QListWidget* list)
 
 void SearchPage::search(const QString& text)
 {
-    const auto tracks = m_library->searchTracks(text);
+    m_query = text.trimmed();
+    ++m_searchRevision;
+    m_searchTimer->stop();
+    if (m_query.isEmpty()) { applySearch({}, {}); return; }
+    m_searchTimer->start();
+}
+
+void SearchPage::launchSearch()
+{
+    if (m_searchRunning || m_query.isEmpty()) return;
+    m_searchRunning = true;
+    const auto revision = m_searchRevision;
+    const QString text = m_query, path = m_library->databasePath();
+    auto* watcher = new QFutureWatcher<SearchResults>(this);
+    connect(watcher, &QFutureWatcher<SearchResults>::finished, this, [this, watcher, revision, text] {
+        m_searchRunning = false;
+        if (revision == m_searchRevision) applySearch(watcher->result(), text);
+        else if (!m_query.isEmpty() && !m_searchTimer->isActive()) m_searchTimer->start(0);
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([path, text] { return Library::searchDatabase(path, text); }));
+}
+
+void SearchPage::applySearch(const SearchResults& result, const QString& text)
+{
+    const auto& tracks = result.tracks;
     m_tracks->setTracksPreservingView(tracks);
     m_trackSection->setVisible(!tracks.isEmpty());
     if (!tracks.isEmpty()) {
@@ -1149,21 +1194,21 @@ void SearchPage::search(const QString& text)
         m_tracks->setFixedHeight(header + static_cast<int>(tracks.size()) * 40 + 2);
     }
     m_albums->clear();
-    for (const Album& album : m_library->searchAlbums(text)) {
+    for (const Album& album : result.albums) {
         auto* item = new QListWidgetItem(album.title + QStringLiteral(" — ") + album.artist);
         item->setData(Qt::UserRole, album.key);
         item->setSizeHint(QSize(0, 34));
         m_albums->addItem(item);
     }
     m_artists->clear();
-    for (const Artist& artist : m_library->searchArtists(text)) {
+    for (const Artist& artist : result.artists) {
         auto* item = new QListWidgetItem(artist.name);
         item->setData(Qt::UserRole, artist.key);
         item->setSizeHint(QSize(0, 34));
         m_artists->addItem(item);
     }
     m_playlists->clear();
-    for (const Playlist& playlist : m_library->searchPlaylists(text)) {
+    for (const Playlist& playlist : result.playlists) {
         auto* item = new QListWidgetItem(playlist.name);
         item->setData(Qt::UserRole, playlist.id);
         item->setSizeHint(QSize(0, 34));

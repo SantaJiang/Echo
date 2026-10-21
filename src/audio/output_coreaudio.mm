@@ -230,6 +230,7 @@ public:
         shared.bitsPerSample = 32;
         shared.containerBytes = 4;
         shared.exclusive = false;
+        shared.channelMask = shared.channels == source.channels ? source.channelMask : 0;
         QString failure;
         if (!openUnit(shared, &failure)) {
             if (error) {

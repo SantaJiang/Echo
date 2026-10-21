@@ -19,6 +19,6 @@ void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const
 void installSidebarEffect(QWidget* sidebar);
 void showInFileManager(const QString& path);
 void installMediaIntegration(QWidget* window, const std::function<void(MediaCommand, qint64)>& handler);
-void updateSystemNowPlaying(const Track& track, const QImage& artwork, qint64 positionMs, qint64 durationMs, bool playing);
+void updateSystemNowPlaying(const Track& track, const QImage& artwork, qint64 positionMs, qint64 durationMs, bool playing, bool force = false);
 
 } // namespace echo

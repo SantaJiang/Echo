@@ -27,13 +27,18 @@ Player::Player(Library* library, AudioEngine* engine, QObject* parent)
         emit spatialChanged();
     });
     connect(this, &Player::changed, this, [this] { scheduleAnalysis(); });
-    connect(m_library, &Library::changed, this, [this] {
+    const auto invalidateTracks = [this] {
+        m_queueTracks.clear();
+        m_loudnessKeys.clear();
+        m_analysisDirty = true;
         if (m_normalization) {
             updateNormalizationGains();
             scheduleAnalysis();
             emit normalizationChanged();
         }
-    });
+    };
+    connect(m_library, &Library::changed, this, invalidateTracks);
+    connect(m_library, &Library::sourceChanged, this, [invalidateTracks](qint64) { invalidateTracks(); });
     connect(m_engine, &AudioEngine::trackStarted, this, [this](qint64 token) {
         for (int index = 0; index < m_queue.size(); ++index) {
             if (m_queue[index].token == token) {
@@ -65,6 +70,7 @@ Player::Player(Library* library, AudioEngine* engine, QObject* parent)
         emit changed();
     });
     connect(m_engine, &AudioEngine::stateChanged, this, [this] { emit changed(); });
+    connect(m_engine, &AudioEngine::positionChanged, this, [this] { emit changed(); });
     connect(m_engine, &AudioEngine::errorOccurred, this, [this] {
         if (m_engine->state() != AudioEngine::State::Playing) {
             m_skipAfterError = true;
@@ -81,11 +87,14 @@ Player::~Player()
 
 QString Player::loudnessKey(const Track& track) const
 {
+    if (const auto it = m_loudnessKeys.constFind(track.id); it != m_loudnessKeys.cend()) return it.value();
     const QFileInfo file(track.path);
     const QString source = QStringLiteral("r128-v1|%1|%2|%3|%4|%5")
         .arg(track.path).arg(file.size()).arg(file.lastModified().toMSecsSinceEpoch())
         .arg(track.cueStartMs).arg(track.cueEndMs);
-    return QString::fromLatin1(QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha256).toHex());
+    const QString key = QString::fromLatin1(QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha256).toHex());
+    m_loudnessKeys.insert(track.id, key);
+    return key;
 }
 
 LoudnessResult Player::cachedLoudness(const Track& track) const
@@ -93,7 +102,10 @@ LoudnessResult Player::cachedLoudness(const Track& track) const
     const QString key = loudnessKey(track);
     if (m_loudness.contains(key)) return m_loudness.value(key);
     const auto json = QJsonDocument::fromJson(m_library->setting(QStringLiteral("loudness/") + key).toUtf8()).object();
-    if (!json.contains(QStringLiteral("lufs")) || !json.contains(QStringLiteral("peak"))) return {};
+    if (!json.contains(QStringLiteral("lufs")) || !json.contains(QStringLiteral("peak"))) {
+        m_loudness.insert(key, {}); // Cache misses too: pending files must not hit SQLite on every status update.
+        return {};
+    }
     LoudnessResult result {true, json.value(QStringLiteral("lufs")).toDouble(), json.value(QStringLiteral("peak")).toDouble()};
     m_loudness.insert(key, result);
     return result;
@@ -109,12 +121,27 @@ void Player::setNormalizationEnabled(bool enabled)
     emit normalizationChanged();
 }
 
-void Player::updateNormalizationGains()
+Track Player::queueTrack(qint64 id) const
 {
-    for (const auto& entry : m_queue) {
-        const Track track = m_library->track(entry.trackId);
-        m_engine->setTrackGain(entry.token, gainFor(track, entry.albumContext));
+    if (const auto it = m_queueTracks.constFind(id); it != m_queueTracks.cend()) return it.value();
+    const Track track = m_library->track(id);
+    m_queueTracks.insert(id, track);
+    return track;
+}
+
+void Player::updateNormalizationGains(qint64 trackId)
+{
+    if (!trackId) {
+        QVector<qint64> ids;
+        for (const auto& entry : m_queue) if (!m_queueTracks.contains(entry.trackId)) ids << entry.trackId;
+        for (const auto& track : m_library->tracks(ids)) m_queueTracks.insert(track.id, track);
     }
+    QHash<qint64, float> gains;
+    for (const auto& entry : m_queue) {
+        if (trackId && entry.trackId != trackId) continue;
+        gains.insert(entry.token, gainFor(queueTrack(entry.trackId), entry.albumContext));
+    }
+    m_engine->setTrackGains(gains);
     queueUpcoming();
 }
 
@@ -125,7 +152,7 @@ QString Player::normalizationStatus() const
     int done = 0;
     int failed = 0;
     for (const auto& entry : m_queue) {
-        const Track track = m_library->track(entry.trackId);
+        const Track track = queueTrack(entry.trackId);
         const QString key = loudnessKey(track);
         if (seen.contains(key)) continue;
         seen.insert(key);
@@ -142,14 +169,30 @@ void Player::scheduleAnalysis()
 {
     if (!m_normalization || m_analysisPending || m_trashing)
         return;
-    // Prioritize the audible track, then follow the queue. Duplicate files/ranges share a cache entry.
-    QVector<Entry> entries;
-    if (m_index >= 0 && m_index < m_queue.size()) entries.push_back(m_queue[m_index]);
-    entries += m_queue;
-    for (const auto& entry : entries) {
-        const Track track = m_library->track(entry.trackId);
+    if (m_analysisDirty || m_analysisEntries != m_queue) {
+        m_analysisDirty = false;
+        m_analysisEntries = m_queue;
+        m_analysisCursor = 0;
+        m_analysisTracks.clear();
+        QVector<qint64> ids;
+        QSet<qint64> seen;
+        if (m_index >= 0 && m_index < m_queue.size()) ids << m_queue[m_index].trackId;
+        for (const auto& entry : m_queue) ids << entry.trackId;
+        QVector<qint64> unique;
+        for (const auto id : ids) if (!seen.contains(id)) { seen.insert(id); unique << id; }
+        m_analysisTracks = m_library->tracks(unique);
+        for (const auto& track : m_analysisTracks) m_queueTracks.insert(track.id, track);
+    }
+    if (m_index >= 0 && m_index < m_queue.size()) {
+        const qint64 priority = m_queue[m_index].trackId;
+        for (int i = m_analysisCursor; i < m_analysisTracks.size(); ++i)
+            if (m_analysisTracks[i].id == priority) { m_analysisTracks.swapItemsAt(m_analysisCursor, i); break; }
+    }
+    while (m_analysisCursor < m_analysisTracks.size()) {
+        // A cursor avoids rescanning already measured queue entries after every result.
+        Track track = m_analysisTracks[m_analysisCursor++];
         const QString key = loudnessKey(track);
-        if (cachedLoudness(track).valid || m_analysisFailed.contains(key)) continue;
+        if (cachedLoudness(track).valid || m_analysisFailed.contains(key) || track.missing) continue;
         PlaybackItem item;
         item.path = track.path;
         item.startMs = std::max<qint64>(0, track.cueStartMs);
@@ -158,8 +201,13 @@ void Player::scheduleAnalysis()
         connect(&m_analysis, &QFutureWatcher<LoudnessResult>::finished, this, [this, key, track] {
             m_analysisPending = false;
             const auto result = m_analysis.result();
-            // Discard a result if the file changed while it was being decoded.
-            if (!m_cancelAnalysis.load() && key == loudnessKey(track)) {
+            // Validate the current database identity before touching its cached key. A relocation
+            // may leave the old file readable while this analysis is still running.
+            const Track current = m_library->track(track.id);
+            const bool sameRange = current.id && current.path == track.path
+                && current.cueStartMs == track.cueStartMs && current.cueEndMs == track.cueEndMs;
+            if (sameRange) m_loudnessKeys.remove(track.id);
+            if (!m_cancelAnalysis.load() && sameRange && key == loudnessKey(current)) {
                 if (result.valid) {
                     m_loudness.insert(key, result);
                     QJsonObject json;
@@ -167,13 +215,15 @@ void Player::scheduleAnalysis()
                     json.insert(QStringLiteral("peak"), result.peak);
                     m_library->setSetting(QStringLiteral("loudness/") + key,
                         QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
-                    updateNormalizationGains();
+                    updateNormalizationGains(track.id);
                 } else {
                     m_analysisFailed.insert(key);
                 }
+            } else if (!m_cancelAnalysis.load()) {
+                m_analysisDirty = true;
             }
             emit normalizationChanged();
-            QTimer::singleShot(0, this, &Player::scheduleAnalysis);
+            QTimer::singleShot(0, this, [this] { scheduleAnalysis(); });
         });
         m_analysisPending = true;
         m_analysis.setFuture(QtConcurrent::run([this, item] {
@@ -275,6 +325,8 @@ void Player::playTracks(const QVector<qint64>& ids, int startIndex, bool albumCo
             }
             if (shuffle)
                 m_shuffle = *shuffle;
+            m_queueTracks.clear();
+            m_loudnessKeys.clear();
             m_queue = std::move(replacement);
             m_history.clear();
             startIndex = std::min(mappedIndex, static_cast<int>(m_queue.size() - 1));
@@ -585,10 +637,10 @@ Track Player::currentTrack() const
     const qint64 active = m_engine->activeToken();
     for (const Entry& entry : m_queue) {
         if (entry.token == active) {
-            return m_library->track(entry.trackId);
+            return queueTrack(entry.trackId);
         }
     }
-    return m_library->track(m_queue[m_index].trackId);
+    return queueTrack(m_queue[m_index].trackId);
 }
 
 qint64 Player::positionMs() const
@@ -647,7 +699,7 @@ void Player::queueUpcoming()
 
 PlaybackItem Player::itemFor(const Entry& entry) const
 {
-    const Track track = m_library->track(entry.trackId);
+    const Track track = queueTrack(entry.trackId);
     PlaybackItem item;
     item.token = entry.token;
     item.trackId = entry.trackId;

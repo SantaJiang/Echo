@@ -170,6 +170,14 @@ void MiniPlayer::setFavorite(bool liked, bool enabled)
 
 void MiniPlayer::setTrack(const Track& track, const QPixmap& artwork, bool playing)
 {
+    if (m_initialized && track == m_lastTrack && artwork.cacheKey() == m_artworkKey
+        && devicePixelRatioF() == m_artworkDpr && playing == m_lastPlaying) return;
+    m_initialized = true;
+    m_lastTrack = track;
+    m_artworkKey = artwork.cacheKey();
+    m_lastArtwork = artwork;
+    m_artworkDpr = devicePixelRatioF();
+    m_lastPlaying = playing;
     const bool canSeek = track.id > 0 && !track.missing && track.durationMs > 0;
     if (m_trackId != track.id || !canSeek) {
         const QSignalBlocker blocker(m_seek);
@@ -215,6 +223,18 @@ void MiniPlayer::setPosition(qint64 positionMs, qint64 durationMs, bool seekable
     m_seek->setValue(static_cast<int>(std::clamp<qint64>(positionMs, 0, duration)));
     m_seek->setEnabled(m_canSeek && duration > 0 && seekable);
     m_seek->setToolTip(formatDuration(positionMs) + QStringLiteral(" / ") + formatDuration(durationMs));
+}
+
+bool MiniPlayer::event(QEvent* event)
+{
+    const bool result = QWidget::event(event);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    if (event->type() == QEvent::DevicePixelRatioChange && m_initialized) {
+        m_initialized = false;
+        setTrack(m_lastTrack, m_lastArtwork, m_lastPlaying);
+    }
+#endif
+    return result;
 }
 
 void MiniPlayer::paintEvent(QPaintEvent*)

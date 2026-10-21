@@ -1,6 +1,14 @@
 #include "ui/miniplayer.h"
 #include "ui/playerbar.h"
 #include <QSlider>
+#include <QStackedWidget>
+#include <QLineEdit>
+#include <QBuffer>
+#include <QSemaphore>
+#include <QCryptographicHash>
+#include <QThreadPool>
+#include <QImage>
+#include <QtConcurrent>
 #include "ui/dialogs.h"
 #include "ui/trackdialog.h"
 #include <QDialogButtonBox>
@@ -361,6 +369,79 @@ int main(int argc, char** argv)
             "removal preserves other entry identities");
         library.undo();
         check(library.playlistTrackIds(duplicates) == QVector<qint64>({ A, B, A }), "duplicate removal undo");
+        // Search workers use a thread-owned, read-only connection and preserve source scoping.
+        auto searchFuture = QtConcurrent::run([path = library.databasePath()] {
+            return echo::Library::searchDatabase(path, QStringLiteral("X"));
+        });
+        searchFuture.waitForFinished();
+        check(searchFuture.result().tracks.isEmpty(), "background search excludes loose tracks");
+        check(!echo::Library::searchDatabase(library.databasePath(), QStringLiteral("A")).tracks.isEmpty(),
+            "read-only background search finds library tracks");
+        {
+            echo::Database searchDb;
+            check(searchDb.open(library.databasePath(), "unicode-review"), "open Unicode search fixture connection");
+            const auto original = library.track(A);
+            auto unicode = original; unicode.title = QString::fromUtf8("Écho 100%_测试");
+            check(searchDb.upsertTrack(unicode) == A, "store Unicode search fixture");
+            check(searchDb.searchTracksContaining(QString::fromUtf8("é"), 200).size() == 1,
+                "fallback search folds non-ASCII case");
+            check(searchDb.searchTracksContaining("%_", 200).size() == 1, "fallback search treats SQL wildcards literally");
+            const auto unicodeResults = echo::Library::searchDatabase(library.databasePath(), QString::fromUtf8("é")).tracks;
+            bool foundUnicode = false;
+            for (const auto& result : unicodeResults) foundUnicode |= result.id == A;
+            check(foundUnicode, "background search preserves Unicode matching");
+            check(searchDb.upsertTrack(original) == A, "restore search fixture title");
+        }
+        // More than the old 256-entry threshold must not flush still-budgeted thumbnails.
+        QString firstCover;
+        int completedCovers = 0;
+        QObject::connect(library.artwork(), &echo::ArtworkCache::ready, &library,
+            [&](const QString&, int size) { if (size == 24) ++completedCovers; });
+        for (int i = 0; i < 270; ++i) {
+            QImage image(24, 24, QImage::Format_RGB32);
+            image.fill(QColor::fromRgb((i * 7919) & 0xffffff));
+            QByteArray bytes;
+            QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly); image.save(&buffer, "PNG");
+            const QString hash = library.artwork()->store(bytes);
+            if (i == 0) firstCover = hash;
+            check(library.artwork()->pixmap(hash, 24).isNull(), "uncached artwork returns without synchronous decode");
+            check(waitFor([&] { return completedCovers == i + 1; }), "async thumbnail completes");
+            check(!library.artwork()->pixmap(hash, 24).isNull(), "decoded thumbnail becomes available");
+        }
+        check(!library.artwork()->pixmap(firstCover, 24).isNull(), "thumbnail cache retains entries under memory budget beyond 256 keys");
+        {
+            // Enqueue more than the old request limit without processing completion events.
+            int received = 0;
+            bool playerCoverReady = false;
+            const auto connection = QObject::connect(library.artwork(), &echo::ArtworkCache::ready, &library,
+                [&](const QString& hash, int size) { if (hash == firstCover && size == 160) playerCoverReady = true;
+                    if (hash == firstCover && size >= 100 && size < 140) ++received; });
+            for (int size = 100; size < 140; ++size) (void)library.artwork()->pixmap(firstCover, size);
+            (void)library.artwork()->pixmap(firstCover, 160);
+            check(waitFor([&] { return playerCoverReady && received == 40; }), "saturated thumbnail queue preserves every one-shot request");
+            QObject::disconnect(connection);
+            QImage panorama(2, 8000, QImage::Format_RGB32); panorama.fill(Qt::red);
+            QByteArray bytes; QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly); panorama.save(&buffer, "PNG");
+            const QString hash = library.artwork()->store(bytes);
+            (void)library.artwork()->pixmap(hash, 160);
+            check(waitFor([&] { return !library.artwork()->pixmap(hash, 160).isNull(); }), "panoramic cover decodes within thumbnail allocation budget");
+        }
+        {
+            QFile cached(library.artwork()->filePath(firstCover));
+            check(cached.open(QIODevice::ReadOnly), "read recoverable cached cover");
+            const QByteArray bytes = cached.readAll(); cached.close();
+            check(cached.remove(), "remove temporary cached cover");
+            bool failureCompleted = false;
+            const auto connection = QObject::connect(library.artwork(), &echo::ArtworkCache::ready, &library,
+                [&](const QString& hash, int size) { if (hash == firstCover && size == 777) failureCompleted = true; });
+            (void)library.artwork()->pixmap(firstCover, 777);
+            check(waitFor([&] { return failureCompleted; }), "missing cover decode finishes without blocking");
+            check(library.artwork()->pixmap(firstCover, 777).isNull(), "missing thumbnail is negatively cached");
+            check(library.artwork()->store(bytes) == firstCover, "restoring cover retains stable hash");
+            check(waitFor([&] { return !library.artwork()->pixmap(firstCover, 777).isNull(); }),
+                "restored cover retries failed one-shot thumbnail automatically");
+            QObject::disconnect(connection);
+        }
         // Actual widgets, input dispatch, settings, navigation and stable source title.
         echo::MainWindow window(&library, &player, &engine);
         window.resize(1180, 780);
@@ -371,9 +452,24 @@ int main(int argc, char** argv)
         auto* playlist = window.findChild<echo::PlaylistPage*>();
         check(folders && songs && playlist, "shared track-list pages installed");
         {
+            auto* search = window.findChild<QLineEdit*>("search");
+            auto* results = window.findChild<echo::SearchPage*>();
+            check(search && results, "search input and result page exist");
+            search->setText("echo-no-match");
+            search->setText("A");
+            check(waitFor([&] { return results->table()->trackModel()->rowCount() > 0; }), "debounced search applies latest input");
+            results->search("A");
+            QEventLoop beginSearch; QTimer::singleShot(190, &beginSearch, &QEventLoop::quit); beginSearch.exec();
+            search->clear();
+            QEventLoop settleSearch; QTimer::singleShot(250, &settleSearch, &QEventLoop::quit); settleSearch.exec();
+            check(results->table()->trackModel()->rowCount() == 0, "cleared search cannot be repopulated by an old result");
+        }
+        {
             auto* mini = window.findChild<echo::MiniPlayer*>();
             auto* miniSeek = mini->findChild<QSlider*>("miniPlaybackSeek");
             check(miniSeek, "mini player has accessible progress slider");
+            engine.releaseFiles();
+            check(waitFor([&] { return engine.state() == echo::AudioEngine::State::Stopped; }), "mini seek starts from stopped playback");
             player.playTracks({ A }, 0, false, false);
             check(waitFor([&] { return player.currentTrack().id == A && engine.state() == echo::AudioEngine::State::Playing; }),
                 "prepare real PCM for mini seek");
@@ -439,6 +535,22 @@ int main(int argc, char** argv)
             check(!seek->isEnabled() && seek->value() == 0, "empty mini player disables seeking");
         }
 
+        {
+            engine.releaseFiles();
+            check(waitFor([&] { return engine.state() == echo::AudioEngine::State::Stopped; }), "prepare gapless UI regression");
+            auto* mini = window.findChild<echo::MiniPlayer*>();
+            mini->show();
+            player.playTracks({B, C}, 0, false, false);
+            const QString title = library.track(C).displayTitle();
+            check(waitFor([&] {
+                if (engine.state() != echo::AudioEngine::State::Playing || player.currentTrack().id != C) return false;
+                for (auto* label : mini->findChildren<QLabel*>()) if (label->toolTip() == title) return true;
+                return false;
+            }), "gapless audible transition refreshes mini metadata before track ends");
+            engine.releaseFiles();
+            check(waitFor([&] { return engine.state() == echo::AudioEngine::State::Stopped; }), "finish gapless UI regression");
+            mini->hide();
+        }
         auto* navigation = window.findChild<QListWidget*>("libraryNav");
         if (!navigation) {
             for (auto* list : window.findChildren<QListWidget*>())
@@ -740,6 +852,13 @@ int main(int argc, char** argv)
         const auto warm = scanTime.elapsed();
         heartbeat.stop();
         check(library.root(perfId).tracks == 1000 && parsed == 0, "1000-file warm scan parses zero tags");
+        auto* pages = qobject_cast<QStackedWidget*>(songs->parentWidget());
+        check(pages, "songs page belongs to shared stack");
+        scanTime.restart();
+        pages->setCurrentWidget(songs);
+        app.processEvents();
+        check(songs->table()->trackModel()->rowCount() >= 1000, "hidden songs page loads latest scan on activation");
+        qInfo() << "1000-track deferred page load:" << scanTime.elapsed() << "ms";
         library.removeRoot(perfId);
         qInfo() << "Performance: 1000 files, cold" << cold << "ms, warm" << warm << "ms, maximum UI event gap"
                 << maximumGap << "ms";
@@ -833,6 +952,42 @@ int main(int argc, char** argv)
         check(player.queue().size() == queueBeforeFailure.size(), "trash failure preserves queue");
         for (auto* box : window.findChildren<echo::MessageDialog*>())
             box->close();
+        {
+            // Hold the old measurement in the queue so relocation deterministically wins the race.
+            player.setNormalizationEnabled(false);
+            check(QThreadPool::globalInstance()->waitForDone(3000), "settle prior background work before relocation race");
+            app.processEvents();
+            const QString oldAudio = fixtures.filePath("analysis-old.wav"), newAudio = fixtures.filePath("analysis-new.wav");
+            wave(oldAudio, 600);
+            check(QFile::copy(oldAudio, newAudio), "copy relocation analysis fixture");
+            const auto id = library.importFiles({oldAudio}).first();
+            player.playTracks({id}, 0, false, false);
+            check(waitFor([&] { return player.currentTrack().id == id && engine.state() == echo::AudioEngine::State::Playing; }),
+                "start relocation analysis fixture");
+            const auto keyFor = [&](const echo::Track& track) {
+                const QFileInfo file(track.path);
+                const QString source = QStringLiteral("r128-v1|%1|%2|%3|%4|%5").arg(track.path).arg(file.size())
+                    .arg(file.lastModified().toMSecsSinceEpoch()).arg(track.cueStartMs).arg(track.cueEndMs);
+                return QString::fromLatin1(QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha256).toHex());
+            };
+            const QString oldKey = keyFor(library.track(id));
+            auto* pool = QThreadPool::globalInstance();
+            const int oldMaximum = pool->maxThreadCount();
+            pool->setMaxThreadCount(1);
+            QSemaphore entered, resume;
+            auto blocker = QtConcurrent::run([&] { entered.release(); resume.acquire(); });
+            check(entered.tryAcquire(1, 3000), "hold global worker before scheduling loudness analysis");
+            player.setNormalizationEnabled(true);
+            check(library.relocateTrack(id, newAudio, &error), "relocate track while old analysis is queued");
+            const QString newKey = keyFor(library.track(id));
+            resume.release();
+            blocker.waitForFinished();
+            pool->setMaxThreadCount(oldMaximum);
+            check(waitFor([&] { return !library.setting("loudness/" + newKey).isEmpty(); }),
+                "relocated file receives its own loudness analysis");
+            check(library.setting("loudness/" + oldKey).isEmpty(), "old analysis cannot populate cache after relocation");
+            player.setNormalizationEnabled(false);
+        }
         player.playTracks({ missing }, 0, false);
         engine.releaseFiles();
         check(waitFor([&] { return engine.state() == echo::AudioEngine::State::Stopped; }), "test playback stops");

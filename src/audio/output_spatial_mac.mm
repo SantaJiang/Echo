@@ -106,7 +106,7 @@ public:
                 m_prerollReached = false;
                 m_maximumBufferedFrames = 0;
                 m_sourcePeak = 0;
-                *opened = {m_rate, m_channels, 32, 4, true, false, false, 0};
+                *opened = {m_rate, m_channels, 32, 4, true, false, false, 0, source.channelMask};
                 return true;
             }
             if (error) *error = QStringLiteral("空间音频需要 macOS 12 或更新版本。");

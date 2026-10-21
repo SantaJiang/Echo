@@ -26,6 +26,10 @@ signals:
 private:
     QListWidget* m_list = nullptr;
     bool m_filling = false;
+    QVector<Player::Entry> m_queue;
+    QVector<Track> m_tracks;
+    int m_index = -1;
+    quint64 m_revision = ~quint64(0);
 };
 
 } // namespace echo

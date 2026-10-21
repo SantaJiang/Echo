@@ -44,6 +44,7 @@
 
 #ifdef Q_OS_MACOS
 void verifyNativeMini(QWidget* widget);
+void verifyNativeNowPlaying();
 #endif
 
 namespace {
@@ -139,6 +140,11 @@ int main(int argc, char** argv)
     auto* search = window.findChild<QLineEdit*>(QStringLiteral("search"));
     if (search) {
         search->setText(QStringLiteral("Aria"));
+        QElapsedTimer searchTime; searchTime.start();
+        auto* searchPage = window.findChild<echo::SearchPage*>();
+        while (searchPage && searchPage->table()->trackModel()->rowCount() == 0 && searchTime.elapsed() < 3000) {
+            QApplication::processEvents(); QThread::msleep(5);
+        }
         grab(&window, out, QStringLiteral("search"));
         search->clear();
     }
@@ -510,6 +516,9 @@ int main(int argc, char** argv)
                 ->data(Qt::UserRole).toString() == changed.artistKey, "album artist link returns to matching artist");
         qInfo() << "Artist and album terminology, layout, artwork, navigation and playback checks passed";
     }
+#ifdef Q_OS_MACOS
+    verifyNativeNowPlaying();
+#endif
     if (qEnvironmentVariableIsSet("ECHO_UISHOT_HOLD")) {
         settings->hide();
         window.showMainWindow();

@@ -45,6 +45,8 @@ private:
     void addMusicFolder();
     void buildMenus();
     void refreshViews();
+    void refreshCurrentPage();
+    void updatePlaybackProgress(bool refreshTrack = true, bool forceSystem = false);
     void showLibraryPage(int index);
     void syncPlayer();
     void playVisible(const QVector<qint64>& ids, int index, bool albumContext);
@@ -79,6 +81,7 @@ private:
     int m_libraryPage = 0;
     qint64 m_playlistId = 0;
     bool m_showingSearch = false;
+    qint64 m_displayedTrackId = -1;
 };
 
 } // namespace echo

@@ -57,6 +57,7 @@ public:
         qint64 token = 0;
         qint64 trackId = 0;
         bool albumContext = false;
+        bool operator==(const Entry&) const = default;
     };
 
     [[nodiscard]] QVector<Entry> queue() const { return m_queue; }
@@ -87,7 +88,8 @@ private:
     [[nodiscard]] float gainFor(const Track& track, bool albumContext) const;
     void rememberHistory();
     void scheduleAnalysis();
-    void updateNormalizationGains();
+    void updateNormalizationGains(qint64 trackId = 0);
+    [[nodiscard]] Track queueTrack(qint64 id) const;
     [[nodiscard]] QString loudnessKey(const Track& track) const;
     [[nodiscard]] LoudnessResult cachedLoudness(const Track& track) const;
 
@@ -107,8 +109,14 @@ private:
     bool m_normalization = false;
     QFutureWatcher<LoudnessResult> m_analysis;
     bool m_analysisPending = false;
+    bool m_analysisDirty = true;
+    QVector<Entry> m_analysisEntries;
+    QVector<Track> m_analysisTracks;
+    int m_analysisCursor = 0;
+    mutable QHash<qint64, Track> m_queueTracks;
     std::atomic<bool> m_cancelAnalysis {false};
     mutable QHash<QString, LoudnessResult> m_loudness;
+    mutable QHash<qint64, QString> m_loudnessKeys;
     QSet<QString> m_analysisFailed;
     bool m_advancing = false;
     bool m_trashing = false;

@@ -91,6 +91,6 @@ void installMediaIntegration(QWidget* window, const std::function<void(MediaComm
     RegisterHotKey(hwnd, 3, 0, VK_MEDIA_PREV_TRACK);
 }
 
-void updateSystemNowPlaying(const Track&, const QImage&, qint64, qint64, bool) {}
+void updateSystemNowPlaying(const Track&, const QImage&, qint64, qint64, bool, bool) {}
 
 } // namespace echo

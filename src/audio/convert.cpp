@@ -1,151 +1,118 @@
 #include "audio/convert.h"
 
-#include <core/engine/audioconverter.h>
-
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
-#include <vector>
+#include <limits>
+extern "C" {
+#include <libavutil/channel_layout.h>
+#include <libswresample/swresample.h>
+}
 
 namespace echo {
 namespace {
+constexpr int MaxChannels = 64;
+template<typename T> T load(const uint8_t* p) { T v; std::memcpy(&v, p, sizeof(v)); return v; }
 
-Fooyin::SampleFormat inferPcm(const SampleFormat& format)
+double readSample(const uint8_t* p, const SampleFormat& f)
 {
-    if (format.pcm != Fooyin::SampleFormat::Unknown) {
-        return format.pcm;
+    if (f.isFloat) return f.bytesPerSample == 8 ? load<double>(p) : load<float>(p);
+    if (f.bytesPerSample == 1) return (int(*p) - 128) / 128.;
+    if (f.bytesPerSample == 2) return load<int16_t>(p) / 32768.;
+    if (f.bytesPerSample == 3) {
+        int32_t v = p[0] | (p[1] << 8) | (p[2] << 16);
+        if (v & 0x800000) v |= static_cast<int32_t>(0xff000000);
+        return v / 8388608.;
     }
-    if (format.isFloat) {
-        return format.bytesPerSample >= 8 ? Fooyin::SampleFormat::F64 : Fooyin::SampleFormat::F32;
-    }
-    if (format.bytesPerSample <= 1) {
-        return Fooyin::SampleFormat::U8;
-    }
-    if (format.bytesPerSample == 2) {
-        return Fooyin::SampleFormat::S16;
-    }
-    if (format.bitsPerSample > 0 && format.bitsPerSample <= 24) {
-        return Fooyin::SampleFormat::S24In32;
-    }
-    return Fooyin::SampleFormat::S32;
+    const int bits = f.bitsPerSample > 0 ? f.bitsPerSample : 32;
+    return load<int32_t>(p) / std::ldexp(1., f.highAligned ? 31 : bits - 1);
 }
 
-Fooyin::AudioFormat fooyinSource(const SampleFormat& format)
+double randomUnit(uint32_t* state)
 {
-    const int channels = std::max(format.channels, 1);
-    const int rate = format.sampleRate > 0 ? format.sampleRate : 48000;
-    return {inferPcm(format), rate, channels};
+    uint32_t x = *state ? *state : 0xC0FFEEU;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *state = x;
+    return x / 4294967296.;
 }
 
-Fooyin::SampleFormat devicePcm(const DeviceFormat& format)
+void writeSample(uint8_t* p, double value, const DeviceFormat& f, uint32_t* dither)
 {
-    if (format.isFloat) {
-        return format.containerBytes >= 8 ? Fooyin::SampleFormat::F64 : Fooyin::SampleFormat::F32;
-    }
-    if (format.containerBytes <= 2 || format.bitsPerSample <= 16) {
-        return Fooyin::SampleFormat::S16;
-    }
-    return Fooyin::SampleFormat::S32;
-}
-
-bool needsIntegerPack(const DeviceFormat& format)
-{
-    if (format.isFloat || format.containerBytes <= 2 || format.bitsPerSample <= 16) {
-        return false;
-    }
-    if (format.containerBytes == 4 && (format.bitsPerSample >= 32 || format.highAligned)) {
-        return false;
-    }
-    return true;
-}
-
-void scaleFloat(uint8_t* data, int count, float gain)
-{
-    auto* samples = reinterpret_cast<float*>(data);
-    for (int index = 0; index < count; ++index) {
-        samples[index] = std::clamp(samples[index] * gain, -1.0f, 1.0f);
-    }
-}
-
-void fillMissingChannels(uint8_t* destination, int frames, int sourceChannels, int destChannels, int bytesPerSample)
-{
-    if (sourceChannels <= 0 || destChannels <= sourceChannels || bytesPerSample <= 0) {
+    if (!std::isfinite(value)) value = 0;
+    if (f.isFloat) {
+        if (f.containerBytes == 8) std::memcpy(p, &value, 8);
+        else { const float v = static_cast<float>(value); std::memcpy(p, &v, 4); }
         return;
     }
-    const int frameBytes = destChannels * bytesPerSample;
-    for (int frame = 0; frame < frames; ++frame) {
-        uint8_t* frameData = destination + static_cast<size_t>(frame) * static_cast<size_t>(frameBytes);
-        const uint8_t* last = frameData + static_cast<size_t>(sourceChannels - 1) * static_cast<size_t>(bytesPerSample);
-        for (int channel = sourceChannels; channel < destChannels; ++channel) {
-            std::memcpy(frameData + static_cast<size_t>(channel) * static_cast<size_t>(bytesPerSample), last,
-                        static_cast<size_t>(bytesPerSample));
-        }
-    }
+    const int bits = std::clamp(f.bitsPerSample, 1, f.containerBytes * 8);
+    const double scale = std::ldexp(1., bits - 1);
+    // TPDF at the actual destination bit depth, before rounding or packing.
+    double scaled = std::clamp(value, -1., 1.) * scale;
+    if (dither && value != 0) scaled += randomUnit(dither) - randomUnit(dither);
+    const int64_t v = static_cast<int64_t>(std::llround(std::clamp(scaled, -scale, scale - 1)));
+    uint64_t word = static_cast<uint64_t>(v);
+    if (f.highAligned) word <<= f.containerBytes * 8 - bits;
+    if (f.containerBytes == 1) word = static_cast<uint64_t>(v + 128);
+    for (int b = 0; b < f.containerBytes; ++b) p[b] = static_cast<uint8_t>(word >> (b * 8));
 }
 
-void packInteger(const int32_t* source, uint8_t* destination, int count, const DeviceFormat& format)
-{
-    const int shift = format.bitsPerSample > 0 && format.bitsPerSample < 32 && !format.highAligned ? 32 - format.bitsPerSample : 8;
-    for (int index = 0; index < count; ++index) {
-        const auto value = static_cast<int32_t>(source[index] >> shift);
-        if (format.containerBytes == 3) {
-            destination[0] = static_cast<uint8_t>(value);
-            destination[1] = static_cast<uint8_t>(value >> 8);
-            destination[2] = static_cast<uint8_t>(value >> 16);
-            destination += 3;
-            continue;
+struct Matrix {
+    int in = 0, out = 0;
+    quint64 mask = 0, outMask = 0;
+    std::array<double, MaxChannels * MaxChannels> values {};
+    void configure(const SampleFormat& f, const DeviceFormat& d)
+    {
+        if (in == f.channels && out == d.channels && mask == f.channelMask && outMask == d.channelMask) return;
+        in = f.channels; out = d.channels; mask = f.channelMask; outMask = d.channelMask;
+        values.fill(0);
+        if (in == out && (!outMask || !mask || outMask == mask)) {
+            for (int c = 0; c < in; ++c) values[c * MaxChannels + c] = 1;
+            return;
         }
-        std::memcpy(destination, &value, sizeof(value));
-        destination += 4;
+        if (in == 1 && out == 2) { values[0] = values[MaxChannels] = 1; return; }
+        AVChannelLayout a {}, b {};
+        if (mask) av_channel_layout_from_mask(&a, mask); else av_channel_layout_default(&a, in);
+        if (outMask) av_channel_layout_from_mask(&b, outMask); else av_channel_layout_default(&b, out);
+        if (a.nb_channels != in || b.nb_channels != out
+            || swr_build_matrix2(&a, &b, 0.7071067811865475244, 0.7071067811865475244, 0., 1., 1., values.data(), MaxChannels,
+                                 AV_MATRIX_ENCODING_NONE, nullptr) < 0) {
+            values.fill(0);
+            for (int c = 0; c < std::min(in, out); ++c) values[c * MaxChannels + c] = 1;
+        }
+        av_channel_layout_uninit(&a); av_channel_layout_uninit(&b);
     }
-}
-
+};
 } // namespace
 
-void convertSamples(const uint8_t* src, const SampleFormat& srcFmt, int frames, uint8_t* dst, const DeviceFormat& dstFmt,
+void convertSamples(const uint8_t* src, const SampleFormat& source, int frames, uint8_t* dst, const DeviceFormat& output,
                     float gain, uint32_t* ditherState)
 {
-    if (frames <= 0 || srcFmt.channels <= 0 || dstFmt.channels <= 0) {
-        return;
+    if (frames <= 0 || source.channels < 1 || output.channels < 1 || source.channels > MaxChannels
+        || output.channels > MaxChannels || source.bytesPerSample < 1 || source.bytesPerSample > 8
+        || output.containerBytes < 1 || output.containerBytes > 8) return;
+    const bool sameLayout = source.channels == output.channels
+        && (!output.channelMask || !source.channelMask || source.channelMask == output.channelMask);
+    const bool sameStorage = source.isFloat == output.isFloat && source.bytesPerSample == output.containerBytes
+        && source.bitsPerSample == output.bitsPerSample
+        && source.highAligned == output.highAligned;
+    if (gain == 1.f && sameLayout && sameStorage) {
+        std::memmove(dst, src, static_cast<size_t>(frames) * source.bytesPerFrame()); return;
     }
-    Fooyin::AudioFormat input = fooyinSource(srcFmt);
-    input.clearChannelLayout();
-    const int outChannels = std::max(dstFmt.channels, 1);
-    Fooyin::AudioFormat output {devicePcm(dstFmt), input.sampleRate(), outChannels};
-    output.clearChannelLayout();
-    const bool applyGain = std::fabs(gain - 1.0f) > 0.0001f;
-    const bool dither = ditherState != nullptr && (applyGain || srcFmt.isFloat || srcFmt.sampleRate != dstFmt.sampleRate);
-    const auto* inputBytes = reinterpret_cast<const std::byte*>(src);
-    Fooyin::AudioFormat from = input;
-    std::vector<uint8_t> gained;
-    if (applyGain) {
-        from = {Fooyin::SampleFormat::F32, input.sampleRate(), input.channelCount()};
-        from.clearChannelLayout();
-        gained.resize(static_cast<size_t>(frames) * static_cast<size_t>(from.bytesPerFrame()));
-        if (!Fooyin::Audio::convert(input, inputBytes, from, reinterpret_cast<std::byte*>(gained.data()), frames, false)) {
-            std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(dstFmt.bytesPerFrame(), 1)));
-            return;
+    thread_local Matrix matrix;
+    matrix.configure(source, output);
+    const bool quantizing = source.isFloat || gain != 1.f || !sameLayout || source.bitsPerSample > output.bitsPerSample;
+    uint32_t* dither = quantizing ? ditherState : nullptr;
+    std::array<double, MaxChannels> samples {};
+    for (int frame = 0; frame < frames; ++frame) {
+        for (int c = 0; c < source.channels; ++c)
+            samples[c] = readSample(src + static_cast<size_t>(frame * source.channels + c) * source.bytesPerSample, source);
+        for (int c = 0; c < output.channels; ++c) {
+            double value = 0;
+            for (int i = 0; i < source.channels; ++i) value += samples[i] * matrix.values[c * MaxChannels + i];
+            writeSample(dst + static_cast<size_t>(frame * output.channels + c) * output.containerBytes,
+                        value * static_cast<double>(gain), output, dither);
         }
-        scaleFloat(gained.data(), frames * from.channelCount(), gain);
-        inputBytes = reinterpret_cast<const std::byte*>(gained.data());
     }
-
-    if (needsIntegerPack(dstFmt)) {
-        Fooyin::AudioFormat s32 {Fooyin::SampleFormat::S32, from.sampleRate(), outChannels};
-        s32.clearChannelLayout();
-        std::vector<int32_t> wide(static_cast<size_t>(frames) * static_cast<size_t>(outChannels));
-        if (!Fooyin::Audio::convert(from, inputBytes, s32, reinterpret_cast<std::byte*>(wide.data()), frames, dither)) {
-            std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(dstFmt.bytesPerFrame(), 1)));
-            return;
-        }
-        packInteger(wide.data(), dst, frames * outChannels, dstFmt);
-        fillMissingChannels(dst, frames, input.channelCount(), outChannels, std::max(dstFmt.containerBytes, 1));
-        return;
-    }
-
-    std::memset(dst, 0, static_cast<size_t>(frames) * static_cast<size_t>(std::max(output.bytesPerFrame(), 1)));
-    Fooyin::Audio::convert(from, inputBytes, output, reinterpret_cast<std::byte*>(dst), frames, dither);
-    fillMissingChannels(dst, frames, input.channelCount(), outChannels, std::max(output.bytesPerSample(), 1));
 }
-
 } // namespace echo
