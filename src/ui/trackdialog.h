@@ -2,14 +2,14 @@
 
 #include "library/types.h"
 
-#include <QDialog>
+#include "ui/dialogs.h"
 
 class QLineEdit;
 class QSpinBox;
 
 namespace echo {
 
-class TrackDialog : public QDialog {
+class TrackDialog : public DialogShell {
     Q_OBJECT
 
 public:

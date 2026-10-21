@@ -1,12 +1,12 @@
 #pragma once
-#include <QDialog>
+#include "ui/dialogs.h"
 
 class QCheckBox;
 class QLabel;
 
 namespace echo {
 class Player;
-class SettingsDialog : public QDialog {
+class SettingsDialog : public DialogShell {
     Q_OBJECT
 public:
     explicit SettingsDialog(Player* player, QWidget* parent = nullptr);

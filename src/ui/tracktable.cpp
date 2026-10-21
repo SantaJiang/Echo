@@ -1,3 +1,4 @@
+#include "ui/dialogs.h"
 #include "ui/tracktable.h"
 
 #include "ui/theme.h"
@@ -36,6 +37,26 @@ public:
     std::function<void(int, int)> resizeBoundary;
 
 protected:
+    void paintSection(QPainter* painter, const QRect& rect, int section) const override
+    {
+        if (!rect.isValid())
+            return;
+        painter->save();
+        const auto colors = echo::palette();
+        painter->fillRect(rect, colors.window);
+        painter->setPen(colors.hairline);
+        painter->drawLine(rect.bottomLeft(), rect.bottomRight());
+        painter->setPen(colors.secondary);
+        QFont font = painter->font();
+        font.setPixelSize(11);
+        font.setWeight(QFont::Medium);
+        painter->setFont(font);
+        const auto label = model()->headerData(section, Qt::Horizontal, Qt::DisplayRole).toString();
+        painter->drawText(rect.adjusted(section == 1 ? 35 : 12, 0, section == 4 ? -20 : -8, -1),
+            Qt::AlignVCenter | (section == 4 ? Qt::AlignRight : Qt::AlignLeft), label);
+        painter->restore();
+    }
+
     void mousePressEvent(QMouseEvent* event) override
     {
         const int boundary = boundaryAt(event->position().x());
@@ -328,7 +349,7 @@ QVariant TrackModel::headerData(int section, Qt::Orientation orientation, int ro
     case 1:
         return QStringLiteral("标题");
     case 2:
-        return QStringLiteral("艺人");
+        return QStringLiteral("艺术家");
     case 3:
         return QStringLiteral("专辑");
     case 4:
@@ -344,6 +365,7 @@ TrackTable::TrackTable(QWidget* parent)
 {
     auto* header = new TrackHeader(this);
     setHorizontalHeader(header);
+    header->setFixedHeight(28);
     header->resizeBoundary = [this](int column, int delta) { resizeColumnBoundary(column, delta); };
     setModel(m_model);
     setItemDelegate(new RowDelegate(this));
@@ -388,6 +410,7 @@ TrackTable::TrackTable(QWidget* parent)
         }
         const auto clicked = m_model->trackAt(index.row());
         QMenu menu(this);
+        styleMenu(&menu);
         menu.addAction(QStringLiteral("播放"), this, [this, clicked] {
             for (int row = 0; row < m_model->rowCount(); ++row) {
                 const auto candidate = m_model->trackAt(row);

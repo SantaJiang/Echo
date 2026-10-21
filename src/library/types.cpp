@@ -23,7 +23,7 @@ QString Track::displayTitle() const
 
 QString Track::displayArtist() const
 {
-    return artist.trimmed().isEmpty() ? QStringLiteral("未知艺人") : artist;
+    return artist.trimmed().isEmpty() ? QStringLiteral("未知艺术家") : artist;
 }
 
 QString Track::displayAlbum() const

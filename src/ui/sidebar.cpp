@@ -1,3 +1,4 @@
+#include "ui/dialogs.h"
 #include "ui/sidebar.h"
 
 #include "ui/icons.h"
@@ -128,7 +129,7 @@ Sidebar::Sidebar(QWidget* parent)
     m_library->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_library->setItemDelegate(new NavDelegate(m_library));
     m_library->setFixedHeight(32 * 4);
-    const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺人"), QStringLiteral("文件夹")};
+    const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺术家"), QStringLiteral("文件夹")};
     const QList<Icon> icons {Icon::Songs, Icon::Albums, Icon::Artists, Icon::Folders};
     for (int index = 0; index < titles.size(); ++index) {
         auto* item = new QListWidgetItem(icon(icons[index], colors.accent, 16), titles[index]);
@@ -181,6 +182,7 @@ Sidebar::Sidebar(QWidget* parent)
         const qint64 id = item->data(0, Qt::UserRole).toLongLong();
         const bool folder = item->data(0, Qt::UserRole + 1).toString() == QLatin1String("folder");
         QMenu menu(this);
+        styleMenu(&menu);
         if (folder) {
             menu.addAction(QStringLiteral("在此新建歌单"), this, [this, id] { emit createPlaylistRequested(id); });
             menu.addAction(QStringLiteral("重命名"), this, [this, id] { emit renameFolderRequested(id); });
@@ -216,7 +218,7 @@ Sidebar::Sidebar(QWidget* parent)
     settings->setCursor(Qt::PointingHandCursor);
     connect(settings, &QToolButton::clicked, this, &Sidebar::settingsRequested);
     layout->addWidget(settings, 0, Qt::AlignLeft);
-    setFixedWidth(260);
+    setFixedWidth(200);
 }
 
 void Sidebar::setPlaylists(const QVector<PlaylistFolder>& folders, const QVector<Playlist>& playlists)

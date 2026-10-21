@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
         <file>fonts/fa-solid-900.ttf</file>
+        <file alias="icons/checkmark.svg">checkmark.svg</file>
     </qresource>
 </RCC>

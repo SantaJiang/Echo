@@ -202,7 +202,7 @@ qint64 Database::addRoot(const QString& path)
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("INSERT OR IGNORE INTO roots(path,name,mount_path) VALUES (?,?,?)"));
     query.addBindValue(path);
-    query.addBindValue(QFileInfo(path).fileName());
+    query.addBindValue(QFileInfo(QDir::cleanPath(path)).fileName());
     query.addBindValue(QStorageInfo(path).rootPath());
     query.exec();
     query.prepare(QStringLiteral("UPDATE roots SET active=1,revision=revision+1 WHERE path=? AND active=0"));
@@ -251,8 +251,8 @@ LibraryRoot Database::root(qint64 id) const
     root.id = query.value(0).toLongLong();
     root.path = query.value(1).toString();
     root.name = query.value(2).toString();
-    if (root.name.isEmpty())
-        root.name = QFileInfo(root.path).fileName();
+    if (root.name.isEmpty() || root.name == root.path)
+        root.name = QFileInfo(QDir::cleanPath(root.path)).fileName();
     if (root.name.isEmpty())
         root.name = root.path;
     root.status = query.value(3).toString();
@@ -372,7 +372,7 @@ bool Database::updateRoot(
     query.prepare(QStringLiteral(
         "UPDATE roots SET path=?,name=?,mount_path=?,revision=revision+1,status='available',message='' WHERE id=?"));
     query.addBindValue(path);
-    query.addBindValue(QFileInfo(path).fileName());
+    query.addBindValue(QFileInfo(QDir::cleanPath(path)).fileName());
     query.addBindValue(QStorageInfo(path).rootPath());
     query.addBindValue(id);
     if (!query.exec())
@@ -687,7 +687,7 @@ QVector<Album> Database::albums(const QString& artistKey) const
             album.title = QStringLiteral("未知专辑");
         }
         if (album.artist.isEmpty()) {
-            album.artist = QStringLiteral("未知艺人");
+            album.artist = QStringLiteral("未知艺术家");
         }
         result.push_back(album);
     }
@@ -706,7 +706,7 @@ QVector<Artist> Database::artists() const
         artist.key = query.value(0).toString();
         artist.name = query.value(1).toString();
         if (artist.name.trimmed().isEmpty()) {
-            artist.name = QStringLiteral("未知艺人");
+            artist.name = QStringLiteral("未知艺术家");
         }
         artist.albums = query.value(2).toInt();
         artist.tracks = query.value(3).toInt();

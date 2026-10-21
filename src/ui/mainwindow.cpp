@@ -1,3 +1,4 @@
+#include "ui/dialogs.h"
 #include "ui/mainwindow.h"
 
 #include "audio/engine.h"
@@ -52,74 +53,6 @@
 
 namespace echo {
 namespace {
-
-QString askName(QWidget* parent, const QString& title, const QString& initial, const QString& confirmLabel)
-{
-    QDialog dialog(parent);
-    dialog.setWindowTitle(title);
-    dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
-    dialog.setAttribute(Qt::WA_TranslucentBackground);
-    dialog.setAttribute(Qt::WA_NoSystemBackground);
-    dialog.setAutoFillBackground(false);
-    dialog.setModal(true);
-    const Palette colors = palette();
-    dialog.setStyleSheet(QStringLiteral(
-        "QDialog { background: transparent; }"
-        "QFrame#nameCard { background: %1; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; }"
-        "QLabel#nameTitle { font-size: 17px; font-weight: 600; color: %2; background: transparent; }"
-        "QLineEdit#nameField { background: %3; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 0 12px; color: %2; min-height: 36px; selection-background-color: %4; selection-color: white; }"
-        "QLineEdit#nameField:focus { border: 1px solid rgba(255,255,255,0.28); }"
-        "QPushButton#nameCancel { background: transparent; color: %2; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px; min-width: 76px; min-height: 32px; padding: 0 14px; }"
-        "QPushButton#nameCancel:hover { background: %5; }"
-        "QPushButton#nameOk { background: %2; color: %3; border: none; border-radius: 8px; min-width: 76px; min-height: 32px; padding: 0 14px; font-weight: 600; }"
-        "QPushButton#nameOk:hover { background: #ffffff; }")
-                             .arg(colors.sidebar.name(), colors.text.name(), colors.window.name(), colors.accent.name(), colors.hover.name()));
-    auto* outer = new QVBoxLayout(&dialog);
-    outer->setContentsMargins(0, 0, 0, 0);
-    auto* card = new QFrame(&dialog);
-    card->setObjectName(QStringLiteral("nameCard"));
-    card->setAttribute(Qt::WA_StyledBackground);
-    card->setAutoFillBackground(false);
-    auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(20, 18, 20, 16);
-    layout->setSpacing(14);
-    auto* heading = new QLabel(title, card);
-    heading->setObjectName(QStringLiteral("nameTitle"));
-    auto* field = new QLineEdit(initial, card);
-    field->setObjectName(QStringLiteral("nameField"));
-    field->setPlaceholderText(QStringLiteral("名称"));
-    field->selectAll();
-    auto* buttons = new QHBoxLayout();
-    buttons->setSpacing(8);
-    buttons->addStretch();
-    auto* cancel = new QPushButton(QStringLiteral("取消"), card);
-    cancel->setObjectName(QStringLiteral("nameCancel"));
-    cancel->setCursor(Qt::PointingHandCursor);
-    auto* ok = new QPushButton(confirmLabel, card);
-    ok->setObjectName(QStringLiteral("nameOk"));
-    ok->setCursor(Qt::PointingHandCursor);
-    ok->setDefault(true);
-    buttons->addWidget(cancel);
-    buttons->addWidget(ok);
-    layout->addWidget(heading);
-    layout->addWidget(field);
-    layout->addLayout(buttons);
-    outer->addWidget(card);
-    QObject::connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
-    QObject::connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
-    QObject::connect(field, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
-    dialog.setFixedWidth(360);
-    dialog.adjustSize();
-    if (parent) {
-        const QRect frame = parent->frameGeometry();
-        dialog.move(frame.center() - QPoint(dialog.width() / 2, dialog.height() / 2));
-    }
-    field->setFocus();
-    if (dialog.exec() != QDialog::Accepted) {
-        return {};
-    }
-    return field->text().trimmed();
-}
 
 QString formatText(int sourceRate, int sourceBits, bool sourceFloat, int deviceRate, bool exclusive)
 {
@@ -253,7 +186,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_heading->setStyleSheet(QStringLiteral("font-size: 28px; font-weight: 700;"));
     m_heading->setFixedHeight(36);
     auto* searchRow = new QHBoxLayout();
-    searchRow->setContentsMargins(32, 0, 24, 8);
+    searchRow->setContentsMargins(ContentLeftMargin, 0, 24, 8);
     searchRow->setAlignment(Qt::AlignVCenter);
     searchRow->addWidget(m_heading, 0, Qt::AlignVCenter);
     searchRow->addStretch();
@@ -306,6 +239,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_tray->setIcon(trayIcon);
     m_tray->setToolTip(QStringLiteral("Echo"));
     auto* trayMenu = new QMenu(this);
+    styleMenu(trayMenu);
     trayMenu->addAction(QStringLiteral("打开 Echo"), this, &MainWindow::showMainWindow);
     trayMenu->addAction(QStringLiteral("设置…"), this, &MainWindow::showSettings);
     trayMenu->addSeparator();
@@ -457,15 +391,18 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         for (const Track& track : tracks) {
             ids.push_back(track.id);
         }
-        if (shuffle) {
-            m_player->setShuffle(true);
-        }
-        playVisible(ids, 0, true);
+        m_player->playTracks(ids, 0, true, shuffle);
     });
     connect(m_albums, &AlbumsPage::artistRequested, this, [this](const QString& key) {
         m_artists->reload();
         m_artists->selectArtist(key);
         m_sidebar->setSelectedLibrary(2);
+    });
+    connect(m_artists, &ArtistsPage::artistPlayRequested, this, [this](const QString& key, bool shuffle) {
+        QVector<qint64> ids;
+        for (const auto& track : m_library->artistTracks(key))
+            ids.append(track.id);
+        m_player->playTracks(ids, 0, false, shuffle);
     });
     connect(m_artists, &ArtistsPage::albumPlayRequested, this, [this](const QString& key, bool) {
         m_albums->openAlbum(key);
@@ -537,6 +474,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_queue, &QueuePanel::moved, m_player, &Player::moveQueue);
     connect(m_queue, &QueuePanel::cleared, m_player, &Player::clearUpcoming);
 
+    connect(m_mini, &MiniPlayer::seekRequested, m_player, &Player::seek);
     connect(m_mini, &MiniPlayer::toggleRequested, m_player, &Player::toggle);
     connect(m_mini, &MiniPlayer::nextRequested, m_player, &Player::next);
     connect(m_mini, &MiniPlayer::previousRequested, m_player, &Player::previous);
@@ -559,7 +497,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_mini, &MiniPlayer::favoriteRequested, this, toggleCurrentFavorite);
     connect(m_library, &Library::favoritesChanged, this, updateFavoriteButtons);
     connect(m_library, &Library::favoritesFailed, this, [this](const QString& message) {
-        QMessageBox::warning(this, QStringLiteral("收藏失败"), message);
+        MessageDialog::warning(this, QStringLiteral("收藏失败"), message);
     });
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
     connect(m_library, &Library::sourceChanged, this, [this](qint64) {
@@ -576,7 +514,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     connect(m_player, &Player::playbackMessage, this, [this](const QString& message) { m_bar->setStatus(message); });
     connect(m_player, &Player::trackUnavailable, this, &MainWindow::showUnavailable);
     connect(m_player, &Player::trashFinished, this, [this](const QString& report) {
-        auto* box = new QMessageBox(
+        auto* box = new MessageDialog(
             QMessageBox::Information, QStringLiteral("移到废纸篓"), report.section(u'\n', 0, 0), QMessageBox::Ok, this);
         box->setDetailedText(report.section(u'\n', 1));
         box->setAttribute(Qt::WA_DeleteOnClose);
@@ -623,6 +561,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_bar->setPosition(m_player->positionMs(), track.durationMs);
         if (m_mini->isVisible()) {
             m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
+            m_mini->setPosition(m_player->positionMs(), track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
             m_mini->setFavorite(m_library->isFavorite(track.id), track.id > 0 && m_library->track(track.id).id > 0);
         }
         updateSystemNowPlaying(track, art.toImage(), m_player->positionMs(), track.durationMs, m_player->state() == AudioEngine::State::Playing);
@@ -693,7 +632,7 @@ void MainWindow::buildMenus()
         }
         QString error;
         if (!m_library->importM3u(id, path, &error)) {
-            QMessageBox::warning(this, QStringLiteral("导入失败"), error);
+            MessageDialog::warning(this, QStringLiteral("导入失败"), error);
         } else {
             m_playlist->setPlaylist(id);
             m_heading->setText(m_playlist->title());
@@ -711,7 +650,7 @@ void MainWindow::buildMenus()
         }
         QString error;
         if (!m_library->exportM3u(m_playlistId, path, &error)) {
-            QMessageBox::warning(this, QStringLiteral("导出失败"), error);
+            MessageDialog::warning(this, QStringLiteral("导出失败"), error);
         }
     });
 
@@ -737,6 +676,7 @@ void MainWindow::buildMenus()
         hide();
         const Track track = m_player->currentTrack();
         m_mini->setTrack(track, m_library->artwork()->pixmap(track.artworkHash, 128), m_player->state() == AudioEngine::State::Playing);
+        m_mini->setPosition(m_player->positionMs(), track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
         m_mini->show();
     });
     auto* exclusive = control->addAction(QStringLiteral("独占输出"));
@@ -764,6 +704,8 @@ void MainWindow::buildMenus()
     volumeDown->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Down));
     connect(volumeDown, &QAction::triggered, this, [this] { m_player->setVolume(std::max(0.f, m_player->volume() - 0.05f)); });
     addAction(volumeDown);
+    for (auto* menu : menuBar()->findChildren<QMenu*>())
+        styleMenu(menu);
 }
 
 void MainWindow::refreshViews()
@@ -785,7 +727,7 @@ void MainWindow::showLibraryPage(int index)
     m_libraryPage = index;
     m_playlistId = 0;
     m_search->clear();
-    const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺人"), QStringLiteral("文件夹")};
+    const QStringList titles {QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺术家"), QStringLiteral("文件夹")};
     m_heading->setText(index >= 0 && index < titles.size() ? titles.at(index) : QStringLiteral("歌曲"));
     m_heading->show();
     m_stack->setCurrentIndex(index);
@@ -803,6 +745,7 @@ void MainWindow::syncPlayer()
     const bool canFavorite = track.id > 0 && m_library->track(track.id).id > 0;
     m_bar->setFavorite(m_library->isFavorite(track.id), canFavorite);
     m_mini->setTrack(track, art, m_player->state() == AudioEngine::State::Playing);
+    m_mini->setPosition(m_player->positionMs(), track.durationMs, m_engine->state() != AudioEngine::State::Stopped);
     m_mini->setFavorite(m_library->isFavorite(track.id), canFavorite);
     if (m_engine->state() == AudioEngine::State::Stopped) {
         m_bar->setFormatText(formatText(track.sampleRate, track.bitDepth,
@@ -835,6 +778,7 @@ void MainWindow::playVisible(const QVector<qint64>& ids, int index, bool albumCo
 void MainWindow::addToPlaylist(const QVector<qint64>& ids)
 {
     QMenu menu(this);
+        styleMenu(&menu);
     const auto playlists = m_library->playlists();
     if (playlists.isEmpty()) {
         menu.addAction(QStringLiteral("新建歌单"), this, [this, ids] {
@@ -860,7 +804,7 @@ void MainWindow::showInfo(qint64 id)
     }
     QString error;
     if (!m_library->saveTags(id, dialog.edit(), &error)) {
-        QMessageBox::warning(this, QStringLiteral("无法保存"), error.isEmpty() ? QStringLiteral("写入标签失败") : error);
+        MessageDialog::warning(this, QStringLiteral("无法保存"), error.isEmpty() ? QStringLiteral("写入标签失败") : error);
     }
 }
 
@@ -926,14 +870,14 @@ void MainWindow::showUnavailable(qint64 id)
 {
     m_library->recheckTrack(id);
     const auto track = m_library->track(id);
-    auto* box = new QMessageBox(QMessageBox::Warning, QStringLiteral("歌曲暂时无法播放"),
+    auto* box = new MessageDialog(QMessageBox::Warning, QStringLiteral("歌曲暂时无法播放"),
         track.displayTitle() + u'\n' + track.path + QStringLiteral("\n文件可能已移动、磁盘未连接或访问权限已改变。"),
         QMessageBox::Cancel, this);
     box->setObjectName(QStringLiteral("unavailableTrackDialog"));
     box->setAttribute(Qt::WA_DeleteOnClose);
     auto* check = box->addButton(QStringLiteral("重新检查"), QMessageBox::ActionRole);
     auto* locate = box->addButton(QStringLiteral("重新定位…"), QMessageBox::ActionRole);
-    connect(box, &QMessageBox::buttonClicked, this, [this, id, check, locate](QAbstractButton* button) {
+    connect(box, &MessageDialog::buttonClicked, this, [this, id, check, locate](QAbstractButton* button) {
         if (button == check)
             m_library->recheckTrack(id);
         if (button == locate)
@@ -950,7 +894,7 @@ void MainWindow::locateTrack(qint64 id)
     for (const auto& root : m_library->roots())
         if (root.path == QFileInfo(path).absolutePath())
             registered = true;
-    if (QMessageBox::question(this, QStringLiteral("确认歌曲位置"),
+    if (MessageDialog::question(this, QStringLiteral("确认歌曲位置"),
             path + u'\n'
                 + (registered ? QStringLiteral("该歌曲属于已添加的文件夹，将进入全局资料库。")
                               : QStringLiteral("该文件夹尚未添加；歌曲只保留在队列、收藏或播放列表中。")))
@@ -958,7 +902,7 @@ void MainWindow::locateTrack(qint64 id)
         return;
     QString error;
     if (!m_library->relocateTrack(id, path, &error))
-        QMessageBox::warning(this, QStringLiteral("定位失败"), error);
+        MessageDialog::warning(this, QStringLiteral("定位失败"), error);
 }
 void MainWindow::trashTracks(const QVector<qint64>& ids)
 {
@@ -977,12 +921,13 @@ void MainWindow::trashTracks(const QVector<qint64>& ids)
     }
     if (paths.isEmpty())
         return;
-    QMessageBox box(QMessageBox::Warning, QStringLiteral("移到废纸篓"),
+    MessageDialog box(QMessageBox::Warning, QStringLiteral("移到废纸篓"),
         QStringLiteral("将 %1 个实际音乐文件移到废纸篓？\n会影响 %2 首曲目，包括同一音频文件中的其他 CUE "
                        "曲目。歌曲引用将保留为不可用，旁边的封面、歌词和 CUE 文件会保留。")
             .arg(paths.size())
             .arg(affected),
         QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setConfirmText(QStringLiteral("移到废纸篓"), true);
     box.setDefaultButton(QMessageBox::Cancel);
     box.setDetailedText(details.join(u'\n'));
     if (box.exec() == QMessageBox::Yes)
@@ -998,7 +943,7 @@ void MainWindow::addMusicFolder()
         return;
     const auto id = m_library->addRoot(path);
     if (!id) {
-        QMessageBox::warning(
+        MessageDialog::warning(
             this, QStringLiteral("无法添加"), QStringLiteral("无法登记这个音乐文件夹，请检查目录和权限。"));
         return;
     }

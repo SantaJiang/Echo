@@ -1,3 +1,4 @@
+#include "ui/dialogs.h"
 #include "audio/engine.h"
 #include "library/library.h"
 #include "platform/platform.h"
@@ -73,7 +74,7 @@ int main(int argc, char** argv)
     echo::Library library;
     QString error;
     if (!library.open(&error)) {
-        QMessageBox::critical(nullptr, QStringLiteral("Echo"), error.isEmpty() ? QStringLiteral("无法打开资料库") : error);
+        echo::MessageDialog::critical(nullptr, QStringLiteral("Echo"), error.isEmpty() ? QStringLiteral("无法打开资料库") : error);
         return 1;
     }
     echo::AudioEngine engine;

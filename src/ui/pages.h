@@ -57,6 +57,7 @@ private:
     qint64 m_id = 0;
     QString m_title;
     QLabel* m_subtitle;
+    QLabel* m_path;
     QPushButton* m_add;
     int m_sort = 0;
     bool m_desc = false;
@@ -113,9 +114,18 @@ public:
     [[nodiscard]] TrackTable* table() const { return m_table; }
 
 signals:
+    void artistPlayRequested(const QString& key, bool shuffle);
     void albumPlayRequested(const QString& albumKey, bool shuffle);
 
 private:
+    void showArtistRow(int row);
+    QString m_selectedArtist;
+    QWidget* m_details = nullptr;
+    QLabel* m_name = nullptr;
+    QLabel* m_summary = nullptr;
+    QLabel* m_empty = nullptr;
+    QPushButton* m_play = nullptr;
+    QPushButton* m_shuffle = nullptr;
     Library* m_library = nullptr;
     QListWidget* m_artists = nullptr;
     QListWidget* m_albums = nullptr;

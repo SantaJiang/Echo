@@ -9,6 +9,12 @@
 #include "ui/settingsdialog.h"
 #include "ui/pages.h"
 #include <QToolButton>
+#include <QPushButton>
+#include <QBuffer>
+#include <QImage>
+#include <QPainter>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QAccessible>
 #include <QFileDialog>
 #include <QMenuBar>
@@ -340,7 +346,7 @@ int main(int argc, char** argv)
           "format and progress share a horizontal centerline");
     window.resize(1040, 640);
     grab(&window, out, QStringLiteral("minimum"));
-    check(bar->width() <= window.centralWidget()->width() - 260, "player fits minimum width");
+    check(bar->width() <= window.centralWidget()->width() - window.findChild<QWidget*>(QStringLiteral("sidebar"))->width(), "player fits minimum width");
     check(seek->width() >= 120, "seek remains usable at minimum width");
     auto longTitleTrack = tracks.front();
     longTitleTrack.title = QStringLiteral("很长的歌曲名称 A Very Long Song Title With Extra Information");
@@ -429,6 +435,81 @@ int main(int argc, char** argv)
         check(folderItem->isExpanded(), "aligned root folder disclosure expands");
     }
     grab(&window, out, QStringLiteral("playlist-folders"));
+    // Long labels, rectangular artwork, keyboard navigation and explicit page playback.
+    {
+        const auto fixture = tracks.front();
+        echo::TagEdit edit;
+        edit.title = fixture.title;
+        edit.artist = QStringLiteral("Aster & Luna · 很长的艺术家名称 ").repeated(8);
+        edit.albumArtist = edit.artist;
+        edit.album = QStringLiteral("夜色中的城市 · 很长的专辑名称 ").repeated(8);
+        edit.trackNumber = fixture.trackNumber;
+        edit.year = fixture.year;
+        QImage rectangularCover(480, 240, QImage::Format_ARGB32);
+        rectangularCover.fill(QColor(QStringLiteral("#224766")));
+        QPainter coverPainter(&rectangularCover);
+        coverPainter.fillRect(QRect(120, 0, 240, 240), QColor(QStringLiteral("#AD663D")));
+        coverPainter.end();
+        QBuffer bytes(&edit.artwork);
+        bytes.open(QIODevice::WriteOnly);
+        rectangularCover.save(&bytes, "PNG");
+        edit.editArtwork = true;
+        edit.artworkMime = QStringLiteral("image/png");
+        check(library.saveTags(fixture.id, edit, &error), "long-name and rectangular artwork fixture saved");
+        const auto changed = library.track(fixture.id);
+        window.resize(1040, 640);
+        auto* artistsPage = window.findChild<echo::ArtistsPage*>();
+        auto* albumsPage = window.findChild<echo::AlbumsPage*>();
+        nav->setCurrentRow(2);
+        artistsPage->selectArtist(changed.artistKey);
+        QApplication::processEvents();
+        auto* artistName = artistsPage->findChild<QLabel*>(QStringLiteral("artistName"));
+        check(artistName->toolTip() == edit.artist && artistName->text() != edit.artist,
+            "long artist name is elided with full tooltip at minimum size");
+        auto* artistCards = artistsPage->findChild<QListWidget*>(QStringLiteral("artistAlbums"));
+        check(artistCards->visualItemRect(artistCards->item(0)).bottom() < artistCards->viewport()->height(),
+            "artist card text fits strip without clipping");
+        grab(&window, out, QStringLiteral("artists-long-minimum"));
+        auto waitFor = [&](auto predicate) {
+            QElapsedTimer timeout;
+            timeout.start();
+            while (!predicate() && timeout.elapsed() < 4000) {
+                QApplication::processEvents();
+                QThread::msleep(5);
+            }
+            return predicate();
+        };
+        const auto previousToken = player.queue().isEmpty() ? 0 : player.queue().first().token;
+        artistsPage->findChild<QPushButton*>(QStringLiteral("playArtist"))->click();
+        check(waitFor([&] { return player.queue().size() == 1 && player.queue().first().trackId == fixture.id
+                && player.queue().first().token != previousToken && !player.shuffle(); }),
+            "artist play all replaces queue with artist tracks in normal order");
+        check(!player.queue().first().albumContext, "artist playback does not apply album gain context");
+        artistsPage->findChild<QPushButton*>(QStringLiteral("shuffleArtist"))->click();
+        check(waitFor([&] { return player.shuffle(); }), "artist shuffle explicitly enables shuffle");
+        emit artistCards->itemActivated(artistCards->item(0));
+        QApplication::processEvents();
+        check(nav->currentRow() == 1 && albumsPage->detailTable()->property("albumKey").toString() == changed.albumKey,
+            "activating artist album card opens correct album");
+        auto* albumName = albumsPage->findChild<QLabel*>(QStringLiteral("albumName"));
+        check(albumName->toolTip() == edit.album && albumName->text() != edit.album,
+            "long album title is elided with full tooltip");
+        auto* albumArtistLink = albumsPage->findChild<QLabel*>(QStringLiteral("albumArtist"));
+        check(albumArtistLink->toolTip() == edit.artist && !albumArtistLink->text().contains(edit.artist.toHtmlEscaped()),
+            "long album artist link is elided and retains full tooltip");
+        const auto cover = albumsPage->findChild<QLabel*>(QStringLiteral("albumArt"))->pixmap();
+        check(cover.width() == cover.height() && cover.toImage().pixelColor(cover.width() / 2, cover.height() / 2)
+                == QColor(QStringLiteral("#AD663D")), "rectangular artwork is center cropped into square cover");
+        grab(&window, out, QStringLiteral("album-long-minimum"));
+        albumsPage->findChild<QPushButton*>(QStringLiteral("primaryButton"))->click();
+        check(waitFor([&] { return !player.shuffle() && !player.queue().isEmpty() && player.queue().first().albumContext; }),
+            "normal album play exits shuffle and applies album context");
+        click(albumArtistLink, QPoint(10, albumArtistLink->height() / 2));
+        QApplication::processEvents();
+        check(nav->currentRow() == 2 && artistsPage->findChild<QListWidget*>(QStringLiteral("artistList"))->currentItem()
+                ->data(Qt::UserRole).toString() == changed.artistKey, "album artist link returns to matching artist");
+        qInfo() << "Artist and album terminology, layout, artwork, navigation and playback checks passed";
+    }
     if (qEnvironmentVariableIsSet("ECHO_UISHOT_HOLD")) {
         settings->hide();
         window.showMainWindow();

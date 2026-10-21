@@ -7,6 +7,8 @@ class QWidget;
 
 namespace echo {
 
+inline constexpr int ContentLeftMargin = 18;
+
 struct Palette {
     QColor window;
     QColor sidebar;

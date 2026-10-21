@@ -6,6 +6,7 @@
 
 class QLabel;
 class QToolButton;
+class QSlider;
 
 namespace echo {
 
@@ -15,9 +16,11 @@ class MiniPlayer : public QWidget {
 public:
     explicit MiniPlayer(QWidget* parent = nullptr);
     void setFavorite(bool liked, bool enabled);
+    void setPosition(qint64 positionMs, qint64 durationMs, bool seekable = true);
     void setTrack(const Track& track, const QPixmap& artwork, bool playing);
 
 signals:
+    void seekRequested(qint64 positionMs);
     void favoriteRequested();
     void toggleRequested();
     void nextRequested();
@@ -32,6 +35,9 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private:
+    QSlider* m_seek = nullptr;
+    qint64 m_trackId = 0;
+    bool m_canSeek = false;
     QPoint m_dragOffset;
     bool m_dragging = false;
     QLabel* m_title = nullptr;

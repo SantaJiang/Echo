@@ -1,24 +1,27 @@
+#include "ui/dialogs.h"
 #include "ui/settingsdialog.h"
 #include "playback/player.h"
 #include "ui/theme.h"
 #include <QCheckBox>
+#include <QDialogButtonBox>
+#include <QPushButton>
 #include <QLabel>
 #include <QVBoxLayout>
 
 namespace echo {
 SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
-    : QDialog(parent, Qt::Window), m_player(player)
+    : DialogShell(parent), m_player(player)
 {
     setWindowTitle(QStringLiteral("Echo 设置"));
     setObjectName(QStringLiteral("settingsDialog"));
-    setMinimumWidth(440);
-    resize(480, 280);
-    polish(this);
-    auto* layout = new QVBoxLayout(this);
+    setFixedWidth(544);
+
+    styleDialog(this);
+    auto* layout = contentLayout();
     layout->setContentsMargins(28, 28, 28, 28);
-    layout->setSpacing(16);
-    auto* heading = new QLabel(QStringLiteral("播放"), this);
-    heading->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 600;"));
+    layout->setSpacing(14);
+    auto* heading = new QLabel(QStringLiteral("设置"), this);
+    heading->setObjectName(QStringLiteral("dialogTitle"));
     m_normalize = new QCheckBox(QStringLiteral("音量均衡"), this);
     m_normalize->setObjectName(QStringLiteral("normalizationToggle"));
     auto* description = new QLabel(QStringLiteral("自动分析当前播放队列，让不同歌曲的听感音量更接近。保持歌曲内部的动态变化，不修改音乐文件。"), this);
@@ -28,15 +31,16 @@ SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
     m_status->setWordWrap(true);
     m_status->setStyleSheet(QStringLiteral("color: #98989D; font-size: 12px;"));
     layout->addWidget(heading);
-    m_replaceQueue = new QCheckBox(QStringLiteral("双击文件夹或播放列表中的歌曲时，替换当前播放队列"), this);
+    m_replaceQueue = new QCheckBox(QStringLiteral("双击歌曲时替换当前播放队列"), this);
     m_replaceQueue->setObjectName(QStringLiteral("replaceContextQueueToggle"));
     auto* queueDescription
-        = new QLabel(QStringLiteral("关闭后，仅插入并立即播放所选歌曲，播完接回原队列。单曲循环模式仍会保留。"), this);
+        = new QLabel(QStringLiteral("适用于文件夹、播放列表和「我喜欢的」。关闭后，仅插入并立即播放所选歌曲，播完接回原队列。"), this);
     queueDescription->setWordWrap(true);
     queueDescription->setStyleSheet(QStringLiteral("color: #98989D;"));
     layout->addWidget(m_replaceQueue);
     layout->addWidget(queueDescription);
     connect(m_replaceQueue, &QCheckBox::toggled, player, &Player::setReplaceContextQueue);
+    layout->addSpacing(12);
     layout->addWidget(m_normalize);
     layout->addWidget(description);
     layout->addWidget(m_status);
@@ -57,9 +61,14 @@ SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
     layout->addWidget(m_spatialStatus);
     connect(m_spatial, &QCheckBox::toggled, player, &Player::setSpatialEnabled);
     connect(player, &Player::spatialChanged, this, &SettingsDialog::refresh);
-    resize(480, 460);
+
 #endif
-    layout->addStretch();
+    auto* actions = new QDialogButtonBox(this);
+    auto* done = actions->addButton(QStringLiteral("完成"), QDialogButtonBox::AcceptRole);
+    done->setDefault(true);
+    done->setProperty("primary", true);
+    layout->addWidget(actions);
+    connect(actions, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(m_normalize, &QCheckBox::toggled, player, &Player::setNormalizationEnabled);
     connect(player, &Player::normalizationChanged, this, &SettingsDialog::refresh);
     connect(player, &Player::changed, this, &SettingsDialog::refresh);

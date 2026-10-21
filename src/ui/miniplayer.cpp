@@ -13,8 +13,52 @@
 #include <QToolButton>
 #include <QSignalBlocker>
 #include <QWindow>
+#include <QSlider>
+#include <QStyle>
+#include <QVBoxLayout>
+#include <limits>
+#include <algorithm>
 
 namespace echo {
+namespace {
+class MiniSeekSlider : public QSlider {
+public:
+    explicit MiniSeekSlider(QWidget* parent) : QSlider(Qt::Horizontal, parent) {}
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() != Qt::LeftButton) {
+            QSlider::mousePressEvent(event);
+            return;
+        }
+        setSliderDown(true);
+        moveTo(event->position().x());
+        event->accept();
+    }
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (isSliderDown())
+            moveTo(event->position().x());
+        event->accept();
+    }
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && isSliderDown()) {
+            moveTo(event->position().x());
+            setSliderDown(false);
+        }
+        event->accept();
+    }
+private:
+    void moveTo(qreal x)
+    {
+        constexpr int handle = 8;
+        setSliderPosition(QStyle::sliderValueFromPosition(minimum(), maximum(),
+            qBound(0, qRound(x) - handle / 2, width() - handle), qMax(1, width() - handle)));
+    }
+};
+} // namespace
+
 
 MiniPlayer::MiniPlayer(QWidget* parent)
     : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
@@ -23,9 +67,12 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     setObjectName(QStringLiteral("miniPlayer"));
     setProperty("echoMiniPlayer", true);
     setAttribute(Qt::WA_TranslucentBackground);
-    setFixedSize(440, 88);
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(14, 12, 12, 12);
+    setFixedSize(440, 100);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(14, 10, 12, 8);
+    outer->setSpacing(4);
+    auto* layout = new QHBoxLayout;
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(12);
     m_art = new QLabel(this);
     m_art->setFixedSize(60, 60);
@@ -85,6 +132,29 @@ MiniPlayer::MiniPlayer(QWidget* parent)
     layout->addWidget(m_favorite);
     layout->addLayout(controls);
     layout->addWidget(expand);
+    outer->addLayout(layout);
+    m_seek = new MiniSeekSlider(this);
+    m_seek->setObjectName(QStringLiteral("miniPlaybackSeek"));
+    m_seek->setAccessibleName(QStringLiteral("播放进度"));
+    m_seek->setFixedHeight(14);
+    m_seek->setRange(0, 0);
+    m_seek->setSingleStep(5000);
+    m_seek->setPageStep(10000);
+    m_seek->setEnabled(false);
+    m_seek->setCursor(Qt::PointingHandCursor);
+    m_seek->setStyleSheet(QStringLiteral(
+        "QSlider::groove:horizontal { height: 3px; border: none; border-radius: 1px; background: #48484D; }"
+        "QSlider::sub-page:horizontal { background: #FA2D48; border-radius: 1px; }"
+        "QSlider::handle:horizontal { background: #F5F5F7; width: 8px; margin: -3px 0; border-radius: 4px; }"
+        "QSlider::handle:horizontal:hover { background: white; }"
+        "QSlider::handle:horizontal:disabled { background: transparent; }"
+        "QSlider::sub-page:horizontal:disabled { background: #48484D; }"));
+    outer->addWidget(m_seek);
+    connect(m_seek, &QSlider::sliderReleased, this, [this] { emit seekRequested(m_seek->value()); });
+    connect(m_seek, &QSlider::valueChanged, this, [this](int value) {
+        if (!m_seek->isSliderDown())
+            emit seekRequested(value);
+    });
     connect(previous, &QToolButton::clicked, this, &MiniPlayer::previousRequested);
     connect(m_play, &QToolButton::clicked, this, &MiniPlayer::toggleRequested);
     connect(next, &QToolButton::clicked, this, &MiniPlayer::nextRequested);
@@ -100,6 +170,16 @@ void MiniPlayer::setFavorite(bool liked, bool enabled)
 
 void MiniPlayer::setTrack(const Track& track, const QPixmap& artwork, bool playing)
 {
+    const bool canSeek = track.id > 0 && !track.missing && track.durationMs > 0;
+    if (m_trackId != track.id || !canSeek) {
+        const QSignalBlocker blocker(m_seek);
+        m_seek->setSliderDown(false);
+        m_seek->setRange(0, static_cast<int>(std::clamp<qint64>(track.durationMs, 0, std::numeric_limits<int>::max())));
+        m_seek->setValue(0);
+    }
+    m_trackId = track.id;
+    m_canSeek = canSeek;
+    m_seek->setEnabled(canSeek);
     m_favorite->setEnabled(track.id > 0);
     const QString title = track.id ? track.displayTitle() : QStringLiteral("未在播放");
     m_title->setText(m_title->fontMetrics().elidedText(title, Qt::ElideRight, m_title->width()));
@@ -123,6 +203,18 @@ void MiniPlayer::setTrack(const Track& track, const QPixmap& artwork, bool playi
     painter.drawPixmap(QRect(0, 0, 60, 60), source);
     painter.end();
     m_art->setPixmap(rounded);
+}
+
+void MiniPlayer::setPosition(qint64 positionMs, qint64 durationMs, bool seekable)
+{
+    if (m_seek->isSliderDown())
+        return;
+    const QSignalBlocker blocker(m_seek);
+    const auto duration = std::clamp<qint64>(durationMs, 0, std::numeric_limits<int>::max());
+    m_seek->setRange(0, static_cast<int>(duration));
+    m_seek->setValue(static_cast<int>(std::clamp<qint64>(positionMs, 0, duration)));
+    m_seek->setEnabled(m_canSeek && duration > 0 && seekable);
+    m_seek->setToolTip(formatDuration(positionMs) + QStringLiteral(" / ") + formatDuration(durationMs));
 }
 
 void MiniPlayer::paintEvent(QPaintEvent*)

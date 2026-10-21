@@ -1,3 +1,4 @@
+#include "ui/dialogs.h"
 #include "ui/pages.h"
 
 #include "ui/icons.h"
@@ -8,7 +9,10 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QScrollBar>
+#include <QUrl>
+#include <QSignalBlocker>
 #include "platform/platform.h"
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -32,6 +36,139 @@
 namespace echo {
 namespace {
 
+class FolderTree : public QTreeWidget {
+public:
+    explicit FolderTree(QWidget* parent) : QTreeWidget(parent) { setProperty("hoverRow", -1); }
+protected:
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        const int row = indexAt(event->position().toPoint()).row();
+        if (property("hoverRow").toInt() != row) {
+            setProperty("hoverRow", row);
+            viewport()->update();
+        }
+        QTreeWidget::mouseMoveEvent(event);
+    }
+    bool viewportEvent(QEvent* event) override
+    {
+        if (event->type() == QEvent::Leave) {
+            setProperty("hoverRow", -1);
+            viewport()->update();
+        }
+        return QTreeWidget::viewportEvent(event);
+    }
+    void leaveEvent(QEvent* event) override
+    {
+        setProperty("hoverRow", -1);
+        viewport()->update();
+        QTreeWidget::leaveEvent(event);
+    }
+};
+
+class FolderRowDelegate : public QStyledItemDelegate {
+public:
+    explicit FolderRowDelegate(QTreeWidget* tree) : QStyledItemDelegate(tree), m_tree(tree) {}
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        painter->save();
+        painter->setClipRect(option.rect);
+        const bool selected = option.state & QStyle::State_Selected;
+        const bool hover = m_tree->property("hoverRow").toInt() == index.row();
+        if (selected || hover) {
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(selected ? echo::palette().selected : echo::palette().hover);
+            painter->drawRoundedRect(QRectF(4, option.rect.top() + 2,
+                m_tree->viewport()->width() - 8, option.rect.height() - 4), 8, 8);
+        }
+        auto content = option;
+        content.state &= ~(QStyle::State_Selected | QStyle::State_MouseOver | QStyle::State_HasFocus);
+        QStyledItemDelegate::paint(painter, content, index);
+        painter->restore();
+    }
+private:
+    QTreeWidget* m_tree;
+};
+
+class PathLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+    void setElideMode(Qt::TextElideMode mode) { m_elide = mode; }
+    void setPath(const QString& path)
+    {
+        setTextFormat(Qt::PlainText);
+        m_path = path;
+        setToolTip(path);
+        setText(fontMetrics().elidedText(path, m_elide, width()));
+        setVisible(!path.isEmpty());
+    }
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QLabel::resizeEvent(event);
+        setText(fontMetrics().elidedText(m_path, m_elide, width()));
+    }
+private:
+    QString m_path;
+    Qt::TextElideMode m_elide = Qt::ElideMiddle;
+};
+
+class ArtistLinkLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+    void setArtist(const QString& name, const QString& key)
+    {
+        m_name = name;
+        m_key = key;
+        setToolTip(name);
+        refresh();
+    }
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QLabel::resizeEvent(event);
+        refresh();
+    }
+private:
+    void refresh()
+    {
+        const auto text = fontMetrics().elidedText(m_name, Qt::ElideRight, width());
+        setText(QStringLiteral(R"(<a href="%1" style="color:%2; text-decoration:none;">%3</a>)")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(m_key)), echo::palette().accent.name(), text.toHtmlEscaped()));
+    }
+    QString m_name;
+    QString m_key;
+};
+
+QString actionStyle(bool primary)
+{
+    const auto colors = echo::palette();
+    return QStringLiteral("QPushButton { background: %1; color: %2; border: none; border-radius: 7px; "
+                          "padding: 0 14px; font-size: 12px; font-weight: 600; }"
+                          "QPushButton:hover { background: %3; }"
+                          "QPushButton:disabled { color: %4; background: %5; }")
+        .arg(primary ? colors.accent.name() : colors.hover.name(),
+            primary ? QStringLiteral("#FFFFFF") : colors.text.name(),
+            primary ? QStringLiteral("#FF4560") : colors.selected.name(),
+            colors.secondary.name(), colors.sidebar.name());
+}
+
+QPixmap roundedArtwork(const QPixmap& source, int side)
+{
+    QPixmap result(side * 2, side * 2);
+    result.setDevicePixelRatio(2);
+    result.fill(Qt::transparent);
+    QPainter painter(&result);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath clip;
+    clip.addRoundedRect(QRectF(0, 0, side, side), 10, 10);
+    painter.setClipPath(clip);
+    const int crop = qMin(source.width(), source.height());
+    painter.drawPixmap(QRect(0, 0, side, side), source,
+        QRect((source.width() - crop) / 2, (source.height() - crop) / 2, crop, crop));
+    return result;
+}
+
 class AlbumCardDelegate : public QStyledItemDelegate {
 public:
     explicit AlbumCardDelegate(QObject* parent = nullptr)
@@ -44,12 +181,12 @@ public:
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
         const Palette colors = echo::palette();
-        const int coverSide = std::min(160, std::max(72, option.rect.width() - 16));
+        const int coverSide = qMin(160, qMin(option.rect.width() - 16, option.rect.height() - 56));
         const QRect cover(option.rect.left() + 8, option.rect.top() + 6, coverSide, coverSide);
         if (option.state & QStyle::State_Selected || option.state & QStyle::State_MouseOver) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(option.state & QStyle::State_Selected ? colors.selected : colors.hover);
-            painter->drawRoundedRect(QRectF(cover.adjusted(-4, -4, 4, 28)), 10, 10);
+            painter->drawRoundedRect(QRectF(option.rect.adjusted(2, 0, -2, -2)), 10, 10);
         }
         const QIcon artwork = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         const QPixmap pixmap = artwork.pixmap(320, 320);
@@ -57,18 +194,27 @@ public:
         clip.addRoundedRect(QRectF(cover), 8, 8);
         painter->setClipPath(clip);
         if (!pixmap.isNull()) {
-            painter->drawPixmap(cover, pixmap);
+            const int crop = qMin(pixmap.width(), pixmap.height());
+            painter->drawPixmap(cover, pixmap,
+                QRect((pixmap.width() - crop) / 2, (pixmap.height() - crop) / 2, crop, crop));
         } else {
             painter->fillRect(cover, colors.sidebar);
         }
         painter->setClipping(false);
         const QStringList lines = index.data(Qt::DisplayRole).toString().split(u'\n');
+        QFont textFont = option.font;
+        textFont.setPixelSize(12);
+        textFont.setWeight(QFont::Medium);
+        painter->setFont(textFont);
         const QRect title(cover.left(), cover.bottom() + 8, cover.width(), 18);
         const QRect artist(cover.left(), title.bottom(), cover.width(), 16);
         painter->setPen(colors.text);
-        painter->drawText(title, Qt::AlignHCenter | Qt::AlignVCenter, painter->fontMetrics().elidedText(lines.value(0), Qt::ElideRight, title.width()));
+        painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(lines.value(0), Qt::ElideRight, title.width()));
         painter->setPen(colors.secondary);
-        painter->drawText(artist, Qt::AlignHCenter | Qt::AlignVCenter, painter->fontMetrics().elidedText(lines.value(1), Qt::ElideRight, artist.width()));
+        textFont.setPixelSize(11);
+        textFont.setWeight(QFont::Normal);
+        painter->setFont(textFont);
+        painter->drawText(artist, Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(lines.value(1), Qt::ElideRight, artist.width()));
         painter->restore();
     }
 
@@ -78,11 +224,12 @@ public:
     }
 };
 
-void fillAlbumItem(QListWidget* list, const Album& album, ArtworkCache* cache)
+void fillAlbumItem(QListWidget* list, const Album& album, ArtworkCache* cache, QSize size = QSize(176, 214))
 {
     auto* item = new QListWidgetItem(album.title + QStringLiteral("\n") + album.artist);
     item->setData(Qt::UserRole, album.key);
-    item->setSizeHint(QSize(176, 214));
+    item->setSizeHint(size);
+    item->setToolTip(album.title + QStringLiteral("\n") + album.artist + QStringLiteral(" · %1 首歌曲").arg(album.tracks));
     if (cache && !album.artworkHash.isEmpty()) {
         item->setIcon(QIcon(cache->pixmap(album.artworkHash, 320)));
     } else {
@@ -100,15 +247,35 @@ TrackListPage::TrackListPage(Library* library, Source source, QWidget* parent)
     , m_source(source)
 {
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(32, 4, 24, 8);
+    layout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    layout->setSpacing(12);
+    auto* path = new PathLabel(this);
+    m_path = path;
+    path->setObjectName(QStringLiteral("trackListPath"));
+    path->setMinimumWidth(0);
+    path->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    path->setFixedHeight(20);
+    path->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;").arg(echo::palette().secondary.name()));
+    path->hide();
+    layout->addWidget(path);
     auto* actions = new QHBoxLayout;
+    actions->setSpacing(8);
+    actions->setContentsMargins(0, 0, 0, 4);
     m_subtitle = new QLabel(this);
     m_subtitle->setStyleSheet(QStringLiteral("color: %1;").arg(echo::palette().secondary.name()));
     m_subtitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_subtitle->setWordWrap(true);
+    m_subtitle->setWordWrap(false);
+    m_subtitle->setObjectName(QStringLiteral("trackListCount"));
     auto* play = new QPushButton(QStringLiteral("播放全部"), this);
     play->setObjectName(QStringLiteral("playAll"));
     auto* shuffle = new QPushButton(QStringLiteral("随机播放"), this);
+    play->setIcon(icon(Icon::Play, Qt::white, 12));
+    shuffle->setIcon(icon(Icon::Shuffle, echo::palette().text, 14));
+    for (auto* button : {play, shuffle}) {
+        button->setFixedHeight(32);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(actionStyle(button == play));
+    }
     actions->addWidget(m_subtitle, 1);
     actions->addWidget(play);
     actions->addWidget(shuffle);
@@ -250,8 +417,13 @@ void TrackListPage::reload()
     for (const auto& item : tracks)
         if (!item.missing)
             ++available;
-    m_subtitle->setText((extra.isEmpty() ? QString() : extra + QStringLiteral("\n"))
-        + QStringLiteral("%1 首歌曲 · %2 首可播放").arg(tracks.size()).arg(available));
+    static_cast<PathLabel*>(m_path)->setPath(extra);
+    m_subtitle->setText(available == tracks.size()
+        ? QStringLiteral("%1 首歌曲").arg(tracks.size())
+        : QStringLiteral("%1 首歌曲 · %2 首可播放 · %3 首暂不可用").arg(tracks.size()).arg(available).arg(tracks.size() - available));
+    for (auto* button : findChildren<QPushButton*>(QString(), Qt::FindDirectChildrenOnly))
+        if (button != m_add)
+            button->setEnabled(available > 0);
     const bool empty = tracks.isEmpty();
     m_empty->setVisible(empty);
     m_table->setVisible(!empty);
@@ -270,7 +442,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     m_stack = new QStackedWidget(this);
     auto* gridPage = new QWidget(m_stack);
     auto* gridLayout = new QVBoxLayout(gridPage);
-    gridLayout->setContentsMargins(32, 4, 24, 8);
+    gridLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
     m_grid = new QListWidget(gridPage);
     m_grid->setObjectName(QStringLiteral("albumGrid"));
     m_grid->setViewMode(QListView::IconMode);
@@ -278,7 +450,8 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     m_grid->setWrapping(true);
     m_grid->setResizeMode(QListView::Adjust);
     m_grid->setMovement(QListView::Static);
-    m_grid->setSpacing(8);
+    m_grid->setSpacing(0);
+    m_grid->setMouseTracking(true);
     m_grid->setGridSize(QSize(184, 222));
     m_grid->setIconSize(QSize(160, 160));
     m_grid->setWordWrap(true);
@@ -295,7 +468,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
 
     m_detailPage = new QWidget(m_stack);
     auto* detailLayout = new QVBoxLayout(m_detailPage);
-    detailLayout->setContentsMargins(28, 18, 18, 8);
+    detailLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
     auto* back = new QPushButton(QStringLiteral("‹  专辑"), m_detailPage);
     back->setObjectName(QStringLiteral("backButton"));
     back->setFlat(true);
@@ -303,22 +476,39 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     auto* header = new QHBoxLayout();
     auto* art = new QLabel(m_detailPage);
     art->setObjectName(QStringLiteral("albumArt"));
-    art->setFixedSize(180, 180);
+    art->setFixedSize(144, 144);
+    art->setScaledContents(true);
     auto* meta = new QVBoxLayout();
-    auto* name = new QLabel(m_detailPage);
+    auto* name = new PathLabel(m_detailPage);
+    name->setElideMode(Qt::ElideRight);
+    name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    name->setFixedHeight(34);
     name->setObjectName(QStringLiteral("albumName"));
     name->setStyleSheet(QStringLiteral("font-size: 26px; font-weight: 700;"));
-    auto* artist = new QLabel(m_detailPage);
+    auto* artist = new ArtistLinkLabel(m_detailPage);
     artist->setObjectName(QStringLiteral("albumArtist"));
     artist->setStyleSheet(QStringLiteral("color: %1; font-size: 15px;").arg(echo::palette().accent.name()));
     auto* play = new QPushButton(QStringLiteral("播放"), m_detailPage);
     auto* shuffle = new QPushButton(QStringLiteral("随机播放"), m_detailPage);
     play->setObjectName(QStringLiteral("primaryButton"));
     shuffle->setObjectName(QStringLiteral("secondaryButton"));
-    play->setCursor(Qt::PointingHandCursor);
-    shuffle->setCursor(Qt::PointingHandCursor);
+    for (auto* button : {play, shuffle}) {
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFixedHeight(32);
+        button->setStyleSheet(actionStyle(button == play));
+        button->setIcon(icon(button == play ? Icon::Play : Icon::Shuffle,
+            button == play ? QColor(Qt::white) : echo::palette().text, 13));
+    }
+    meta->setContentsMargins(0, 0, 0, 0);
+    meta->setSpacing(6);
     meta->addWidget(name);
+    artist->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    artist->setFixedHeight(22);
     meta->addWidget(artist);
+    auto* stats = new QLabel(m_detailPage);
+    stats->setObjectName(QStringLiteral("albumStats"));
+    stats->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;").arg(echo::palette().secondary.name()));
+    meta->addWidget(stats);
     meta->addStretch(1);
     auto* buttons = new QHBoxLayout();
     buttons->addWidget(play);
@@ -326,15 +516,26 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     buttons->addStretch();
     meta->addLayout(buttons);
     auto* metaHost = new QWidget(m_detailPage);
-    metaHost->setFixedHeight(180);
+    metaHost->setFixedHeight(144);
     metaHost->setLayout(meta);
     header->setSpacing(20);
     header->addWidget(art, 0, Qt::AlignTop);
     header->addWidget(metaHost, 1, Qt::AlignTop);
     m_detail = new TrackTable(m_detailPage);
-    detailLayout->addWidget(back, 0, Qt::AlignLeft);
+    auto* backRow = new QHBoxLayout;
+    backRow->setContentsMargins(0, 0, 0, 0);
+    back->setFlat(true);
+    back->setFixedHeight(26);
+    back->setCursor(Qt::PointingHandCursor);
+    back->setStyleSheet(QStringLiteral(
+        "QPushButton { border: none; background: transparent; color: %1; padding: 0; font-size: 12px; }"
+        "QPushButton:hover { color: %2; }").arg(echo::palette().secondary.name(), echo::palette().text.name()));
+    backRow->addWidget(back, 0, Qt::AlignLeft);
+    backRow->addStretch();
+    detailLayout->setSpacing(12);
+    detailLayout->addLayout(backRow);
     detailLayout->addLayout(header);
-    detailLayout->addSpacing(18);
+    detailLayout->addSpacing(4);
     detailLayout->addWidget(m_detail, 1);
 
     m_stack->addWidget(gridPage);
@@ -344,6 +545,9 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     layout->addWidget(m_stack);
 
     connect(m_grid, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { openAlbum(item->data(Qt::UserRole).toString()); });
+    connect(m_grid, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+        openAlbum(item->data(Qt::UserRole).toString());
+    });
     connect(back, &QPushButton::clicked, this, [this] { m_stack->setCurrentIndex(0); });
     connect(play, &QPushButton::clicked, this, [this] {
         emit albumPlayRequested(m_detail->property("albumKey").toString(), false);
@@ -351,7 +555,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     connect(shuffle, &QPushButton::clicked, this, [this] {
         emit albumPlayRequested(m_detail->property("albumKey").toString(), true);
     });
-    connect(artist, &QLabel::linkActivated, this, [this](const QString& key) { emit artistRequested(key); });
+    connect(artist, &QLabel::linkActivated, this, [this](const QString& key) { emit artistRequested(QUrl::fromPercentEncoding(key.toUtf8())); });
 }
 
 void AlbumsPage::reload()
@@ -395,129 +599,227 @@ void AlbumsPage::openAlbum(const QString& key)
 void AlbumsPage::showAlbum(const QString& key)
 {
     const auto tracks = m_library->albumTracks(key);
-    m_detail->setTracksPreservingView(tracks);
+    if (m_detail->property("albumKey").toString() == key)
+        m_detail->setTracksPreservingView(tracks);
+    else
+        m_detail->setTracks(tracks);
     m_detail->setProperty("albumKey", key);
     auto* name = m_detailPage->findChild<QLabel*>(QStringLiteral("albumName"));
     auto* artist = m_detailPage->findChild<QLabel*>(QStringLiteral("albumArtist"));
     auto* art = m_detailPage->findChild<QLabel*>(QStringLiteral("albumArt"));
+    int playable = 0;
+    qint64 duration = 0;
+    for (const auto& track : tracks) {
+        duration += track.durationMs;
+        playable += !track.missing;
+    }
+    auto* stats = m_detailPage->findChild<QLabel*>(QStringLiteral("albumStats"));
+    stats->setText(QStringLiteral("%1 首歌曲 · %2 · %3 首可播放").arg(tracks.size()).arg(formatDuration(duration)).arg(playable));
+    for (auto* button : m_detailPage->findChildren<QPushButton*>())
+        if (button->objectName() != QLatin1String("backButton"))
+            button->setEnabled(playable > 0);
+    if (tracks.isEmpty()) {
+        static_cast<PathLabel*>(name)->setPath(QStringLiteral("专辑暂不可用"));
+        static_cast<ArtistLinkLabel*>(artist)->setArtist({}, {});
+        art->setPixmap(placeholderCover(144));
+    }
     if (!tracks.isEmpty()) {
-        name->setText(tracks.first().displayAlbum());
+        static_cast<PathLabel*>(name)->setPath(tracks.first().displayAlbum());
         artist->setTextFormat(Qt::RichText);
         artist->setTextInteractionFlags(Qt::TextBrowserInteraction);
         artist->setOpenExternalLinks(false);
-        artist->setText(QStringLiteral("<a href=\"%1\" style=\"color:%2; text-decoration:none;\">%3</a>")
-                            .arg(tracks.first().artistKey, echo::palette().accent.name(), tracks.first().displayAlbumArtist().toHtmlEscaped()));
-        const QPixmap pixmap = m_library->artwork()->pixmap(tracks.first().artworkHash, 360);
-        art->setPixmap(pixmap.isNull() ? placeholderCover(180) : pixmap.scaled(180, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        static_cast<ArtistLinkLabel*>(artist)->setArtist(tracks.first().displayAlbumArtist(), tracks.first().artistKey);
+        QString artworkHash;
+        for (const auto& track : tracks)
+            if (!track.artworkHash.isEmpty()) {
+                artworkHash = track.artworkHash;
+                break;
+            }
+        const auto pixmap = m_library->artwork()->pixmap(artworkHash, 360);
+        art->setPixmap(roundedArtwork(pixmap.isNull() ? placeholderCover(288) : pixmap, 144));
     }
 }
 
 class ArtistRowDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
-
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
     {
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
-        const Palette colors = echo::palette();
+        const auto colors = echo::palette();
         if (option.state & (QStyle::State_Selected | QStyle::State_MouseOver)) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(option.state & QStyle::State_Selected ? colors.selected : colors.hover);
-            painter->drawRoundedRect(option.rect.adjusted(4, 2, -4, -2), 6, 6);
+            painter->drawRoundedRect(option.rect.adjusted(0, 2, -2, -2), 8, 8);
         }
-        const QRect text = option.rect.adjusted(12, 0, -12, 0);
+        const QRect avatar(option.rect.left() + 10, option.rect.center().y() - 16, 32, 32);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(colors.hover);
+        painter->drawEllipse(avatar);
+        icon(Icon::Artists, colors.secondary, 16).paint(painter, avatar.adjusted(8, 8, -8, -8));
+        QFont font = option.font;
+        font.setPixelSize(13);
+        font.setWeight(QFont::Medium);
+        painter->setFont(font);
+        const QRect name(option.rect.left() + 52, option.rect.top() + 9, option.rect.width() - 64, 18);
         painter->setPen(colors.text);
-        painter->drawText(text, Qt::AlignLeft | Qt::AlignVCenter, index.data(Qt::DisplayRole).toString());
+        painter->drawText(name, Qt::AlignLeft | Qt::AlignVCenter,
+            painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideRight, name.width()));
+        font.setPixelSize(11);
+        font.setWeight(QFont::Normal);
+        painter->setFont(font);
         painter->setPen(colors.secondary);
-        painter->drawText(text, Qt::AlignRight | Qt::AlignVCenter,
-                          QStringLiteral("%1 张专辑").arg(index.data(Qt::UserRole + 1).toInt()));
+        painter->drawText(name.translated(0, 19), Qt::AlignLeft | Qt::AlignVCenter,
+            QStringLiteral("%1 张专辑 · %2 首歌曲").arg(index.data(Qt::UserRole + 1).toInt()).arg(index.data(Qt::UserRole + 2).toInt()));
         painter->restore();
     }
 };
 
 ArtistsPage::ArtistsPage(Library* library, QWidget* parent)
-    : QWidget(parent)
-    , m_library(library)
+    : QWidget(parent), m_library(library)
 {
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(32, 4, 24, 8);
+    layout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    layout->setSpacing(20);
     m_artists = new QListWidget(this);
     m_artists->setObjectName(QStringLiteral("artistList"));
-    m_artists->setFixedWidth(220);
+    m_artists->setFixedWidth(200);
     m_artists->setFrameShape(QFrame::NoFrame);
+    m_artists->setMouseTracking(true);
+    m_artists->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_artists->setItemDelegate(new ArtistRowDelegate(m_artists));
-    auto* right = new QVBoxLayout();
-    m_albums = new QListWidget(this);
+    m_details = new QWidget(this);
+    auto* right = new QVBoxLayout(m_details);
+    right->setContentsMargins(0, 0, 0, 0);
+    right->setSpacing(10);
+    auto* header = new QHBoxLayout;
+    auto* info = new QVBoxLayout;
+    info->setSpacing(4);
+    auto* name = new PathLabel(m_details);
+    name->setElideMode(Qt::ElideRight);
+    name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    name->setFixedHeight(30);
+    name->setObjectName(QStringLiteral("artistName"));
+    name->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 600;"));
+    m_name = name;
+    m_summary = new QLabel(m_details);
+    m_summary->setObjectName(QStringLiteral("artistStats"));
+    m_summary->setStyleSheet(QStringLiteral("color: %1; font-size: 12px;").arg(echo::palette().secondary.name()));
+    info->addWidget(name);
+    info->addWidget(m_summary);
+    header->addLayout(info, 1);
+    m_play = new QPushButton(QStringLiteral("播放全部"), m_details);
+    m_shuffle = new QPushButton(QStringLiteral("随机播放"), m_details);
+    m_play->setObjectName(QStringLiteral("playArtist"));
+    m_shuffle->setObjectName(QStringLiteral("shuffleArtist"));
+    for (auto* button : {m_play, m_shuffle}) {
+        button->setFixedHeight(32);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(actionStyle(button == m_play));
+        button->setIcon(icon(button == m_play ? Icon::Play : Icon::Shuffle,
+            button == m_play ? QColor(Qt::white) : echo::palette().text, 13));
+        header->addWidget(button, 0, Qt::AlignVCenter);
+    }
+    right->addLayout(header);
+    m_albums = new QListWidget(m_details);
     m_albums->setObjectName(QStringLiteral("artistAlbums"));
     m_albums->setViewMode(QListView::IconMode);
     m_albums->setFlow(QListView::LeftToRight);
     m_albums->setWrapping(false);
     m_albums->setMovement(QListView::Static);
-    m_albums->setGridSize(QSize(148, 188));
-    m_albums->setIconSize(QSize(120, 120));
-    m_albums->setFixedHeight(196);
+    m_albums->setResizeMode(QListView::Adjust);
+    m_albums->setGridSize(QSize(124, 156));
+    m_albums->setUniformItemSizes(true);
+    m_albums->setFixedHeight(166);
+    m_albums->setMouseTracking(true);
     m_albums->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_albums->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_albums->setItemDelegate(new AlbumCardDelegate(m_albums));
-    m_table = new TrackTable(this);
-    auto* artistsEmpty = new QLabel(QStringLiteral("还没有艺人"), this);
-    artistsEmpty->setObjectName(QStringLiteral("artistsEmpty"));
-    artistsEmpty->setAlignment(Qt::AlignCenter);
-    artistsEmpty->setStyleSheet(QStringLiteral("color: %1; font-size: 15px;").arg(echo::palette().secondary.name()));
-    right->addWidget(artistsEmpty, 1);
     right->addWidget(m_albums);
+    m_table = new TrackTable(m_details);
     right->addWidget(m_table, 1);
+    m_empty = new QLabel(QStringLiteral("还没有艺术家\n添加音乐文件夹后，会按歌曲标签归类展示。"), this);
+    m_empty->setObjectName(QStringLiteral("artistsEmpty"));
+    m_empty->setAlignment(Qt::AlignCenter);
+    m_empty->setStyleSheet(QStringLiteral("color: %1; font-size: 14px;").arg(echo::palette().secondary.name()));
     layout->addWidget(m_artists);
-    layout->addLayout(right, 1);
-    connect(m_artists, &QListWidget::currentRowChanged, this, [this](int row) {
-        if (row < 0) {
-            return;
-        }
-        const QString key = m_artists->item(row)->data(Qt::UserRole).toString();
-        m_albums->clear();
-        for (const Album& album : m_library->albums(key)) {
-            auto* item = new QListWidgetItem(album.title + QStringLiteral("\n") + album.artist);
-            item->setData(Qt::UserRole, album.key);
-            item->setSizeHint(QSize(140, 186));
-            item->setIcon(QIcon(album.artworkHash.isEmpty() ? placeholderCover(240)
-                                                            : m_library->artwork()->pixmap(album.artworkHash, 240)));
-            m_albums->addItem(item);
-        }
-        m_table->setTracksPreservingView(m_library->artistTracks(key));
-    });
+    layout->addWidget(m_details, 1);
+    layout->addWidget(m_empty, 1);
+    connect(m_artists, &QListWidget::currentRowChanged, this, &ArtistsPage::showArtistRow);
     connect(m_albums, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
         emit albumPlayRequested(item->data(Qt::UserRole).toString(), false);
     });
+    connect(m_albums, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+        emit albumPlayRequested(item->data(Qt::UserRole).toString(), false);
+    });
+    for (auto* button : {m_play, m_shuffle})
+        connect(button, &QPushButton::clicked, this, [this, button] {
+            if (auto* selected = m_artists->currentItem())
+                emit artistPlayRequested(selected->data(Qt::UserRole).toString(), button == m_shuffle);
+        });
+}
+
+void ArtistsPage::showArtistRow(int row)
+{
+    if (row < 0 || row >= m_artists->count())
+        return;
+    const auto* selected = m_artists->item(row);
+    const auto key = selected->data(Qt::UserRole).toString();
+    static_cast<PathLabel*>(m_name)->setPath(selected->text());
+    const bool sameArtist = m_selectedArtist == key;
+    const int albumsScroll = sameArtist ? m_albums->horizontalScrollBar()->value() : 0;
+    m_selectedArtist = key;
+    m_albums->clear();
+    for (const auto& album : m_library->albums(key))
+        fillAlbumItem(m_albums, album, m_library->artwork(), QSize(120, 152));
+    m_albums->horizontalScrollBar()->setValue(albumsScroll);
+    const auto tracks = m_library->artistTracks(key);
+    int playable = 0;
+    for (const auto& track : tracks)
+        playable += !track.missing;
+    m_summary->setText(QStringLiteral("%1 张专辑 · %2 首歌曲 · %3 首可播放").arg(m_albums->count()).arg(tracks.size()).arg(playable));
+    m_play->setEnabled(playable > 0);
+    m_shuffle->setEnabled(playable > 0);
+    if (sameArtist)
+        m_table->setTracksPreservingView(tracks);
+    else
+        m_table->setTracks(tracks);
 }
 
 void ArtistsPage::reload()
 {
-    const auto selected
-        = m_artists->currentItem() ? m_artists->currentItem()->data(Qt::UserRole).toString() : QString();
+    const auto selected = m_artists->currentItem() ? m_artists->currentItem()->data(Qt::UserRole).toString() : QString();
     const int scroll = m_artists->verticalScrollBar()->value();
-    m_artists->clear();
-    for (const Artist& artist : m_library->artists()) {
-        auto* item = new QListWidgetItem(artist.name);
-        item->setData(Qt::UserRole, artist.key);
-        item->setData(Qt::UserRole + 1, artist.albums);
-        item->setSizeHint(QSize(0, 36));
-        m_artists->addItem(item);
-    }
-    for (int i = 0; i < m_artists->count(); ++i)
-        if (m_artists->item(i)->data(Qt::UserRole).toString() == selected) {
-            m_artists->setCurrentRow(i);
-            break;
+    {
+        const QSignalBlocker blocker(m_artists);
+        m_artists->clear();
+        int selectedRow = 0;
+        for (const auto& artist : m_library->artists()) {
+            auto* item = new QListWidgetItem(artist.name);
+            item->setData(Qt::UserRole, artist.key);
+            item->setData(Qt::UserRole + 1, artist.albums);
+            item->setData(Qt::UserRole + 2, artist.tracks);
+            item->setSizeHint(QSize(0, 56));
+            item->setToolTip(artist.name);
+            m_artists->addItem(item);
+            if (artist.key == selected)
+                selectedRow = m_artists->count() - 1;
         }
-    m_artists->verticalScrollBar()->setValue(scroll);
+        if (m_artists->count())
+            m_artists->setCurrentRow(selectedRow);
+        m_artists->verticalScrollBar()->setValue(scroll);
+    }
     const bool empty = m_artists->count() == 0;
     m_artists->setVisible(!empty);
-    m_albums->setVisible(!empty);
-    m_table->setVisible(!empty);
-    if (auto* hint = findChild<QLabel*>(QStringLiteral("artistsEmpty"))) {
-        hint->setVisible(empty);
-    }
-    if (m_artists->count() > 0 && m_artists->currentRow() < 0) {
-        m_artists->setCurrentRow(0);
+    m_details->setVisible(!empty);
+    m_empty->setVisible(empty);
+    if (empty) {
+        m_selectedArtist.clear();
+        m_table->setTracks({});
+        m_albums->clear();
+    } else {
+        showArtistRow(m_artists->currentRow());
     }
 }
 
@@ -546,15 +848,21 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     layout->addWidget(m_stack);
     auto* listing = new QWidget(this);
     auto* listLayout = new QVBoxLayout(listing);
-    listLayout->setContentsMargins(32, 4, 24, 8);
+    listLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
     auto* add = new QPushButton(QStringLiteral("添加文件夹…"), listing);
     add->setObjectName(QStringLiteral("addMusicFolder"));
+    add->setFixedHeight(32);
+    add->setStyleSheet(actionStyle(false));
+    add->setIcon(icon(Icon::Plus, echo::palette().text, 14));
+    listLayout->setSpacing(16);
     listLayout->addWidget(add, 0, Qt::AlignRight);
     m_empty = new QLabel(QStringLiteral("还没有文件夹\n手动添加音乐文件夹，只扫描当前层。"), listing);
     m_empty->setObjectName(QStringLiteral("foldersEmpty"));
     m_empty->setAlignment(Qt::AlignCenter);
     listLayout->addWidget(m_empty, 1);
-    m_tree = new QTreeWidget(listing);
+    m_tree = new FolderTree(listing);
+    m_tree->setMouseTracking(true);
+    m_tree->setItemDelegate(new FolderRowDelegate(m_tree));
     m_tree->setObjectName(QStringLiteral("folderTree"));
     m_tree->setHeaderLabels(
         { QStringLiteral("名称"), QStringLiteral("路径"), QStringLiteral("歌曲"), QStringLiteral("状态") });
@@ -564,6 +872,19 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     m_tree->setColumnWidth(0, 180);
     m_tree->setColumnWidth(2, 120);
     m_tree->setColumnWidth(3, 130);
+    m_tree->header()->setFixedHeight(28);
+    m_tree->header()->setStyleSheet(QStringLiteral(
+        "QHeaderView::section { background: %1; color: %2; border: none; border-bottom: 1px solid %3; "
+        "padding: 0 8px; font-size: 11px; font-weight: 500; }")
+        .arg(echo::palette().window.name(), echo::palette().secondary.name(), echo::palette().hairline.name(QColor::HexArgb)));
+    m_tree->setStyleSheet(QStringLiteral(
+        "QTreeWidget { background: transparent; border: none; outline: none; }"
+        "QTreeWidget::item { padding: 0 8px; background: transparent; }"
+        "QTreeWidget::item:selected, QTreeWidget::item:hover { background: transparent; color: %1; }")
+        .arg(echo::palette().text.name()));
+    auto treePalette = m_tree->palette();
+    treePalette.setColor(QPalette::Highlight, Qt::transparent);
+    m_tree->setPalette(treePalette);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     listLayout->addWidget(m_tree, 1);
     m_stack->addWidget(listing);
@@ -572,7 +893,18 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     detailLayout->setContentsMargins(0, 0, 0, 0);
     auto* back = new QPushButton(QStringLiteral("‹ 文件夹"), detail);
     back->setObjectName(QStringLiteral("backToFolders"));
-    detailLayout->addWidget(back, 0, Qt::AlignLeft);
+    auto* backRow = new QHBoxLayout;
+    backRow->setContentsMargins(ContentLeftMargin, 0, 16, 0);
+    back->setFlat(true);
+    back->setFixedHeight(26);
+    back->setCursor(Qt::PointingHandCursor);
+    back->setStyleSheet(QStringLiteral(
+        "QPushButton { border: none; background: transparent; color: %1; padding: 0; font-size: 12px; }"
+        "QPushButton:hover { color: %2; }").arg(echo::palette().secondary.name(), echo::palette().text.name()));
+    backRow->addWidget(back, 0, Qt::AlignLeft);
+    backRow->addStretch();
+    detailLayout->setSpacing(2);
+    detailLayout->addLayout(backRow);
     m_detail = new TrackListPage(library, TrackListPage::Source::Folder, detail);
     detailLayout->addWidget(m_detail, 1);
     m_stack->addWidget(detail);
@@ -593,12 +925,10 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
         const auto id = item->data(0, Qt::UserRole).toLongLong();
         const auto source = m_library->root(id);
         QMenu menu(this);
+        styleMenu(&menu);
         menu.addAction(QStringLiteral("创建播放列表…"), this, [this, id, source] {
-            bool ok = false;
-            const auto name = QInputDialog::getText(
-                this, QStringLiteral("创建播放列表"), QStringLiteral("名称"), QLineEdit::Normal, source.name, &ok)
-                                  .trimmed();
-            if (!ok || name.isEmpty())
+            const auto name = askName(this, QStringLiteral("创建播放列表"), source.name, QStringLiteral("创建"));
+            if (name.isEmpty())
                 return;
             QVector<qint64> ids;
             if (m_detail->sourceId() == id)
@@ -607,7 +937,7 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
                 for (const auto& track : m_library->folderTracks(id))
                     ids << track.id;
             if (ids.isEmpty()) {
-                QMessageBox::information(
+                MessageDialog::information(
                     this, QStringLiteral("无法创建"), QStringLiteral("当前文件夹还没有已知歌曲。"));
                 return;
             }
@@ -615,7 +945,7 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
             if (playlist)
                 emit playlistCreated(playlist);
             else
-                QMessageBox::warning(this, QStringLiteral("创建失败"), QStringLiteral("无法保存播放列表。"));
+                MessageDialog::warning(this, QStringLiteral("创建失败"), QStringLiteral("无法保存播放列表。"));
         });
         menu.addAction(QStringLiteral("重新扫描"), this, [this, id] { m_library->refreshRoot(id); });
         menu.addAction(QStringLiteral("在 Finder 中显示"), this, [source] { showInFileManager(source.path); });
@@ -625,13 +955,14 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
                 return;
             QString error;
             if (!m_library->relocateRoot(id, path, &error))
-                QMessageBox::warning(this, QStringLiteral("定位失败"), error);
+                MessageDialog::warning(this, QStringLiteral("定位失败"), error);
         });
         menu.addSeparator();
-        menu.addAction(QStringLiteral("移除文件夹…"), this, [this, id] {
-            if (QMessageBox::question(this, QStringLiteral("移除文件夹"),
-                    QStringLiteral("取消登记这个音乐来源？\n歌曲将退出全局资料库，已有歌单、收藏和队列引用会保留，磁盘"
-                                   "文件不会删除。"))
+        menu.addAction(QStringLiteral("移除文件夹…"), this, [this, id, source] {
+            if (MessageDialog::question(this, QStringLiteral("移除文件夹"),
+                    QStringLiteral("“%1”中的歌曲将退出全局资料库。已有歌单、收藏和播放队列会保留引用，原位置的音乐文件也会保留。")
+                        .arg(source.name),
+                    QStringLiteral("移除文件夹"), true)
                 == QMessageBox::Yes)
                 m_library->removeRoot(id);
         });
@@ -747,7 +1078,7 @@ SearchPage::SearchPage(Library* library, QWidget* parent)
     , m_library(library)
 {
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(32, 28, 24, 8);
+    layout->setContentsMargins(ContentLeftMargin, 28, 16, 8);
     m_empty = new QWidget(this);
     auto* emptyLayout = new QVBoxLayout(m_empty);
     emptyLayout->addStretch(2);
@@ -769,7 +1100,7 @@ SearchPage::SearchPage(Library* library, QWidget* parent)
     m_albums = resultList(m_body);
     m_playlists = resultList(m_body);
     m_tracks = new TrackTable(m_body);
-    m_artistSection = resultSection(QStringLiteral("艺人"), m_artists, m_body);
+    m_artistSection = resultSection(QStringLiteral("艺术家"), m_artists, m_body);
     m_albumSection = resultSection(QStringLiteral("专辑"), m_albums, m_body);
     m_playlistSection = resultSection(QStringLiteral("歌单"), m_playlists, m_body);
     m_trackSection = resultSection(QStringLiteral("歌曲"), m_tracks, m_body);
