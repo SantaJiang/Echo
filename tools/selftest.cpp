@@ -165,7 +165,7 @@ int main(int argc, char** argv)
     expect(std::fabs(mp3Seconds - 1.0) < 0.08, "mp3 duration");
 
     QFile cueFile(dir.filePath(QStringLiteral("tone.cue")));
-    cueFile.open(QIODevice::WriteOnly);
+    expect(cueFile.open(QIODevice::WriteOnly), "cue fixture open");
     cueFile.write("PERFORMER \"Tester\"\nTITLE \"Tones\"\nFILE \"tone.flac\" WAVE\n"
                   "  TRACK 01 AUDIO\n    TITLE \"First\"\n    INDEX 01 00:00:00\n"
                   "  TRACK 02 AUDIO\n    TITLE \"Second\"\n    INDEX 01 00:00:40\n");
@@ -253,7 +253,8 @@ int main(int argc, char** argv)
     database.markRootMissing(disposable.rootId);
     expect(database.playlistItems(favorites).contains(disposableId), "missing file keeps favorite");
     database.removeRoot(disposable.rootId);
-    expect(!database.playlistItems(favorites).contains(disposableId), "root deletion cleans favorites");
+    expect(database.playlistItems(favorites).contains(disposableId) && !database.root(disposable.rootId).active,
+        "source removal retains favorites");
     disposable.rootId = root;
     disposable.cueStartMs = 500;
     const qint64 cueId = database.upsertTrack(disposable);
@@ -261,9 +262,9 @@ int main(int argc, char** argv)
     const qint64 wholeId = database.upsertTrack(disposable);
     database.setFavorites({cueId, wholeId}, true, &error);
     expect(favoriteSql.exec(QStringLiteral("UPDATE tracks SET missing=1 WHERE id=%1").arg(cueId)), "mark stale cue");
-    database.deleteStaleCueRows(root);
-    expect(!database.playlistItems(favorites).contains(cueId) && database.playlistItems(favorites).contains(wholeId), "stale cue cleanup");
-    database.removeTracks({wholeId});
+    expect(database.playlistItems(favorites).contains(cueId) && database.playlistItems(favorites).contains(wholeId),
+        "stale cue references retained");
+    database.removeTracks({ wholeId, cueId, disposableId });
     expect(database.playlistItems(favorites) == favoriteOrder, "track deletion cleans favorite");
 
 

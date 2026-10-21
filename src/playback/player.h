@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QSet>
 #include <atomic>
+#include <optional>
 #include "library/library.h"
 
 #include <QObject>
@@ -26,7 +27,12 @@ public:
     [[nodiscard]] bool normalizationEnabled() const { return m_normalization; }
     [[nodiscard]] QString normalizationStatus() const;
 
-    void playTracks(const QVector<qint64>& ids, int startIndex, bool albumContext);
+    [[nodiscard]] bool replaceContextQueue() const;
+    void setReplaceContextQueue(bool enabled);
+    void playSinglePreservingQueue(qint64 id);
+    void activateQueueRow(int index);
+    void trashFiles(const QStringList& paths);
+    void playTracks(const QVector<qint64>& ids, int startIndex, bool albumContext, std::optional<bool> shuffle = { });
     void toggle();
     void next();
     void previous();
@@ -67,9 +73,14 @@ public:
 signals:
     void changed();
     void normalizationChanged();
+    void playbackMessage(const QString& message);
+    void trackUnavailable(qint64 id);
+    void trashFinished(const QString& report);
     void spatialChanged();
 
 private:
+    [[nodiscard]] bool playable(qint64 id) const;
+    [[nodiscard]] int nextPlayable(int from, bool wrap) const;
     void playIndex(int index, bool resumePosition, qint64 positionMs);
     void queueUpcoming();
     [[nodiscard]] PlaybackItem itemFor(const Entry& entry) const;
@@ -100,6 +111,9 @@ private:
     mutable QHash<QString, LoudnessResult> m_loudness;
     QSet<QString> m_analysisFailed;
     bool m_advancing = false;
+    bool m_trashing = false;
+    qint64 m_requestRevision = 0;
+    qint64 m_playRevision = 0;
     bool m_skipAfterError = false;
 };
 

@@ -50,7 +50,11 @@ void QueuePanel::setQueue(const QVector<Player::Entry>& queue, int index, Librar
     for (int row = 0; row < queue.size(); ++row) {
         const Track track = library->track(queue[row].trackId);
         auto* item = new QListWidgetItem(track.displayTitle() + QStringLiteral(" — ") + track.displayArtist());
-        if (row == index) {
+        item->setToolTip(track.path);
+        if (track.missing) {
+            item->setText(item->text()+QStringLiteral(" · 暂时无法播放"));
+            item->setForeground(echo::palette().secondary);
+        } else if (row == index) {
             item->setForeground(echo::palette().accent);
         }
         m_list->addItem(item);

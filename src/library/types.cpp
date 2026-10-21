@@ -1,9 +1,17 @@
 #include "library/types.h"
 
 #include <QFileInfo>
+#include <QDir>
 #include <QRegularExpression>
 
 namespace echo {
+
+QString normalizedMusicPath(const QString& path)
+{
+    const QFileInfo file(path);
+    const auto parent = QFileInfo(file.absolutePath()).canonicalFilePath();
+    return QDir::cleanPath(parent.isEmpty() ? file.absoluteFilePath() : QDir(parent).filePath(file.fileName()));
+}
 
 QString Track::displayTitle() const
 {

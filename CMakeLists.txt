@@ -148,6 +148,12 @@ if(NOT MSVC)
   target_compile_options(echo-uishot PRIVATE -Wall -Wextra)
 endif()
 
+add_executable(echo-foldertest tools/foldertest.cpp ${ECHO_UI_SOURCES})
+target_link_libraries(echo-foldertest PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
+if(APPLE)
+  target_link_libraries(echo-foldertest PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
+endif()
+
 add_executable(echo-probe tools/probe.cpp)
 target_link_libraries(echo-probe PRIVATE echo_core)
 

@@ -96,12 +96,13 @@ int main(int argc, char** argv)
     }
     QEventLoop loop;
     QTimer::singleShot(8000, &loop, &QEventLoop::quit);
-    QObject::connect(&library, &echo::Library::scanFinished, &loop, &QEventLoop::quit);
-    library.addRoot(root);
+    QObject::connect(&library,&echo::Library::scanFinished,&loop,[&] { if(!library.scanBusy()) loop.quit(); });
+    for (const auto& folder:QStringList {"/Aria/Harbor","/Aria/Letters","/Mio/Glass"}) library.addRoot(root+folder);
     loop.exec();
 
     echo::AudioEngine engine;
     echo::Player player(&library, &engine);
+    player.setVolume(0.f); // Exercise the real output backend without emitting a test tone.
     echo::MainWindow window(&library, &player, &engine);
     window.resize(1180, 760);
     window.show();

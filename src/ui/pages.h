@@ -5,8 +5,10 @@
 #include "ui/tracktable.h"
 
 #include <QWidget>
+#include <QHash>
 
 class QLabel;
+class QPushButton;
 class QLineEdit;
 class QListWidget;
 class QStackedWidget;
@@ -14,23 +16,67 @@ class QTreeWidget;
 
 namespace echo {
 
-class SongsPage : public QWidget {
+class TrackListPage : public QWidget {
     Q_OBJECT
 public:
-    explicit SongsPage(Library* library, QWidget* parent = nullptr);
+    enum class Source { AllSongs, Folder, Playlist };
+    TrackListPage(Library* library, Source source, QWidget* parent = nullptr);
+    void setSource(qint64 id);
     void reload();
-    void setPlayingId(qint64 id, bool playing);
+    void setPlayingId(qint64 id, bool playing)
+    {
+        m_table->setPlayingId(id, playing);
+    }
     [[nodiscard]] TrackTable* table() const { return m_table; }
-
+    [[nodiscard]] QString title() const
+    {
+        return m_title;
+    }
+    [[nodiscard]] qint64 sourceId() const
+    {
+        return m_id;
+    }
+    [[nodiscard]] Source source() const
+    {
+        return m_source;
+    }
 signals:
+    void titleChanged(const QString& title);
     void addFolderRequested();
+    void playAllRequested(const QVector<qint64>& ids, bool shuffle);
+
+protected:
+    Library* m_library;
+    TrackTable* m_table;
+    QLabel* m_empty;
 
 private:
-    Library* m_library = nullptr;
-    TrackTable* m_table = nullptr;
-    QWidget* m_empty = nullptr;
-    QString m_sort = QStringLiteral("album");
+    void saveView();
+    QString viewKey() const;
+    Source m_source;
+    qint64 m_id = 0;
+    QString m_title;
+    QLabel* m_subtitle;
+    QPushButton* m_add;
+    int m_sort = 0;
     bool m_desc = false;
+    bool m_changingSource = false;
+    struct View {
+        int sort = 0;
+        bool desc = false;
+        int scroll = 0;
+        QVector<qint64> selected;
+    };
+    QHash<qint64, View> m_views;
+};
+
+class SongsPage : public TrackListPage {
+    Q_OBJECT
+public:
+    explicit SongsPage(Library* library, QWidget* parent = nullptr)
+        : TrackListPage(library, Source::AllSongs, parent)
+    {
+    }
 };
 
 class AlbumsPage : public QWidget {
@@ -81,33 +127,50 @@ class FoldersPage : public QWidget {
 public:
     explicit FoldersPage(Library* library, QWidget* parent = nullptr);
     void reload();
-    void setPlayingId(qint64 id, bool playing);
-    [[nodiscard]] TrackTable* table() const { return m_table; }
-
+    void openFolder(qint64 id);
+    void selectFolder(qint64 id);
+    void showFolders();
+    void setPlayingId(qint64 id, bool playing)
+    {
+        m_detail->setPlayingId(id, playing);
+    }
+    [[nodiscard]] TrackTable* table() const
+    {
+        return m_detail->table();
+    }
+    [[nodiscard]] TrackListPage* detailPage() const
+    {
+        return m_detail;
+    }
+    [[nodiscard]] QString title() const;
 signals:
-    void playFolderRequested(const QString& folder);
+    void titleChanged(const QString& title);
+    void addFolderRequested();
+    void playlistCreated(qint64 id);
 
 private:
-    Library* m_library = nullptr;
-    QTreeWidget* m_tree = nullptr;
-    TrackTable* m_table = nullptr;
+    Library* m_library;
+    QTreeWidget* m_tree;
+    QStackedWidget* m_stack;
+    TrackListPage* m_detail;
+    QLabel* m_empty;
 };
 
-class PlaylistPage : public QWidget {
+class PlaylistPage : public TrackListPage {
     Q_OBJECT
 public:
-    explicit PlaylistPage(Library* library, QWidget* parent = nullptr);
-    void setPlaylist(qint64 id);
-    void reload();
-    void setPlayingId(qint64 id, bool playing);
-    [[nodiscard]] qint64 playlistId() const { return m_id; }
-    [[nodiscard]] TrackTable* table() const { return m_table; }
-
-private:
-    Library* m_library = nullptr;
-    TrackTable* m_table = nullptr;
-    qint64 m_id = 0;
-    QLabel* m_emptyFavorites = nullptr;
+    explicit PlaylistPage(Library* library, QWidget* parent = nullptr)
+        : TrackListPage(library, Source::Playlist, parent)
+    {
+    }
+    void setPlaylist(qint64 id)
+    {
+        setSource(id);
+    }
+    [[nodiscard]] qint64 playlistId() const
+    {
+        return sourceId();
+    }
 };
 
 class SearchPage : public QWidget {

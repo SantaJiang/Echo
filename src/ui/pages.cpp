@@ -4,9 +4,16 @@
 #include "ui/theme.h"
 
 #include <QHash>
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QMenu>
+#include <QScrollBar>
+#include "platform/platform.h"
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
 #include <QPainter>
@@ -86,60 +93,174 @@ void fillAlbumItem(QListWidget* list, const Album& album, ArtworkCache* cache)
 
 } // namespace
 
-SongsPage::SongsPage(Library* library, QWidget* parent)
+TrackListPage::TrackListPage(Library* library, Source source, QWidget* parent)
     : QWidget(parent)
     , m_library(library)
     , m_table(new TrackTable(this))
+    , m_source(source)
 {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(32, 4, 24, 8);
-    m_empty = new QWidget(this);
-    auto* emptyLayout = new QVBoxLayout(m_empty);
-    emptyLayout->addStretch(2);
-    auto* headline = new QLabel(QStringLiteral("资料库还是空的"), m_empty);
-    headline->setAlignment(Qt::AlignCenter);
-    headline->setStyleSheet(QStringLiteral("font-size: 22px; font-weight: 650;"));
-    auto* hint = new QLabel(QStringLiteral("添加一个音乐文件夹后，歌曲、专辑和艺人会出现在这里。"), m_empty);
-    hint->setAlignment(Qt::AlignCenter);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: %1; font-size: 14px;").arg(echo::palette().secondary.name()));
-    auto* add = new QPushButton(QStringLiteral("添加音乐文件夹"), m_empty);
-    add->setFixedWidth(160);
-    add->setFixedHeight(32);
-    emptyLayout->addWidget(headline);
-    emptyLayout->addWidget(hint);
-    emptyLayout->addSpacing(8);
-    emptyLayout->addWidget(add, 0, Qt::AlignHCenter);
-    emptyLayout->addStretch(3);
-    add->setStyleSheet(QStringLiteral("QPushButton { background: %1; color: %2; border: none; border-radius: 16px; padding: 6px 16px; }")
-                           .arg(echo::palette().text.name(), echo::palette().window.name()));
+    auto* actions = new QHBoxLayout;
+    m_subtitle = new QLabel(this);
+    m_subtitle->setStyleSheet(QStringLiteral("color: %1;").arg(echo::palette().secondary.name()));
+    m_subtitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_subtitle->setWordWrap(true);
+    auto* play = new QPushButton(QStringLiteral("播放全部"), this);
+    play->setObjectName(QStringLiteral("playAll"));
+    auto* shuffle = new QPushButton(QStringLiteral("随机播放"), this);
+    actions->addWidget(m_subtitle, 1);
+    actions->addWidget(play);
+    actions->addWidget(shuffle);
+    layout->addLayout(actions);
+    m_empty = new QLabel(this);
+    m_empty->setAlignment(Qt::AlignCenter);
+    m_empty->setWordWrap(true);
+    m_empty->setObjectName(
+        source == Source::Playlist ? QStringLiteral("emptyFavorites") : QStringLiteral("trackListEmpty"));
+    m_empty->setStyleSheet(QStringLiteral("color: %1; font-size: 15px;").arg(echo::palette().secondary.name()));
+    m_add = new QPushButton(QStringLiteral("添加音乐文件夹"), this);
     layout->addWidget(m_empty, 1);
+    layout->addWidget(m_add, 0, Qt::AlignHCenter);
     layout->addWidget(m_table, 1);
-    connect(add, &QPushButton::clicked, this, &SongsPage::addFolderRequested);
+    m_table->setPlaylistContext(source == Source::Playlist);
+    connect(m_add, &QPushButton::clicked, this, &TrackListPage::addFolderRequested);
+    connect(play, &QPushButton::clicked, this, [this] { emit playAllRequested(m_table->trackModel()->ids(), false); });
+    connect(
+        shuffle, &QPushButton::clicked, this, [this] { emit playAllRequested(m_table->trackModel()->ids(), true); });
     connect(m_table->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int section) {
-        const QString column = section == 2 ? QStringLiteral("artist") : section == 3 ? QStringLiteral("album") : QStringLiteral("title");
-        if (m_sort == column) {
+        if (section == 0) {
+            m_sort = 0;
+            m_desc = false;
+            m_library->setSetting(viewKey() + QStringLiteral("_sort"), QStringLiteral("0"));
+            m_library->setSetting(viewKey() + QStringLiteral("_desc"), QStringLiteral("0"));
+            reload();
+            return;
+        }
+        if (m_sort == section)
             m_desc = !m_desc;
-        } else {
-            m_sort = column;
+        else {
+            m_sort = section;
             m_desc = false;
         }
+        m_library->setSetting(viewKey() + QStringLiteral("_sort"), QString::number(m_sort));
+        m_library->setSetting(viewKey() + QStringLiteral("_desc"), m_desc ? QStringLiteral("1") : QStringLiteral("0"));
         reload();
+    });
+    m_sort = m_library->setting(viewKey() + QStringLiteral("_sort"), QStringLiteral("0")).toInt();
+    m_desc = m_library->setting(viewKey() + QStringLiteral("_desc"), QStringLiteral("0")) == QLatin1String("1");
+    connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] {
+        if (!m_changingSource)
+            saveView();
+    });
+    connect(m_library, &Library::favoritesChanged, this, [this] {
+        if (m_source == Source::Playlist && m_id == m_library->favoritesPlaylistId())
+            reload();
     });
 }
 
-void SongsPage::reload()
+QString TrackListPage::viewKey() const
 {
-    const auto tracks = m_library->allTracks(m_sort, m_desc);
-    m_table->setTracks(tracks);
+    return QStringLiteral("list_%1_%2").arg(static_cast<int>(m_source)).arg(m_id);
+}
+
+void TrackListPage::saveView()
+{
+    View view;
+    view.sort = m_sort;
+    view.desc = m_desc;
+    view.scroll = m_table->verticalScrollBar()->value();
+    for (const auto& row : m_table->selectionModel()->selectedRows()) {
+        const auto track = m_table->trackModel()->trackAt(row.row());
+        view.selected << (m_source == Source::Playlist && m_id == m_library->favoritesPlaylistId() ? track.id
+                : track.listEntryId                                                                ? track.listEntryId
+                                                                                                   : track.id);
+    }
+    m_views[m_id] = view;
+}
+
+void TrackListPage::setSource(qint64 id)
+{
+    if (m_id == id) {
+        reload();
+        return;
+    }
+    saveView();
+    m_changingSource = true;
+    m_id = id;
+    m_sort = m_library->setting(viewKey() + QStringLiteral("_sort"), QStringLiteral("0")).toInt();
+    m_desc = m_library->setting(viewKey() + QStringLiteral("_desc"), QStringLiteral("0")) == QLatin1String("1");
+    m_table->setTracks({ });
+    reload();
+    const auto view = m_views.value(id);
+    for (int row = 0; row < m_table->trackModel()->rowCount(); ++row) {
+        const auto item = m_table->trackModel()->trackAt(row);
+        if (view.selected.contains(m_source == Source::Playlist && m_id == m_library->favoritesPlaylistId() ? item.id
+                    : item.listEntryId ? item.listEntryId
+                                       : item.id))
+            m_table->selectionModel()->select(
+                m_table->model()->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    }
+    m_table->verticalScrollBar()->setValue(view.scroll);
+    m_changingSource = false;
+}
+
+void TrackListPage::reload()
+{
+    QVector<Track> tracks;
+    QString extra;
+    if (m_source == Source::AllSongs) {
+        m_title = QStringLiteral("歌曲");
+        tracks = m_library->allTracks(QStringLiteral("album"), false);
+        m_empty->setText(QStringLiteral("资料库还是空的\n添加音乐文件夹后，只收录该文件夹当前层的音乐。"));
+    } else if (m_source == Source::Folder) {
+        const auto source = m_library->root(m_id);
+        m_title = source.name;
+        extra = source.path;
+        if (!source.message.isEmpty())
+            extra += QStringLiteral(" · ") + source.message;
+        tracks = m_library->folderTracks(m_id);
+        m_empty->setText(QStringLiteral("当前层没有音乐\n子目录需要单独添加为音乐文件夹。"));
+    } else {
+        m_title = QStringLiteral("播放列表");
+        for (const auto& playlist : m_library->playlists())
+            if (playlist.id == m_id)
+                m_title = playlist.name;
+        tracks = m_library->playlistTracks(m_id);
+        const bool favorites = m_id == m_library->favoritesPlaylistId();
+        m_table->setFavoritesContext(favorites);
+        m_empty->setText(favorites ? QStringLiteral("还没有喜欢的歌曲\n点击歌曲旁或播放栏的爱心，收藏喜欢的音乐")
+                                   : QStringLiteral("播放列表还是空的\n可以从歌曲或文件夹添加音乐。"));
+    }
+    if (m_sort)
+        std::stable_sort(tracks.begin(), tracks.end(), [this](const Track& a, const Track& b) {
+            int order = 0;
+            if (m_sort == 4)
+                order = a.durationMs < b.durationMs ? -1 : a.durationMs > b.durationMs ? 1 : 0;
+            else
+                order = QString::localeAwareCompare(m_sort == 2 ? a.displayArtist()
+                        : m_sort == 3                           ? a.displayAlbum()
+                                                                : a.displayTitle(),
+                    m_sort == 2       ? b.displayArtist()
+                        : m_sort == 3 ? b.displayAlbum()
+                                      : b.displayTitle());
+            return m_desc ? order > 0 : order < 0;
+        });
+    int available = 0;
+    for (const auto& item : tracks)
+        if (!item.missing)
+            ++available;
+    m_subtitle->setText((extra.isEmpty() ? QString() : extra + QStringLiteral("\n"))
+        + QStringLiteral("%1 首歌曲 · %2 首可播放").arg(tracks.size()).arg(available));
     const bool empty = tracks.isEmpty();
     m_empty->setVisible(empty);
     m_table->setVisible(!empty);
-}
-
-void SongsPage::setPlayingId(qint64 id, bool playing)
-{
-    m_table->setPlayingId(id, playing);
+    m_add->setVisible(empty && m_source == Source::AllSongs);
+    const bool changing = m_changingSource;
+    m_changingSource = true;
+    m_table->setTracksPreservingView(std::move(tracks));
+    m_changingSource = changing;
+    emit titleChanged(m_title);
 }
 
 AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
@@ -235,10 +356,18 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
 
 void AlbumsPage::reload()
 {
+    const auto selected = m_grid->currentItem() ? m_grid->currentItem()->data(Qt::UserRole).toString() : QString();
+    const int scroll = m_grid->verticalScrollBar()->value();
     m_grid->clear();
     for (const Album& album : m_library->albums(m_artistFilter)) {
         fillAlbumItem(m_grid, album, m_library->artwork());
     }
+    for (int i = 0; i < m_grid->count(); ++i)
+        if (m_grid->item(i)->data(Qt::UserRole).toString() == selected)
+            m_grid->setCurrentRow(i);
+    m_grid->verticalScrollBar()->setValue(scroll);
+    if (m_stack->currentIndex() == 1)
+        showAlbum(m_detail->property("albumKey").toString());
     const bool empty = m_grid->count() == 0;
     m_grid->setVisible(!empty);
     if (auto* hint = findChild<QLabel*>(QStringLiteral("albumsEmpty"))) {
@@ -266,7 +395,7 @@ void AlbumsPage::openAlbum(const QString& key)
 void AlbumsPage::showAlbum(const QString& key)
 {
     const auto tracks = m_library->albumTracks(key);
-    m_detail->setTracks(tracks);
+    m_detail->setTracksPreservingView(tracks);
     m_detail->setProperty("albumKey", key);
     auto* name = m_detailPage->findChild<QLabel*>(QStringLiteral("albumName"));
     auto* artist = m_detailPage->findChild<QLabel*>(QStringLiteral("albumArtist"));
@@ -354,7 +483,7 @@ ArtistsPage::ArtistsPage(Library* library, QWidget* parent)
                                                             : m_library->artwork()->pixmap(album.artworkHash, 240)));
             m_albums->addItem(item);
         }
-        m_table->setTracks(m_library->artistTracks(key));
+        m_table->setTracksPreservingView(m_library->artistTracks(key));
     });
     connect(m_albums, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
         emit albumPlayRequested(item->data(Qt::UserRole).toString(), false);
@@ -363,6 +492,9 @@ ArtistsPage::ArtistsPage(Library* library, QWidget* parent)
 
 void ArtistsPage::reload()
 {
+    const auto selected
+        = m_artists->currentItem() ? m_artists->currentItem()->data(Qt::UserRole).toString() : QString();
+    const int scroll = m_artists->verticalScrollBar()->value();
     m_artists->clear();
     for (const Artist& artist : m_library->artists()) {
         auto* item = new QListWidgetItem(artist.name);
@@ -371,6 +503,12 @@ void ArtistsPage::reload()
         item->setSizeHint(QSize(0, 36));
         m_artists->addItem(item);
     }
+    for (int i = 0; i < m_artists->count(); ++i)
+        if (m_artists->item(i)->data(Qt::UserRole).toString() == selected) {
+            m_artists->setCurrentRow(i);
+            break;
+        }
+    m_artists->verticalScrollBar()->setValue(scroll);
     const bool empty = m_artists->count() == 0;
     m_artists->setVisible(!empty);
     m_albums->setVisible(!empty);
@@ -378,7 +516,7 @@ void ArtistsPage::reload()
     if (auto* hint = findChild<QLabel*>(QStringLiteral("artistsEmpty"))) {
         hint->setVisible(empty);
     }
-    if (m_artists->count() > 0) {
+    if (m_artists->count() > 0 && m_artists->currentRow() < 0) {
         m_artists->setCurrentRow(0);
     }
 }
@@ -402,172 +540,181 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     : QWidget(parent)
     , m_library(library)
 {
-    auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(32, 4, 24, 8);
-    layout->setSpacing(20);
-    m_tree = new QTreeWidget(this);
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    m_stack = new QStackedWidget(this);
+    layout->addWidget(m_stack);
+    auto* listing = new QWidget(this);
+    auto* listLayout = new QVBoxLayout(listing);
+    listLayout->setContentsMargins(32, 4, 24, 8);
+    auto* add = new QPushButton(QStringLiteral("添加文件夹…"), listing);
+    add->setObjectName(QStringLiteral("addMusicFolder"));
+    listLayout->addWidget(add, 0, Qt::AlignRight);
+    m_empty = new QLabel(QStringLiteral("还没有文件夹\n手动添加音乐文件夹，只扫描当前层。"), listing);
+    m_empty->setObjectName(QStringLiteral("foldersEmpty"));
+    m_empty->setAlignment(Qt::AlignCenter);
+    listLayout->addWidget(m_empty, 1);
+    m_tree = new QTreeWidget(listing);
     m_tree->setObjectName(QStringLiteral("folderTree"));
-    m_tree->setHeaderHidden(true);
+    m_tree->setHeaderLabels(
+        { QStringLiteral("名称"), QStringLiteral("路径"), QStringLiteral("歌曲"), QStringLiteral("状态") });
+    m_tree->setRootIsDecorated(false);
     m_tree->setFrameShape(QFrame::NoFrame);
-    m_tree->setMinimumWidth(220);
-    m_tree->setMaximumWidth(280);
-    auto* right = new QVBoxLayout();
-    auto* folderTitle = new QLabel(this);
-    folderTitle->setObjectName(QStringLiteral("folderTitle"));
-    folderTitle->setStyleSheet(QStringLiteral("font-size: 20px; font-weight: 650;"));
-    auto* play = new QPushButton(QStringLiteral("播放"), this);
-    play->setObjectName(QStringLiteral("playFolder"));
-    m_table = new TrackTable(this);
-    auto* foldersEmpty = new QLabel(QStringLiteral("还没有文件夹"), this);
-    foldersEmpty->setObjectName(QStringLiteral("foldersEmpty"));
-    foldersEmpty->setAlignment(Qt::AlignCenter);
-    foldersEmpty->setStyleSheet(QStringLiteral("color: %1; font-size: 15px;").arg(echo::palette().secondary.name()));
-    auto* folderHead = new QHBoxLayout();
-    folderHead->addWidget(folderTitle, 1);
-    folderHead->addWidget(play);
-    right->addWidget(foldersEmpty, 1);
-    right->addLayout(folderHead);
-    right->addWidget(m_table, 1);
-    play->setObjectName(QStringLiteral("playFolder"));
-    layout->addWidget(m_tree);
-    layout->addLayout(right, 1);
-    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
-        if (auto* title = findChild<QLabel*>(QStringLiteral("folderTitle"))) {
-            title->setText(item->text(0));
-        }
-        m_table->setTracks(m_library->folderTracks(item->data(0, Qt::UserRole).toString(), false));
+    m_tree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_tree->setColumnWidth(0, 180);
+    m_tree->setColumnWidth(2, 120);
+    m_tree->setColumnWidth(3, 130);
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    listLayout->addWidget(m_tree, 1);
+    m_stack->addWidget(listing);
+    auto* detail = new QWidget(this);
+    auto* detailLayout = new QVBoxLayout(detail);
+    detailLayout->setContentsMargins(0, 0, 0, 0);
+    auto* back = new QPushButton(QStringLiteral("‹ 文件夹"), detail);
+    back->setObjectName(QStringLiteral("backToFolders"));
+    detailLayout->addWidget(back, 0, Qt::AlignLeft);
+    m_detail = new TrackListPage(library, TrackListPage::Source::Folder, detail);
+    detailLayout->addWidget(m_detail, 1);
+    m_stack->addWidget(detail);
+    connect(back, &QPushButton::clicked, this, &FoldersPage::showFolders);
+    connect(add, &QPushButton::clicked, this, &FoldersPage::addFolderRequested);
+    connect(m_tree, &QTreeWidget::itemDoubleClicked, this,
+        [this](QTreeWidgetItem* item, int) { openFolder(item->data(0, Qt::UserRole).toLongLong()); });
+    connect(m_detail, &TrackListPage::titleChanged, this, [this](const QString& title) {
+        if (m_stack->currentIndex() == 1)
+            emit titleChanged(title);
     });
-    connect(play, &QPushButton::clicked, this, [this] {
-        if (auto* item = m_tree->currentItem()) {
-            emit playFolderRequested(item->data(0, Qt::UserRole).toString());
-        }
+    connect(m_library, &Library::scanStarted, this, [this](qint64) { reload(); });
+    connect(m_library, &Library::scanFinished, this, &FoldersPage::reload);
+    connect(m_tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& point) {
+        auto* item = m_tree->itemAt(point);
+        if (!item)
+            return;
+        const auto id = item->data(0, Qt::UserRole).toLongLong();
+        const auto source = m_library->root(id);
+        QMenu menu(this);
+        menu.addAction(QStringLiteral("创建播放列表…"), this, [this, id, source] {
+            bool ok = false;
+            const auto name = QInputDialog::getText(
+                this, QStringLiteral("创建播放列表"), QStringLiteral("名称"), QLineEdit::Normal, source.name, &ok)
+                                  .trimmed();
+            if (!ok || name.isEmpty())
+                return;
+            QVector<qint64> ids;
+            if (m_detail->sourceId() == id)
+                ids = m_detail->table()->trackModel()->ids();
+            else
+                for (const auto& track : m_library->folderTracks(id))
+                    ids << track.id;
+            if (ids.isEmpty()) {
+                QMessageBox::information(
+                    this, QStringLiteral("无法创建"), QStringLiteral("当前文件夹还没有已知歌曲。"));
+                return;
+            }
+            const auto playlist = m_library->createPlaylistFromFolder(id, name, ids);
+            if (playlist)
+                emit playlistCreated(playlist);
+            else
+                QMessageBox::warning(this, QStringLiteral("创建失败"), QStringLiteral("无法保存播放列表。"));
+        });
+        menu.addAction(QStringLiteral("重新扫描"), this, [this, id] { m_library->refreshRoot(id); });
+        menu.addAction(QStringLiteral("在 Finder 中显示"), this, [source] { showInFileManager(source.path); });
+        menu.addAction(QStringLiteral("重新定位…"), this, [this, id] {
+            const auto path = QFileDialog::getExistingDirectory(this, QStringLiteral("重新定位文件夹"));
+            if (path.isEmpty())
+                return;
+            QString error;
+            if (!m_library->relocateRoot(id, path, &error))
+                QMessageBox::warning(this, QStringLiteral("定位失败"), error);
+        });
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("移除文件夹…"), this, [this, id] {
+            if (QMessageBox::question(this, QStringLiteral("移除文件夹"),
+                    QStringLiteral("取消登记这个音乐来源？\n歌曲将退出全局资料库，已有歌单、收藏和队列引用会保留，磁盘"
+                                   "文件不会删除。"))
+                == QMessageBox::Yes)
+                m_library->removeRoot(id);
+        });
+        menu.exec(m_tree->viewport()->mapToGlobal(point));
     });
 }
 
+QString FoldersPage::title() const
+{
+    return m_stack->currentIndex() == 1 ? m_detail->title() : QStringLiteral("文件夹");
+}
+void FoldersPage::showFolders()
+{
+    m_stack->setCurrentIndex(0);
+    emit titleChanged(title());
+}
+void FoldersPage::selectFolder(qint64 id)
+{
+    reload();
+    showFolders();
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
+        if (m_tree->topLevelItem(i)->data(0, Qt::UserRole).toLongLong() == id) {
+            m_tree->setCurrentItem(m_tree->topLevelItem(i));
+            m_tree->scrollToItem(m_tree->topLevelItem(i));
+            break;
+        }
+}
+void FoldersPage::openFolder(qint64 id)
+{
+    m_detail->setSource(id);
+    m_stack->setCurrentIndex(1);
+    emit titleChanged(title());
+    m_library->refreshRoot(id);
+}
 void FoldersPage::reload()
 {
-    m_tree->clear();
-    QHash<QString, QTreeWidgetItem*> nodes;
-    const auto folders = m_library->folders();
-    QString base = folders.isEmpty() ? QString() : folders.first();
-    for (const QString& folder : folders) {
-        while (!base.isEmpty() && !folder.startsWith(base)) {
-            const int slash = base.lastIndexOf(u'/');
-            base = slash > 0 ? base.left(slash) : QString();
+    const qint64 selected = m_tree->currentItem() ? m_tree->currentItem()->data(0, Qt::UserRole).toLongLong() : 0;
+    const int scroll = m_tree->verticalScrollBar()->value();
+    const auto roots = m_library->roots();
+    QSet<qint64> retained;
+    int position = 0;
+    for (const auto& source : roots) {
+        retained.insert(source.id);
+        QTreeWidgetItem* item = nullptr;
+        for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
+            if (m_tree->topLevelItem(i)->data(0, Qt::UserRole).toLongLong() == source.id)
+                item = m_tree->topLevelItem(i);
+        if (!item) {
+            item = new QTreeWidgetItem(m_tree);
+            item->setData(0, Qt::UserRole, source.id);
         }
+        const int previousPosition = m_tree->indexOfTopLevelItem(item);
+        if (previousPosition != position)
+            m_tree->insertTopLevelItem(position, m_tree->takeTopLevelItem(previousPosition));
+        ++position;
+        const int available = source.availableTracks;
+        const QHash<QString, QString> statuses { { "available", "可用" }, { "missing", "找不到目录" },
+            { "offline", "磁盘未连接" }, { "permission", "无访问权限" }, { "unavailable", "暂时无法访问" } };
+        item->setSizeHint(0, QSize(0, 42));
+        item->setText(0, source.name);
+        item->setText(1, source.path);
+        item->setText(2, QStringLiteral("%1 / %2 可播放").arg(available).arg(source.tracks));
+        item->setText(3,
+            m_library->scanningRoot() == source.id ? QStringLiteral("扫描中…")
+                                                   : statuses.value(source.status, source.status));
+        item->setToolTip(1, source.path);
+        item->setToolTip(3, source.message);
+        item->setIcon(0, icon(Icon::Folders, echo::palette().secondary, 16));
+        if (source.id == selected)
+            m_tree->setCurrentItem(item);
     }
-    const QString strip = base.isEmpty() ? QString() : base + QLatin1Char('/');
-    for (const QString& folder : folders) {
-        const QString relative = strip.isEmpty() || !folder.startsWith(strip) ? folder : folder.mid(strip.size());
-        const QStringList parts = relative.split(u'/', Qt::SkipEmptyParts);
-        QString full = base;
-        QTreeWidgetItem* parent = nullptr;
-        for (const QString& part : parts) {
-            full += QLatin1Char('/') + part;
-            if (nodes.contains(full)) {
-                parent = nodes.value(full);
-                continue;
-            }
-            auto* item = new QTreeWidgetItem(QStringList {part});
-            item->setData(0, Qt::UserRole, full);
-            item->setIcon(0, icon(Icon::Folders, echo::palette().secondary, 14));
-            if (parent) {
-                parent->addChild(item);
-            } else {
-                m_tree->addTopLevelItem(item);
-            }
-            nodes.insert(full, item);
-            parent = item;
-        }
+    for (int i = m_tree->topLevelItemCount() - 1; i >= 0; --i)
+        if (!retained.contains(m_tree->topLevelItem(i)->data(0, Qt::UserRole).toLongLong()))
+            delete m_tree->takeTopLevelItem(i);
+    m_tree->verticalScrollBar()->setValue(scroll);
+    m_empty->setVisible(roots.isEmpty());
+    m_tree->setVisible(!roots.isEmpty());
+    if (m_stack->currentIndex() == 1) {
+        if (!retained.contains(m_detail->sourceId()))
+            showFolders();
+        else
+            m_detail->reload();
     }
-    m_tree->expandAll();
-    QTreeWidgetItem* leaf = m_tree->topLevelItem(0);
-    while (leaf && leaf->childCount() > 0) {
-        leaf = leaf->child(0);
-    }
-    if (leaf) {
-        m_tree->setCurrentItem(leaf);
-        if (auto* title = findChild<QLabel*>(QStringLiteral("folderTitle"))) {
-            title->setText(leaf->text(0));
-        }
-        m_table->setTracks(m_library->folderTracks(leaf->data(0, Qt::UserRole).toString(), false));
-    }
-    const bool empty = folders.isEmpty();
-    m_tree->setVisible(!empty);
-    m_table->setVisible(!empty);
-    if (auto* hint = findChild<QLabel*>(QStringLiteral("foldersEmpty"))) {
-        hint->setVisible(empty);
-    }
-    if (auto* play = findChild<QPushButton*>(QStringLiteral("playFolder"))) {
-        play->setVisible(!empty);
-    }
-    if (auto* title = findChild<QLabel*>(QStringLiteral("folderTitle"))) {
-        title->setVisible(!empty);
-    }
-}
-
-void FoldersPage::setPlayingId(qint64 id, bool playing)
-{
-    m_table->setPlayingId(id, playing);
-}
-
-PlaylistPage::PlaylistPage(Library* library, QWidget* parent)
-    : QWidget(parent)
-    , m_library(library)
-    , m_table(new TrackTable(this))
-{
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(28, 18, 18, 8);
-    auto* title = new QLabel(QStringLiteral("歌单"), this);
-    m_emptyFavorites = new QLabel(QStringLiteral("还没有喜欢的歌曲\n点击歌曲旁或播放栏的爱心，收藏喜欢的音乐"), this);
-    m_emptyFavorites->setObjectName(QStringLiteral("emptyFavorites"));
-    m_emptyFavorites->setAlignment(Qt::AlignCenter);
-    m_emptyFavorites->setStyleSheet(QStringLiteral("color: %1; font-size: 13px;").arg(echo::palette().secondary.name()));
-    m_emptyFavorites->hide();
-    layout->addWidget(m_emptyFavorites, 1);
-    connect(m_library, &Library::favoritesChanged, this, [this] {
-        if (m_id == m_library->favoritesPlaylistId()) reload();
-    });
-    title->setObjectName(QStringLiteral("playlistTitle"));
-    title->hide();
-    layout->addWidget(m_table, 1);
-}
-
-void PlaylistPage::setPlaylist(qint64 id)
-{
-    m_id = id;
-    reload();
-}
-
-void PlaylistPage::reload()
-{
-    if (m_id <= 0) {
-        return;
-    }
-    QString name;
-    for (const Playlist& playlist : m_library->playlists()) {
-        if (playlist.id == m_id) {
-            name = playlist.name;
-        }
-    }
-    if (auto* title = findChild<QLabel*>(QStringLiteral("playlistTitle"))) {
-        title->setText(name);
-    }
-    QVector<Track> tracks;
-    for (const qint64 id : m_library->playlistTrackIds(m_id)) {
-        tracks.push_back(m_library->track(id));
-    }
-    const bool favorites = m_id == m_library->favoritesPlaylistId();
-    m_table->setFavoritesContext(favorites);
-    m_emptyFavorites->setVisible(favorites && tracks.isEmpty());
-    m_table->setVisible(!favorites || !tracks.isEmpty());
-    if (favorites) m_table->setTracksPreservingView(tracks);
-    else m_table->setTracks(tracks);
-}
-
-void PlaylistPage::setPlayingId(qint64 id, bool playing)
-{
-    m_table->setPlayingId(id, playing);
 }
 
 QWidget* resultSection(const QString& title, QWidget* content, QWidget* parent)
@@ -664,7 +811,7 @@ void SearchPage::showSection(QWidget* section, QListWidget* list)
 void SearchPage::search(const QString& text)
 {
     const auto tracks = m_library->searchTracks(text);
-    m_tracks->setTracks(tracks);
+    m_tracks->setTracksPreservingView(tracks);
     m_trackSection->setVisible(!tracks.isEmpty());
     if (!tracks.isEmpty()) {
         const int header = std::max(28, m_tracks->horizontalHeader()->sizeHint().height());

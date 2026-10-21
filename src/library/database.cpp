@@ -2,6 +2,11 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QHash>
+#include <QSet>
+#include <QStorageInfo>
 #include <QSqlError>
 #include <QVariant>
 
@@ -10,10 +15,12 @@
 namespace echo {
 namespace {
 
-const char* kSchema = R"SQL(
+    const char* kSchema = R"SQL(
 CREATE TABLE IF NOT EXISTS roots (
   id INTEGER PRIMARY KEY,
-  path TEXT NOT NULL UNIQUE
+  path TEXT NOT NULL UNIQUE,
+  name TEXT, active INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'available', message TEXT, mount_path TEXT, checked_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
@@ -122,6 +129,21 @@ bool Database::open(const QString& filePath, const QString& connectionName, QStr
             return false;
         }
     }
+    for (const auto& column : QStringList { "name TEXT", "active INTEGER NOT NULL DEFAULT 1",
+             "revision INTEGER NOT NULL DEFAULT 1", "status TEXT NOT NULL DEFAULT 'available'", "message TEXT",
+             "mount_path TEXT", "checked_at INTEGER NOT NULL DEFAULT 0" }) {
+        const auto name = column.section(u' ', 0, 0);
+        QSqlQuery info(m_db);
+        info.exec(QStringLiteral("PRAGMA table_info(roots)"));
+        bool found = false;
+        while (info.next())
+            found |= info.value(1).toString() == name;
+        if (!found && !query.exec(QStringLiteral("ALTER TABLE roots ADD COLUMN ") + column)) {
+            if (error)
+                *error = query.lastError().text();
+            return false;
+        }
+    }
     // Older libraries have no system_key. Migrate atomically on either connection.
     {
         QMutexLocker locker(&writeLock());
@@ -178,7 +200,12 @@ qint64 Database::addRoot(const QString& path)
 {
     QMutexLocker locker(&writeLock());
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("INSERT OR IGNORE INTO roots(path) VALUES (?)"));
+    query.prepare(QStringLiteral("INSERT OR IGNORE INTO roots(path,name,mount_path) VALUES (?,?,?)"));
+    query.addBindValue(path);
+    query.addBindValue(QFileInfo(path).fileName());
+    query.addBindValue(QStorageInfo(path).rootPath());
+    query.exec();
+    query.prepare(QStringLiteral("UPDATE roots SET active=1,revision=revision+1 WHERE path=? AND active=0"));
     query.addBindValue(path);
     query.exec();
     query.prepare(QStringLiteral("SELECT id FROM roots WHERE path=?"));
@@ -191,23 +218,242 @@ void Database::removeRoot(qint64 id)
 {
     QMutexLocker locker(&writeLock());
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("DELETE FROM tracks WHERE root_id=?"));
+    if (!m_db.transaction())
+        return;
+    query.prepare(QStringLiteral("UPDATE tracks SET missing=1 WHERE root_id=? AND EXISTS (SELECT 1 FROM roots WHERE "
+                                 "id=? AND status!='available')"));
+    query.addBindValue(id);
+    query.addBindValue(id);
+    if (!query.exec()) {
+        m_db.rollback();
+        return;
+    }
+    query.prepare(QStringLiteral("UPDATE roots SET active=0, revision=revision+1 WHERE id=?"));
+    query.addBindValue(id);
+    if (!query.exec()) {
+        m_db.rollback();
+        return;
+    }
+    m_db.commit();
+}
+
+LibraryRoot Database::root(qint64 id) const
+{
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT id,path,name,status,message,revision,checked_at,active,mount_path,(SELECT COUNT(*) FROM tracks WHERE "
+        "root_id=roots.id),(SELECT COUNT(*) FROM tracks WHERE root_id=roots.id AND missing=0) FROM roots WHERE id=?"));
     query.addBindValue(id);
     query.exec();
-    query.prepare(QStringLiteral("DELETE FROM roots WHERE id=?"));
-    query.addBindValue(id);
-    query.exec();
+    if (!query.next())
+        return { };
+    LibraryRoot root;
+    root.id = query.value(0).toLongLong();
+    root.path = query.value(1).toString();
+    root.name = query.value(2).toString();
+    if (root.name.isEmpty())
+        root.name = QFileInfo(root.path).fileName();
+    if (root.name.isEmpty())
+        root.name = root.path;
+    root.status = query.value(3).toString();
+    root.message = query.value(4).toString();
+    root.revision = query.value(5).toLongLong();
+    root.checkedAt = query.value(6).toLongLong();
+    root.active = query.value(7).toBool();
+    root.mountPath = query.value(8).toString();
+    root.tracks = query.value(9).toInt();
+    root.availableTracks = root.status == QLatin1String("available") ? query.value(10).toInt() : 0;
+    return root;
 }
 
 QVector<LibraryRoot> Database::roots() const
 {
     QVector<LibraryRoot> result;
     QSqlQuery query(m_db);
-    query.exec(QStringLiteral("SELECT id, path FROM roots ORDER BY path"));
-    while (query.next()) {
-        result.push_back(LibraryRoot {query.value(0).toLongLong(), query.value(1).toString()});
-    }
+    query.exec(QStringLiteral("SELECT id FROM roots WHERE active=1 ORDER BY id"));
+    while (query.next())
+        result.push_back(root(query.value(0).toLongLong()));
     return result;
+}
+
+QString Database::libraryScope()
+{
+    return QStringLiteral("EXISTS (SELECT 1 FROM roots r WHERE r.id=tracks.root_id AND r.active=1)");
+}
+
+void Database::setRootStatus(
+    qint64 id, const QString& path, qint64 revision, const QString& status, const QString& message)
+{
+    QMutexLocker locker(&writeLock());
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE roots SET status=?,message=?,checked_at=? WHERE id=? AND path=? AND revision=? AND active=1"));
+    for (const QVariant& value :
+        QVariantList { status, message, QDateTime::currentSecsSinceEpoch(), id, path, revision })
+        query.addBindValue(value);
+    query.exec();
+}
+
+bool Database::commitScan(qint64 id, const QString& path, qint64 revision, const QVector<Track>& tracks,
+    const QString& signature, QString* error)
+{
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return false;
+    const auto current = root(id);
+    if (!current.active || current.path != path || current.revision != revision) {
+        m_db.rollback();
+        return true;
+    }
+    QSqlQuery query(m_db);
+    auto fail = [&] {
+        if (error)
+            *error = query.lastError().text();
+        m_db.rollback();
+        return false;
+    };
+    const auto previous = queryTracks(QStringLiteral("WHERE root_id=?"), { id }, { });
+    auto key = [](const Track& track) { return track.path + u'\n' + QString::number(track.cueStartMs); };
+    QHash<QString, Track> known;
+    QSet<QString> present;
+    for (const auto& old : previous)
+        known.insert(key(old), old);
+    for (auto track : tracks) {
+        const auto identity = key(track);
+        present.insert(identity);
+        const auto old = known.value(identity);
+        if (old.id)
+            track.id = old.id;
+        if (!old.id || track != old) {
+            if (!upsertTrackUnlocked(track)) {
+                if (error)
+                    *error = QStringLiteral("写入扫描结果失败");
+                m_db.rollback();
+                return false;
+            }
+        }
+    }
+    query.prepare(QStringLiteral("UPDATE tracks SET missing=1 WHERE id=? AND missing=0"));
+    for (const auto& old : previous)
+        if (!present.contains(key(old))) {
+            query.bindValue(0, old.id);
+            if (!query.exec())
+                return fail();
+        }
+    query.prepare(QStringLiteral("UPDATE roots SET status='available',message='',checked_at=? WHERE id=?"));
+    query.addBindValue(QDateTime::currentSecsSinceEpoch());
+    query.addBindValue(id);
+    if (!query.exec())
+        return fail();
+    query.prepare(QStringLiteral("INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)"));
+    query.addBindValue(QStringLiteral("scan_signature_%1").arg(id));
+    query.addBindValue(signature);
+    if (!query.exec())
+        return fail();
+    if (!m_db.commit())
+        return fail();
+    return true;
+}
+
+bool Database::updateRoot(
+    qint64 id, const QString& path, const QVector<QPair<qint64, QString>>& matches, QString* error)
+{
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return false;
+    const auto old = root(id);
+    QSqlQuery query(m_db);
+    auto fail = [&] {
+        if (error)
+            *error = query.lastError().text();
+        m_db.rollback();
+        return false;
+    };
+    query.prepare(QStringLiteral(
+        "UPDATE roots SET path=?,name=?,mount_path=?,revision=revision+1,status='available',message='' WHERE id=?"));
+    query.addBindValue(path);
+    query.addBindValue(QFileInfo(path).fileName());
+    query.addBindValue(QStorageInfo(path).rootPath());
+    query.addBindValue(id);
+    if (!query.exec())
+        return fail();
+    query.prepare(QStringLiteral("UPDATE tracks SET missing=1 WHERE root_id=?"));
+    query.addBindValue(id);
+    if (!query.exec())
+        return fail();
+    query.prepare(
+        QStringLiteral("UPDATE tracks SET path=?,folder=?,missing=0,cue_path=CASE WHEN cue_path=path THEN ? WHEN "
+                       "substr(cue_path,1,?)=? THEN ?||substr(cue_path,?) ELSE cue_path END WHERE id=?"));
+    for (const auto& match : matches) {
+        query.bindValue(0, match.second);
+        query.bindValue(1, path);
+        query.bindValue(2, match.second);
+        query.bindValue(3, old.path.size() + 1);
+        query.bindValue(4, old.path + u'/');
+        query.bindValue(5, path);
+        query.bindValue(6, old.path.size() + 1);
+        query.bindValue(7, match.first);
+        if (!query.exec())
+            return fail();
+    }
+    if (!m_db.commit())
+        return fail();
+    return true;
+}
+
+bool Database::relocateTrack(qint64 id, const QString& path, QString* error)
+{
+    QMutexLocker locker(&writeLock());
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("UPDATE tracks SET path=?,folder=?,root_id=(SELECT id FROM roots WHERE path=? AND "
+                                 "active=1),missing=0,cue_path=CASE WHEN cue_path=path THEN ? ELSE cue_path END WHERE "
+                                 "path=(SELECT path FROM tracks WHERE id=?)"));
+    const auto folder = QFileInfo(path).absolutePath();
+    query.addBindValue(path);
+    query.addBindValue(folder);
+    query.addBindValue(folder);
+    query.addBindValue(path);
+    query.addBindValue(id);
+    if (query.exec())
+        return true;
+    if (error)
+        *error = query.lastError().text();
+    return false;
+}
+
+bool Database::updateLooseAvailability(const QVector<Track>& tracks)
+{
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return false;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("UPDATE tracks SET missing=? WHERE id=? AND path=? AND mtime=? AND missing!=? AND NOT "
+                                 "EXISTS (SELECT 1 FROM roots r WHERE r.id=tracks.root_id AND r.active=1)"));
+    bool changed = false;
+    for (const auto& track : tracks) {
+        query.bindValue(0, track.missing ? 1 : 0);
+        query.bindValue(1, track.id);
+        query.bindValue(2, track.path);
+        query.bindValue(3, track.mtime);
+        query.bindValue(4, track.missing ? 1 : 0);
+        if (!query.exec()) {
+            m_db.rollback();
+            return false;
+        }
+        changed |= query.numRowsAffected() > 0;
+    }
+    if (!m_db.commit())
+        return false;
+    return changed;
+}
+
+void Database::markPathMissing(const QString& path)
+{
+    QMutexLocker locker(&writeLock());
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("UPDATE tracks SET missing=1 WHERE path=?"));
+    query.addBindValue(path);
+    query.exec();
 }
 
 void Database::markRootMissing(qint64 rootId)
@@ -222,6 +468,11 @@ void Database::markRootMissing(qint64 rootId)
 qint64 Database::upsertTrack(const Track& track)
 {
     QMutexLocker locker(&writeLock());
+    return upsertTrackUnlocked(track);
+}
+
+qint64 Database::upsertTrackUnlocked(const Track& track)
+{
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral("SELECT id FROM tracks WHERE path=? AND cue_start_ms=?"));
     query.addBindValue(track.path);
@@ -231,16 +482,21 @@ qint64 Database::upsertTrack(const Track& track)
     const qint64 existingId = exists ? query.value(0).toLongLong() : 0;
     if (exists) {
         query.prepare(QStringLiteral(
-            "UPDATE tracks SET root_id=?, folder=?, title=?, artist=?, album_artist=?, album=?, album_key=?, artist_key=?, "
+            "UPDATE tracks SET root_id=COALESCE(?,root_id), folder=?, title=?, artist=?, album_artist=?, album=?, "
+            "album_key=?, artist_key=?, "
             "year=?, track_number=?, disc_number=?, duration_ms=?, sample_rate=?, bit_depth=?, channels=?, codec=?, "
-            "has_track_gain=?, has_album_gain=?, track_gain_db=?, album_gain_db=?, track_peak=?, album_peak=?, lyrics=?, "
-            "artwork_hash=?, mtime=?, file_size=?, missing=0, cue_path=?, cue_number=?, cue_end_ms=? WHERE id=?"));
+            "has_track_gain=?, has_album_gain=?, track_gain_db=?, album_gain_db=?, track_peak=?, album_peak=?, "
+            "lyrics=?, "
+            "artwork_hash=?, mtime=?, file_size=?, missing=?, cue_path=?, cue_number=?, cue_end_ms=? WHERE id=?"));
     } else {
-        query.prepare(QStringLiteral(
-            "INSERT INTO tracks(root_id, path, folder, title, artist, album_artist, album, album_key, artist_key, year, "
-            "track_number, disc_number, duration_ms, sample_rate, bit_depth, channels, codec, has_track_gain, has_album_gain, "
-            "track_gain_db, album_gain_db, track_peak, album_peak, lyrics, artwork_hash, mtime, file_size, missing, cue_path, "
-            "cue_number, cue_start_ms, cue_end_ms, added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)"));
+        query.prepare(QStringLiteral("INSERT INTO tracks(root_id, path, folder, title, artist, album_artist, album, "
+                                     "album_key, artist_key, year, "
+                                     "track_number, disc_number, duration_ms, sample_rate, bit_depth, channels, codec, "
+                                     "has_track_gain, has_album_gain, "
+                                     "track_gain_db, album_gain_db, track_peak, album_peak, lyrics, artwork_hash, "
+                                     "mtime, file_size, missing, cue_path, "
+                                     "cue_number, cue_start_ms, cue_end_ms, added_at) VALUES "
+                                     "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     }
     query.addBindValue(track.rootId > 0 ? QVariant(track.rootId) : QVariant());
     if (!exists) {
@@ -271,6 +527,7 @@ qint64 Database::upsertTrack(const Track& track)
     query.addBindValue(track.artworkHash);
     query.addBindValue(track.mtime);
     query.addBindValue(track.fileSize);
+    query.addBindValue(track.missing ? 1 : 0);
     query.addBindValue(track.cuePath);
     query.addBindValue(track.cueNumber);
     if (!exists) {
@@ -286,17 +543,6 @@ qint64 Database::upsertTrack(const Track& track)
         return 0;
     }
     return exists ? existingId : query.lastInsertId().toLongLong();
-}
-
-void Database::deleteStaleCueRows(qint64 rootId)
-{
-    QMutexLocker locker(&writeLock());
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("DELETE FROM tracks WHERE root_id=? AND missing=1 AND cue_start_ms>=0 AND path IN "
-                                 "(SELECT path FROM tracks WHERE root_id=? AND missing=0)"));
-    query.addBindValue(rootId);
-    query.addBindValue(rootId);
-    query.exec();
 }
 
 void Database::removeTracks(const QVector<qint64>& ids)
@@ -364,19 +610,22 @@ Track Database::track(qint64 id) const
 QVector<Track> Database::tracksByIds(const QVector<qint64>& ids) const
 {
     QVector<Track> result;
-    result.reserve(ids.size());
-    QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("SELECT id, root_id, path, folder, title, artist, album_artist, album, album_key, artist_key, "
-                                 "year, track_number, disc_number, duration_ms, sample_rate, bit_depth, channels, codec, "
-                                 "has_track_gain, has_album_gain, track_gain_db, album_gain_db, track_peak, album_peak, lyrics, "
-                                 "artwork_hash, mtime, file_size, missing, cue_path, cue_number, cue_start_ms, cue_end_ms "
-                                 "FROM tracks WHERE id=?"));
-    for (const qint64 id : ids) {
-        query.bindValue(0, id);
-        if (query.exec() && query.next()) {
-            result.push_back(trackFromQuery(query));
+    QHash<qint64, Track> found;
+    // Bounded IN batches avoid one SQL query per row while respecting SQLite bind limits.
+    for (int offset = 0; offset < ids.size(); offset += 400) {
+        QVariantList binds;
+        QStringList placeholders;
+        for (int i = offset; i < std::min(offset + 400, static_cast<int>(ids.size())); ++i) {
+            binds << ids[i];
+            placeholders << QStringLiteral("?");
         }
+        for (const auto& track :
+            queryTracks(QStringLiteral("WHERE id IN (") + placeholders.join(u',') + u')', binds, { }))
+            found.insert(track.id, track);
     }
+    result.reserve(ids.size());
+    for (const auto id : ids)
+        result.push_back(found.value(id));
     return result;
 }
 
@@ -384,12 +633,15 @@ QVector<Track> Database::queryTracks(const QString& whereSql, const QVariantList
 {
     QVector<Track> result;
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("SELECT id, root_id, path, folder, title, artist, album_artist, album, album_key, artist_key, "
-                                 "year, track_number, disc_number, duration_ms, sample_rate, bit_depth, channels, codec, "
-                                 "has_track_gain, has_album_gain, track_gain_db, album_gain_db, track_peak, album_peak, lyrics, "
-                                 "artwork_hash, mtime, file_size, missing, cue_path, cue_number, cue_start_ms, cue_end_ms "
-                                 "FROM tracks ")
-                  + whereSql + QLatin1Char(' ') + orderSql);
+    query.prepare(
+        QStringLiteral("SELECT id, root_id, path, folder, title, artist, album_artist, album, album_key, artist_key, "
+                       "year, track_number, disc_number, duration_ms, sample_rate, bit_depth, channels, codec, "
+                       "has_track_gain, has_album_gain, track_gain_db, album_gain_db, track_peak, album_peak, lyrics, "
+                       "artwork_hash, mtime, file_size, CASE WHEN EXISTS (SELECT 1 FROM roots r WHERE "
+                       "r.id=tracks.root_id AND r.active=1 AND r.status!='available') THEN 1 ELSE missing END, "
+                       "cue_path, cue_number, cue_start_ms, cue_end_ms "
+                       "FROM tracks ")
+        + whereSql + QLatin1Char(' ') + orderSql);
     for (const QVariant& bind : binds) {
         query.addBindValue(bind);
     }
@@ -409,7 +661,8 @@ QVector<Album> Database::albums(const QString& artistKey) const
     QString sql = QStringLiteral(
         "SELECT album_key, MAX(album), MAX(album_artist), MAX(artist), MAX(year), COUNT(*), "
         "(SELECT artwork_hash FROM tracks t2 WHERE t2.album_key=tracks.album_key AND artwork_hash!='' LIMIT 1) "
-        "FROM tracks WHERE missing=0 AND album_key!='' ");
+        "FROM tracks WHERE %1 AND album_key!='' ")
+                      .arg(libraryScope());
     if (!artistKey.isEmpty()) {
         sql += QStringLiteral("AND artist_key=? ");
     }
@@ -446,7 +699,8 @@ QVector<Artist> Database::artists() const
     QVector<Artist> result;
     QSqlQuery query(m_db);
     query.exec(QStringLiteral("SELECT artist_key, MAX(artist), COUNT(DISTINCT album_key), COUNT(*) FROM tracks "
-                              "WHERE missing=0 GROUP BY artist_key ORDER BY MAX(artist) COLLATE NOCASE"));
+                              "WHERE %1 GROUP BY artist_key ORDER BY MAX(artist) COLLATE NOCASE")
+            .arg(libraryScope()));
     while (query.next()) {
         Artist artist;
         artist.key = query.value(0).toString();
@@ -461,24 +715,14 @@ QVector<Artist> Database::artists() const
     return result;
 }
 
-QVector<QString> Database::folders() const
-{
-    QVector<QString> result;
-    QSqlQuery query(m_db);
-    query.exec(QStringLiteral("SELECT DISTINCT folder FROM tracks WHERE missing=0 AND folder!='' ORDER BY folder"));
-    while (query.next()) {
-        result.push_back(query.value(0).toString());
-    }
-    return result;
-}
-
 QVector<Track> Database::searchTracks(const QString& ftsQuery, int limit) const
 {
     if (!m_fts || ftsQuery.isEmpty()) {
         return {};
     }
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral("SELECT t.id FROM tracks_fts f JOIN tracks t ON t.id=f.rowid WHERE tracks_fts MATCH ? LIMIT ?"));
+    query.prepare(QStringLiteral("SELECT t.id FROM tracks_fts f JOIN tracks t ON t.id=f.rowid JOIN roots r ON "
+                                 "r.id=t.root_id AND r.active=1 WHERE tracks_fts MATCH ? LIMIT ?"));
     query.addBindValue(ftsQuery);
     query.addBindValue(limit);
     if (!query.exec()) {
@@ -687,27 +931,104 @@ void Database::setPlaylistItems(qint64 playlistId, const QVector<qint64>& trackI
 
 void Database::insertPlaylistItems(qint64 playlistId, int index, const QVector<qint64>& trackIds)
 {
-    if (playlistId == favoritesPlaylistId()) return;
-    auto items = playlistItems(playlistId);
-    index = std::clamp(index, 0, static_cast<int>(items.size()));
-    for (int offset = 0; offset < trackIds.size(); ++offset) {
-        items.insert(index + offset, trackIds[offset]);
+    if (playlistId == favoritesPlaylistId() || trackIds.isEmpty())
+        return;
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return;
+    QSqlQuery query(m_db);
+    query.prepare(
+        QStringLiteral("UPDATE playlist_items SET sort_order=sort_order+? WHERE playlist_id=? AND sort_order>=?"));
+    query.addBindValue(trackIds.size());
+    query.addBindValue(playlistId);
+    query.addBindValue(index);
+    if (!query.exec()) {
+        m_db.rollback();
+        return;
     }
-    setPlaylistItems(playlistId, items);
+    query.prepare(QStringLiteral("INSERT INTO playlist_items(playlist_id,track_id,sort_order) VALUES (?,?,?)"));
+    for (int i = 0; i < trackIds.size(); ++i) {
+        query.bindValue(0, playlistId);
+        query.bindValue(1, trackIds[i]);
+        query.bindValue(2, index + i);
+        if (!query.exec()) {
+            m_db.rollback();
+            return;
+        }
+    }
+    m_db.commit();
 }
 
 void Database::removePlaylistItems(qint64 playlistId, const QVector<int>& positions)
 {
-    if (playlistId == favoritesPlaylistId()) return;
-    auto items = playlistItems(playlistId);
-    QVector<int> sorted = positions;
-    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
-    for (const int position : sorted) {
-        if (position >= 0 && position < items.size()) {
-            items.removeAt(position);
+    if (playlistId == favoritesPlaylistId())
+        return;
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("SELECT id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id"));
+    query.addBindValue(playlistId);
+    query.exec();
+    QVector<qint64> entries;
+    while (query.next())
+        entries << query.value(0).toLongLong();
+    query.prepare(QStringLiteral("DELETE FROM playlist_items WHERE id=?"));
+    for (const int at : positions)
+        if (at >= 0 && at < entries.size()) {
+            query.bindValue(0, entries[at]);
+            if (!query.exec()) {
+                m_db.rollback();
+                return;
+            }
+        }
+    query.prepare(QStringLiteral("SELECT id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id"));
+    query.addBindValue(playlistId);
+    query.exec();
+    entries.clear();
+    while (query.next())
+        entries << query.value(0).toLongLong();
+    query.prepare(QStringLiteral("UPDATE playlist_items SET sort_order=? WHERE id=?"));
+    for (int i = 0; i < entries.size(); ++i) {
+        query.bindValue(0, i);
+        query.bindValue(1, entries[i]);
+        if (!query.exec()) {
+            m_db.rollback();
+            return;
         }
     }
-    setPlaylistItems(playlistId, items);
+    m_db.commit();
+}
+
+void Database::reorderPlaylist(qint64 id, int from, int to)
+{
+    if (id == favoritesPlaylistId())
+        return;
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral("SELECT id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id"));
+    query.addBindValue(id);
+    query.exec();
+    QVector<qint64> entries;
+    while (query.next())
+        entries << query.value(0).toLongLong();
+    if (from < 0 || to < 0 || from >= entries.size() || to >= entries.size()) {
+        m_db.rollback();
+        return;
+    }
+    entries.move(from, to);
+    query.prepare(QStringLiteral("UPDATE playlist_items SET sort_order=? WHERE id=?"));
+    for (int i = 0; i < entries.size(); ++i) {
+        query.bindValue(0, i);
+        query.bindValue(1, entries[i]);
+        if (!query.exec()) {
+            m_db.rollback();
+            return;
+        }
+    }
+    m_db.commit();
 }
 
 QString Database::setting(const QString& key, const QString& fallback) const
@@ -732,3 +1053,36 @@ void Database::setSetting(const QString& key, const QString& value)
 }
 
 } // namespace echo
+
+namespace echo {
+qint64 Database::createPlaylistWithItems(const QString& name, const QVector<qint64>& ids)
+{
+    QMutexLocker locker(&writeLock());
+    if (!m_db.transaction())
+        return 0;
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "INSERT INTO playlists(name,sort_order) VALUES (?,(SELECT COALESCE(MAX(sort_order),0)+1 FROM playlists))"));
+    query.addBindValue(name);
+    if (!query.exec()) {
+        m_db.rollback();
+        return 0;
+    }
+    const qint64 id = query.lastInsertId().toLongLong();
+    query.prepare(QStringLiteral("INSERT INTO playlist_items(playlist_id,track_id,sort_order) VALUES (?,?,?)"));
+    for (int i = 0; i < ids.size(); ++i) {
+        query.bindValue(0, id);
+        query.bindValue(1, ids[i]);
+        query.bindValue(2, i);
+        if (!query.exec()) {
+            m_db.rollback();
+            return 0;
+        }
+    }
+    if (!m_db.commit()) {
+        m_db.rollback();
+        return 0;
+    }
+    return id;
+}
+}

@@ -2,6 +2,8 @@
 
 #include <QCryptographicHash>
 #include <QFileInfo>
+#include <QFile>
+#include <QTimer>
 #include <QDateTime>
 #include <QJsonObject>
 #include <QtConcurrent>
@@ -138,7 +140,8 @@ QString Player::normalizationStatus() const
 
 void Player::scheduleAnalysis()
 {
-    if (!m_normalization || m_analysisPending) return;
+    if (!m_normalization || m_analysisPending || m_trashing)
+        return;
     // Prioritize the audible track, then follow the queue. Duplicate files/ranges share a cache entry.
     QVector<Entry> entries;
     if (m_index >= 0 && m_index < m_queue.size()) entries.push_back(m_queue[m_index]);
@@ -156,7 +159,7 @@ void Player::scheduleAnalysis()
             m_analysisPending = false;
             const auto result = m_analysis.result();
             // Discard a result if the file changed while it was being decoded.
-            if (key == loudnessKey(track)) {
+            if (!m_cancelAnalysis.load() && key == loudnessKey(track)) {
                 if (result.valid) {
                     m_loudness.insert(key, result);
                     QJsonObject json;
@@ -181,45 +184,135 @@ void Player::scheduleAnalysis()
     }
 }
 
-void Player::playTracks(const QVector<qint64>& ids, int startIndex, bool albumContext)
+bool Player::replaceContextQueue() const
 {
-    m_queue.clear();
-    m_history.clear();
-    for (const qint64 id : ids) {
-        if (id <= 0) {
-            continue;
+    return m_library->setting(QStringLiteral("replace_context_queue"), QStringLiteral("1")) != QLatin1String("0");
+}
+void Player::setReplaceContextQueue(bool enabled)
+{
+    m_library->setSetting(QStringLiteral("replace_context_queue"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    emit changed();
+}
+bool Player::playable(qint64 id) const
+{
+    const auto track = m_library->track(id);
+    const QFileInfo info(track.path);
+    return track.id && !track.missing && info.isFile() && info.isReadable();
+}
+int Player::nextPlayable(int from, bool wrap) const
+{
+    for (int offset = 0; offset < m_queue.size(); ++offset) {
+        int at = from + offset;
+        if (at >= m_queue.size()) {
+            if (!wrap)
+                break;
+            at %= m_queue.size();
         }
-        Entry entry;
-        entry.token = m_nextToken++;
-        entry.trackId = id;
-        entry.albumContext = albumContext;
-        m_queue.push_back(entry);
+        if (at >= 0 && playable(m_queue[at].trackId))
+            return at;
     }
-    if (m_queue.isEmpty()) {
-        emit changed();
+    return -1;
+}
+void Player::activateQueueRow(int index)
+{
+    ++m_requestRevision;
+    if (index >= 0 && index < m_queue.size()) {
+        if (!playable(m_queue[index].trackId)) {
+            emit trackUnavailable(m_queue[index].trackId);
+            return;
+        }
+        playIndex(index, false, 0);
+    }
+}
+void Player::playSinglePreservingQueue(qint64 id)
+{
+    ++m_requestRevision;
+    if (!playable(id)) {
+        emit trackUnavailable(id);
         return;
     }
-    if (m_shuffle && m_queue.size() > 1) {
-        const Entry start = m_queue[std::clamp(startIndex, 0, static_cast<int>(m_queue.size() - 1))];
-        QVector<Entry> rest;
-        for (const Entry& entry : m_queue) {
-            if (entry.token != start.token) {
-                rest.push_back(entry);
-            }
-        }
-        for (int index = rest.size() - 1; index > 0; --index) {
-            const int swap = QRandomGenerator::global()->bounded(index + 1);
-            std::swap(rest[index], rest[swap]);
-        }
-        m_queue = {start};
-        m_queue += rest;
-        startIndex = 0;
+    if (m_index >= 0 && m_index < m_queue.size() && m_queue[m_index].trackId == id) {
+        playIndex(m_index, false, 0);
+        return;
     }
-    playIndex(std::clamp(startIndex, 0, static_cast<int>(m_queue.size() - 1)), false, 0);
+    rememberHistory();
+    const int at = std::clamp(m_index + 1, 0, static_cast<int>(m_queue.size()));
+    Entry entry;
+    entry.trackId = id;
+    entry.token = m_nextToken++;
+    m_queue.insert(at, entry);
+    playIndex(at, false, 0);
+}
+void Player::playTracks(const QVector<qint64>& ids, int startIndex, bool albumContext, std::optional<bool> shuffle)
+{
+    const auto revision = ++m_requestRevision;
+    const auto tracks = m_library->tracks(ids);
+    auto* watcher = new QFutureWatcher<QSet<int>>(this);
+    connect(watcher, &QFutureWatcher<QSet<int>>::finished, this,
+        [this, watcher, revision, ids, startIndex, albumContext, shuffle]() mutable {
+            const auto valid = watcher->result();
+            watcher->deleteLater();
+            if (revision != m_requestRevision)
+                return;
+            QVector<Entry> replacement;
+            int mappedIndex = 0, skipped = 0;
+            for (int i = 0; i < ids.size(); ++i) {
+                if (!valid.contains(i)) {
+                    ++skipped;
+                    continue;
+                }
+                if (i < startIndex)
+                    ++mappedIndex;
+                Entry entry;
+                entry.token = m_nextToken++;
+                entry.trackId = ids[i];
+                entry.albumContext = albumContext;
+                replacement.push_back(entry);
+            }
+            if (replacement.isEmpty()) {
+                emit playbackMessage(QStringLiteral("没有可播放的歌曲，已保留当前队列。"));
+                return;
+            }
+            if (shuffle)
+                m_shuffle = *shuffle;
+            m_queue = std::move(replacement);
+            m_history.clear();
+            startIndex = std::min(mappedIndex, static_cast<int>(m_queue.size() - 1));
+            if (skipped)
+                emit playbackMessage(QStringLiteral("已跳过 %1 首不可用歌曲").arg(skipped));
+            if (m_shuffle && m_queue.size() > 1) {
+                const Entry start = m_queue[std::clamp(startIndex, 0, static_cast<int>(m_queue.size() - 1))];
+                QVector<Entry> rest;
+                for (const Entry& entry : m_queue) {
+                    if (entry.token != start.token) {
+                        rest.push_back(entry);
+                    }
+                }
+                for (int index = rest.size() - 1; index > 0; --index) {
+                    const int swap = QRandomGenerator::global()->bounded(index + 1);
+                    std::swap(rest[index], rest[swap]);
+                }
+                m_queue = { start };
+                m_queue += rest;
+                startIndex = 0;
+            }
+            playIndex(std::clamp(startIndex, 0, static_cast<int>(m_queue.size() - 1)), false, 0);
+        });
+    watcher->setFuture(QtConcurrent::run([tracks] {
+        QSet<int> valid;
+        for (int i = 0; i < tracks.size(); ++i) {
+            const auto& track = tracks[i];
+            const QFileInfo file(track.path);
+            if (track.id && !track.missing && file.isFile() && file.isReadable())
+                valid.insert(i);
+        }
+        return valid;
+    }));
 }
 
 void Player::toggle()
 {
+    ++m_requestRevision;
     if (m_engine->state() == AudioEngine::State::Playing) {
         m_engine->pause();
     } else if (m_engine->state() == AudioEngine::State::Paused) {
@@ -232,6 +325,7 @@ void Player::toggle()
 
 void Player::next()
 {
+    ++m_requestRevision;
     if (m_queue.isEmpty()) {
         return;
     }
@@ -254,6 +348,7 @@ void Player::next()
 
 void Player::previous()
 {
+    ++m_requestRevision;
     if (m_engine->positionMs() > 3000) {
         m_engine->seekMs(0);
         emit changed();
@@ -376,6 +471,7 @@ void Player::enqueue(const QVector<qint64>& ids)
 
 void Player::moveQueue(int from, int to)
 {
+    ++m_requestRevision;
     if (from < 0 || to < 0 || from >= m_queue.size() || to >= m_queue.size() || from == to) {
         return;
     }
@@ -393,6 +489,7 @@ void Player::moveQueue(int from, int to)
 
 void Player::removeQueueRow(int row)
 {
+    ++m_requestRevision;
     if (row < 0 || row >= m_queue.size()) {
         return;
     }
@@ -417,6 +514,7 @@ void Player::removeQueueRow(int row)
 
 void Player::clearUpcoming()
 {
+    ++m_requestRevision;
     if (m_index < 0) {
         m_queue.clear();
     } else if (m_index + 1 < m_queue.size()) {
@@ -512,20 +610,25 @@ void Player::playIndex(int index, bool resumePosition, qint64 positionMs)
     if (index < 0 || index >= m_queue.size()) {
         return;
     }
+    if (!playable(m_queue[index].trackId)) {
+        const int candidate = nextPlayable(index + 1, m_repeat == Repeat::All);
+        if (candidate < 0) {
+            m_engine->stop();
+            emit playbackMessage(QStringLiteral("队列中没有更多可播放歌曲"));
+            return;
+        }
+        index = candidate;
+    }
+    ++m_playRevision;
     m_index = index;
     PlaybackItem current = itemFor(m_queue[index]);
     if (resumePosition) {
         current.startMs += positionMs;
     }
     PlaybackItem upcoming;
-    if (index + 1 < m_queue.size()) {
-        upcoming = itemFor(m_queue[index + 1]);
-    } else if (m_repeat == Repeat::All && m_queue.size() > 1) {
-        upcoming = itemFor(m_queue[0]);
-    } else if (m_repeat == Repeat::One) {
-        upcoming = itemFor(m_queue[index]);
-        upcoming.token = m_nextToken++;
-    }
+    const int next = m_repeat == Repeat::One ? index : nextPlayable(index + 1, m_repeat == Repeat::All);
+    if (next >= 0)
+        upcoming = itemFor(m_queue[next]);
     m_engine->setVolume(m_volume);
     m_engine->play(current, upcoming);
     emit changed();
@@ -536,17 +639,10 @@ void Player::queueUpcoming()
     if (m_index < 0 || m_index >= m_queue.size()) {
         return;
     }
-    if (m_index + 1 < m_queue.size()) {
-        m_engine->setUpcoming(itemFor(m_queue[m_index + 1]));
-    } else if (m_repeat == Repeat::All && !m_queue.isEmpty()) {
-        m_engine->setUpcoming(itemFor(m_queue[0]));
-    } else if (m_repeat == Repeat::One) {
-        PlaybackItem again = itemFor(m_queue[m_index]);
-        again.token = m_nextToken++;
-        m_engine->setUpcoming(again);
-    } else {
-        m_engine->setUpcoming({});
-    }
+    const int next = m_repeat == Repeat::One && playable(m_queue[m_index].trackId)
+        ? m_index
+        : nextPlayable(m_index + 1, m_repeat == Repeat::All);
+    m_engine->setUpcoming(next >= 0 ? itemFor(m_queue[next]) : PlaybackItem { });
 }
 
 PlaybackItem Player::itemFor(const Entry& entry) const
@@ -595,3 +691,81 @@ void Player::rememberHistory()
 }
 
 } // namespace echo
+
+namespace echo {
+void Player::trashFiles(const QStringList& requestedPaths)
+{
+    if (m_trashing || requestedPaths.isEmpty())
+        return;
+    QStringList paths;
+    for (const auto& path : requestedPaths)
+        if (!paths.contains(normalizedMusicPath(path)))
+            paths << normalizedMusicPath(path);
+    ++m_requestRevision;
+    m_trashing = true;
+    const auto oldIndex = m_index;
+    const auto oldPosition = positionMs();
+    const auto oldState = state();
+    const auto revision = m_playRevision;
+    const auto currentPath = currentTrack().path;
+    m_cancelAnalysis.store(true);
+    const int upcoming = nextPlayable(oldIndex + 1, m_repeat == Repeat::All);
+    const bool releasePlayback = paths.contains(currentPath)
+        || (upcoming >= 0 && paths.contains(m_library->track(m_queue[upcoming].trackId).path));
+    auto perform = [this, paths, oldIndex, oldPosition, oldState, revision, currentPath, releasePlayback] {
+        using Results = QVector<QPair<QString, QString>>;
+        auto* watcher = new QFutureWatcher<Results>(this);
+        connect(watcher, &QFutureWatcher<Results>::finished, this,
+            [this, watcher, oldIndex, oldPosition, oldState, revision, currentPath, releasePlayback] {
+                const auto results = watcher->result();
+                watcher->deleteLater();
+                QStringList errors, successes;
+                bool removedCurrent = false;
+                for (const auto& result : results) {
+                    if (result.second.isEmpty()) {
+                        successes << result.first;
+                        m_library->markMissingPath(result.first);
+                        removedCurrent |= result.first == currentPath;
+                    } else
+                        errors << result.first + QStringLiteral("：") + result.second;
+                }
+                m_trashing = false;
+                m_cancelAnalysis.store(false);
+                if (releasePlayback && revision == m_playRevision && oldIndex >= 0 && oldIndex < m_queue.size()) {
+                    const int resume = removedCurrent ? nextPlayable(oldIndex + 1, m_repeat == Repeat::All) : oldIndex;
+                    if (resume >= 0 && oldState != AudioEngine::State::Stopped) {
+                        playIndex(resume, !removedCurrent, oldPosition);
+                        if (oldState == AudioEngine::State::Paused)
+                            m_engine->pause();
+                    }
+                }
+                scheduleAnalysis();
+                emit trashFinished(QStringLiteral("%1 个文件已移到废纸篓，%2 个文件未能处理。歌曲引用会保留。")
+                                       .arg(successes.size())
+                                       .arg(errors.size())
+                    + (successes.isEmpty() ? QString() : QStringLiteral("\n已移到废纸篓：\n") + successes.join(u'\n'))
+                    + (errors.isEmpty() ? QString() : QStringLiteral("\n未能处理：\n") + errors.join(u'\n')));
+            });
+        watcher->setFuture(QtConcurrent::run([paths] {
+            Results results;
+            for (const auto& path : paths) {
+                QFile file(path);
+                const bool ok = file.moveToTrash();
+                results.push_back({ path, ok ? QString() : file.errorString() });
+            }
+            return results;
+        }));
+    };
+    auto afterRelease = [this, perform] {
+        if (m_analysis.isRunning())
+            connect(&m_analysis, &QFutureWatcher<LoudnessResult>::finished, this, perform, Qt::SingleShotConnection);
+        else
+            perform();
+    };
+    if (releasePlayback) {
+        connect(m_engine, &AudioEngine::filesReleased, this, afterRelease, Qt::SingleShotConnection);
+        m_engine->releaseFiles();
+    } else
+        QTimer::singleShot(0, this, afterRelease);
+}
+}

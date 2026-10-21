@@ -42,6 +42,7 @@ protected:
     void dropEvent(QDropEvent* event) override;
 
 private:
+    void addMusicFolder();
     void buildMenus();
     void refreshViews();
     void showLibraryPage(int index);
@@ -50,6 +51,9 @@ private:
     void addToPlaylist(const QVector<qint64>& ids);
     void showInfo(qint64 id);
     void reveal(qint64 id);
+    void showUnavailable(qint64 id);
+    void locateTrack(qint64 id);
+    void trashTracks(const QVector<qint64>& ids);
     void promptPlaylist(qint64 folderId);
     void promptFolder();
     [[nodiscard]] class TrackTable* activeTable() const;

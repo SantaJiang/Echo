@@ -9,6 +9,7 @@
 #include <QAbstractItemView>
 #include <QHeaderView>
 #include <QMenu>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -214,6 +215,8 @@ TrackModel::TrackModel(QObject* parent)
 
 void TrackModel::setTracks(QVector<Track> tracks)
 {
+    if (tracks == m_tracks)
+        return;
     beginResetModel();
     m_tracks = std::move(tracks);
     endResetModel();
@@ -284,6 +287,8 @@ QVariant TrackModel::data(const QModelIndex& index, int role) const
     if (role == Qt::UserRole + 3) {
         return track.id == m_playingId && m_audible;
     }
+    if (role == Qt::ToolTipRole)
+        return track.path + (track.missing ? QStringLiteral("\n暂时无法播放：找不到文件或来源不可用") : QString());
     if (role == Qt::UserRole + 4) return m_favorites.contains(track.id);
     if (role == Qt::AccessibleDescriptionRole && index.column() == 1)
         return m_favorites.contains(track.id) ? QStringLiteral("已喜欢，取消喜欢") : QStringLiteral("添加到我喜欢的");
@@ -369,6 +374,10 @@ TrackTable::TrackTable(QWidget* parent)
         if (!index.isValid()) {
             return;
         }
+        if (!selectionModel()->isRowSelected(index.row(), { })) {
+            selectionModel()->clearSelection();
+            selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
         QVector<qint64> ids;
         const auto rows = selectionModel()->selectedRows();
         for (const QModelIndex& row : rows) {
@@ -377,15 +386,32 @@ TrackTable::TrackTable(QWidget* parent)
         if (ids.isEmpty()) {
             ids.push_back(m_model->trackAt(index.row()).id);
         }
+        const auto clicked = m_model->trackAt(index.row());
         QMenu menu(this);
-        menu.addAction(QStringLiteral("播放"), this, [this, index] { emit tracksActivated(m_model->ids(), index.row()); });
+        menu.addAction(QStringLiteral("播放"), this, [this, clicked] {
+            for (int row = 0; row < m_model->rowCount(); ++row) {
+                const auto candidate = m_model->trackAt(row);
+                if (clicked.listEntryId ? candidate.listEntryId == clicked.listEntryId : candidate.id == clicked.id) {
+                    emit tracksActivated(m_model->ids(), row);
+                    return;
+                }
+            }
+        });
         menu.addAction(QStringLiteral("下一首播放"), this, [this, ids] { emit playNextRequested(ids); });
         menu.addAction(QStringLiteral("加入待播"), this, [this, ids] { emit enqueueRequested(ids); });
         menu.addAction(QStringLiteral("加入歌单"), this, [this, ids] { emit playlistRequested(ids); });
         menu.addSeparator();
-        menu.addAction(QStringLiteral("歌曲信息"), this, [this, index] { emit infoRequested(m_model->trackAt(index.row()).id); });
-        menu.addAction(QStringLiteral("在文件夹中显示"), this, [this, index] { emit revealRequested(m_model->trackAt(index.row()).id); });
-        menu.addAction(m_favoritesContext ? QStringLiteral("取消喜欢") : QStringLiteral("移除"), this, [this, ids] { emit removeRequested(ids); });
+        menu.addAction(QStringLiteral("歌曲信息"), this, [this, clicked] { emit infoRequested(clicked.id); });
+        menu.addAction(QStringLiteral("在文件夹中显示"), this, [this, clicked] { emit revealRequested(clicked.id); });
+        if (m_playlistContext || m_favoritesContext)
+            menu.addAction(m_favoritesContext ? QStringLiteral("取消喜欢") : QStringLiteral("从播放列表移除"), this,
+                [this, ids] { emit removeRequested(ids); });
+        if (m_model->trackAt(index.row()).missing) {
+            menu.addAction(QStringLiteral("重新检查"), this, [this, clicked] { emit recheckRequested(clicked.id); });
+            menu.addAction(QStringLiteral("重新定位…"), this, [this, clicked] { emit locateRequested(clicked.id); });
+        }
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("移到废纸篓…"), this, [this, ids] { emit trashRequested(ids); });
         menu.exec(viewport()->mapToGlobal(position));
     });
 }
@@ -397,15 +423,22 @@ void TrackTable::setTracks(QVector<Track> tracks)
 
 void TrackTable::setTracksPreservingView(QVector<Track> tracks)
 {
+    auto key = [this](const Track& track) {
+        return !m_favoritesContext && track.listEntryId ? -track.listEntryId : track.id;
+    };
     QSet<qint64> selected;
-    for (const auto& row : selectionModel()->selectedRows()) selected.insert(m_model->trackAt(row.row()).id);
-    const qint64 current = m_model->trackAt(currentIndex().row()).id;
+    for (const auto& row : selectionModel()->selectedRows())
+        selected.insert(key(m_model->trackAt(row.row())));
+    const qint64 current = key(m_model->trackAt(currentIndex().row()));
     const int scroll = verticalScrollBar()->value();
     setTracks(std::move(tracks));
+    selectionModel()->clearSelection();
     for (int row = 0; row < m_model->rowCount(); ++row) {
-        const qint64 id = m_model->trackAt(row).id;
-        if (selected.contains(id)) selectionModel()->select(m_model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
-        if (id == current) selectionModel()->setCurrentIndex(m_model->index(row, 0), QItemSelectionModel::NoUpdate);
+        const auto id = key(m_model->trackAt(row));
+        if (selected.contains(id))
+            selectionModel()->select(m_model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        if (id == current)
+            selectionModel()->setCurrentIndex(m_model->index(row, 0), QItemSelectionModel::NoUpdate);
     }
     verticalScrollBar()->setValue(scroll);
 }
@@ -565,3 +598,15 @@ void TrackTable::resizeColumnBoundary(int column, int delta)
 }
 
 } // namespace echo
+
+namespace echo {
+void TrackTable::keyPressEvent(QKeyEvent* event)
+{
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && currentIndex().isValid()) {
+        emit tracksActivated(m_model->ids(), currentIndex().row());
+        event->accept();
+        return;
+    }
+    QTableView::keyPressEvent(event);
+}
+}

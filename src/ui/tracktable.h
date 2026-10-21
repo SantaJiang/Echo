@@ -38,6 +38,10 @@ public:
     void setTracks(QVector<Track> tracks);
     void setTracksPreservingView(QVector<Track> tracks);
     void setFavorites(const QSet<qint64>& ids) { m_model->setFavorites(ids); }
+    void setPlaylistContext(bool enabled)
+    {
+        m_playlistContext = enabled;
+    }
     void setFavoritesContext(bool enabled) { m_favoritesContext = enabled; }
     [[nodiscard]] QRect favoriteRect(int row) const;
     void setPlayingId(qint64 id, bool playing);
@@ -55,9 +59,13 @@ signals:
     void infoRequested(qint64 id);
     void revealRequested(qint64 id);
     void removeRequested(const QVector<qint64>& ids);
+    void trashRequested(const QVector<qint64>& ids);
+    void recheckRequested(qint64 id);
+    void locateRequested(qint64 id);
     void columnWidthsChanged(const QVector<int>& widths);
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -73,6 +81,7 @@ private:
     int m_hoverRow = -1;
     qint64 m_pressedFavorite = 0;
     bool m_favoritesContext = false;
+    bool m_playlistContext = false;
     QVector<int> m_preferredWidths {46, 440, 280, 280, 72};
 };
 

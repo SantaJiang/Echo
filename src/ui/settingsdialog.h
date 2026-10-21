@@ -13,6 +13,7 @@ public:
 private:
     void refresh();
     Player* m_player;
+    QCheckBox* m_replaceQueue;
     QCheckBox* m_normalize;
     QLabel* m_status;
     QCheckBox* m_spatial = nullptr;

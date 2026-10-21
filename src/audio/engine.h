@@ -23,6 +23,7 @@ public:
     void pause();
     void resume();
     void stop();
+    void releaseFiles();
     void seekMs(qint64 positionMs);
     void setVolume(float slider);
     void setExclusive(bool exclusive);
@@ -35,6 +36,7 @@ public:
     [[nodiscard]] DeviceFormat deviceFormat() const;
 
 signals:
+    void filesReleased();
     void spatialStatusChanged(const QString& status);
     void stateChanged(int state);
     void trackStarted(qint64 token);

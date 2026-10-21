@@ -9,6 +9,8 @@ namespace echo {
 struct Track {
     qint64 id = 0;
     qint64 rootId = 0;
+    qint64 listEntryId = 0;
+    int playlistPosition = -1;
     QString path;
     QString folder;
     QString title;
@@ -41,6 +43,7 @@ struct Track {
     qint64 cueStartMs = -1;
     qint64 cueEndMs = -1;
 
+    bool operator==(const Track&) const = default;
     [[nodiscard]] QString displayTitle() const;
     [[nodiscard]] QString displayArtist() const;
     [[nodiscard]] QString displayAlbum() const;
@@ -66,6 +69,15 @@ struct Artist {
 struct LibraryRoot {
     qint64 id = 0;
     QString path;
+    QString name;
+    QString status = QStringLiteral("available");
+    QString mountPath;
+    QString message;
+    qint64 revision = 0;
+    qint64 checkedAt = 0;
+    bool active = true;
+    int tracks = 0;
+    int availableTracks = 0;
 };
 
 struct Playlist {
@@ -98,6 +110,7 @@ struct TagEdit {
     QString artworkMime = QStringLiteral("image/jpeg");
 };
 
+[[nodiscard]] QString normalizedMusicPath(const QString& path);
 [[nodiscard]] QString primaryArtistName(const QString& artist);
 [[nodiscard]] QString makeAlbumKey(const QString& albumArtist, const QString& artist, const QString& album);
 [[nodiscard]] QString makeArtistKey(const QString& artist);

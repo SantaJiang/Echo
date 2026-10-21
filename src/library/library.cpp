@@ -11,6 +11,11 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QDateTime>
+#include <QGuiApplication>
+#include <QFutureWatcher>
+#include <QtConcurrent>
+#include <QUrl>
 
 namespace echo {
 namespace {
@@ -48,38 +53,27 @@ Library::Library(QObject* parent)
     connect(this, &Library::changed, this, &Library::refreshFavorites);
     m_rescanTimer.setSingleShot(true);
     m_rescanTimer.setInterval(800);
-    m_suppressTimer.setSingleShot(true);
-    connect(&m_suppressTimer, &QTimer::timeout, this, [this] {
-        m_suppressWatch = false;
-        if (m_rescanQueued && !m_scanning) {
-            m_rescanQueued = false;
-            m_rescanTimer.start();
-        }
-    });
-    connect(&m_rescanTimer, &QTimer::timeout, this, [this] {
-        if (m_pendingRoot <= 0 || !m_database) {
-            return;
-        }
-        for (const LibraryRoot& root : m_database->roots()) {
-            if (root.id == m_pendingRoot) {
-                scanRoot(root.id, root.path);
-                break;
-            }
-        }
-    });
+    m_maxWaitTimer.setSingleShot(true);
+    m_maxWaitTimer.setInterval(3000);
+    m_verifyTimer.setInterval(5 * 60 * 1000);
+    connect(&m_rescanTimer, &QTimer::timeout, this, &Library::startNextScan);
+    connect(&m_maxWaitTimer, &QTimer::timeout, this, &Library::startNextScan);
+    connect(&m_verifyTimer, &QTimer::timeout, this, &Library::rescanAll);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString& path) {
-        if (!m_database || m_suppressWatch || m_scanning) {
-            m_rescanQueued = true;
-            return;
-        }
-        for (const LibraryRoot& root : m_database->roots()) {
-            if (path == root.path || path.startsWith(root.path + QLatin1Char('/'))) {
-                m_pendingRoot = root.id;
+        for (const auto& root : roots())
+            if (path == root.path) {
+                m_pendingRoots.insert(root.id);
                 m_rescanTimer.start();
-                break;
+                if (!m_maxWaitTimer.isActive())
+                    m_maxWaitTimer.start();
             }
-        }
     });
+    if (qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive)
+                rescanAll();
+        });
+    }
 }
 
 Library::~Library()
@@ -106,50 +100,285 @@ bool Library::open(QString* error)
     m_scanner->moveToThread(m_scanThread);
     connect(m_scanThread, &QThread::finished, m_scanner, &QObject::deleteLater);
     connect(m_scanner, &Scanner::progress, this, [this](qint64, int done, int total) { emit scanProgress(done, total); });
-    connect(m_scanner, &Scanner::finished, this, [this](qint64) {
-        m_scanning = false;
-        suppressWatch(1500);
-        watchRoots();
-        emit changed();
-        emit scanFinished();
+    connect(m_scanner, &Scanner::retryRequested, this,
+        [this](qint64 id) { QTimer::singleShot(3000, this, [this, id] { refreshRoot(id); }); });
+    connect(m_scanner, &Scanner::statistics, this, &Library::scanStatistics);
+    connect(m_scanner, &Scanner::warning, this, &Library::scanWarning);
+    connect(m_scanner, &Scanner::finished, this, [this](qint64, bool changed) { finishScan(changed); });
+    connect(m_scanner, &Scanner::failed, this, [this](const QString& error) {
+        emit scanFailed(error);
+        finishScan();
     });
-    connect(m_scanner, &Scanner::failed, this, &Library::scanFailed);
     m_scanThread->start();
     watchRoots();
+    m_verifyTimer.start();
+    QTimer::singleShot(0, this, &Library::rescanAll);
     return true;
 }
 
-void Library::addRoot(const QString& path)
+qint64 Library::addRoot(const QString& path)
 {
-    const QString absolute = QFileInfo(path).absoluteFilePath();
-    if (!QDir(absolute).exists() || !m_database) {
-        return;
-    }
+    const QString absolute = QFileInfo(path).canonicalFilePath();
+    if (absolute.isEmpty() || !QFileInfo(absolute).isDir() || !m_database)
+        return 0;
+    for (const auto& existing : roots())
+        if (existing.path == absolute) {
+            refreshRoot(existing.id);
+            return existing.id;
+        }
     const qint64 id = m_database->addRoot(absolute);
+    watchRoots();
+    emit sourceChanged(id);
     emit changed();
-    scanRoot(id, absolute);
+    refreshRoot(id);
+    return id;
 }
 
 void Library::removeRoot(qint64 id)
 {
-    if (!m_database) {
+    if (!m_database)
         return;
-    }
+    m_pendingRoots.remove(id);
     m_database->removeRoot(id);
     watchRoots();
+    emit sourceChanged(id);
     emit changed();
 }
 
+LibraryRoot Library::root(qint64 id) const
+{
+    return m_database ? m_database->root(id) : LibraryRoot { };
+}
 QVector<LibraryRoot> Library::roots() const
 {
-    return m_database ? m_database->roots() : QVector<LibraryRoot> {};
+    return m_database ? m_database->roots() : QVector<LibraryRoot> { };
+}
+
+void Library::refreshRoot(qint64 id)
+{
+    const auto source = root(id);
+    if (!source.id || !source.active)
+        return;
+    m_pendingRoots.insert(id);
+    if (!m_scanning)
+        startNextScan();
 }
 
 void Library::rescanAll()
 {
-    for (const LibraryRoot& root : roots()) {
-        scanRoot(root.id, root.path);
+    refreshLooseFiles();
+    for (const auto& source : roots())
+        m_pendingRoots.insert(source.id);
+    if (!m_scanning)
+        startNextScan();
+}
+
+void Library::refreshLooseFiles()
+{
+    if (!m_database || m_checkingLoose)
+        return;
+    auto loose = m_database->queryTracks(
+        QStringLiteral("WHERE NOT EXISTS (SELECT 1 FROM roots r WHERE r.id=tracks.root_id AND r.active=1)"), { }, { });
+    if (loose.isEmpty())
+        return;
+    m_checkingLoose = true;
+    auto* watcher = new QFutureWatcher<QVector<Track>>(this);
+    connect(watcher, &QFutureWatcher<QVector<Track>>::finished, this, [this, watcher] {
+        m_checkingLoose = false;
+        if (m_database->updateLooseAvailability(watcher->result()))
+            emit changed();
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([loose]() mutable {
+        for (auto& track : loose) {
+            const QFileInfo file(track.path);
+            track.missing = !file.isFile() || !file.isReadable()
+                || (!track.cuePath.isEmpty() && track.cuePath != track.path && !QFileInfo::exists(track.cuePath));
+        }
+        return loose;
+    }));
+}
+
+void Library::startNextScan()
+{
+    if (m_scanning || !m_scanner || m_pendingRoots.isEmpty())
+        return;
+    m_rescanTimer.stop();
+    m_maxWaitTimer.stop();
+    auto pending = m_pendingRoots.values();
+    std::sort(pending.begin(), pending.end());
+    const auto next = std::upper_bound(pending.begin(), pending.end(), m_lastServedRoot);
+    const auto id = next == pending.end() ? pending.front() : *next;
+    m_lastServedRoot = id;
+    m_pendingRoots.remove(id);
+    const auto source = root(id);
+    if (!source.id || !source.active) {
+        QTimer::singleShot(0, this, &Library::startNextScan);
+        return;
     }
+    scanRoot(id, source.path);
+}
+
+void Library::finishScan(bool changed)
+{
+    const auto id = m_activeRoot;
+    m_scanning = false;
+    m_activeRoot = 0;
+    watchRoots();
+    if (changed)
+        emit sourceChanged(id);
+    emit scanFinished();
+    QTimer::singleShot(0, this, &Library::startNextScan);
+}
+
+bool Library::relocateRoot(qint64 id, const QString& path, QString* error)
+{
+    const auto source = root(id);
+    const QString target = QFileInfo(path).canonicalFilePath();
+    if (!source.id || !QFileInfo(target).isDir()) {
+        if (error)
+            *error = QStringLiteral("请选择存在的文件夹");
+        return false;
+    }
+    for (const auto& other : roots())
+        if (other.id != id && other.path == target) {
+            if (error)
+                *error = QStringLiteral("目标文件夹已添加，请选择其他目录");
+            return false;
+        }
+    // Check every match and unique-key conflict before moving the source. Do not guess by song title.
+    QVector<QPair<qint64, QString>> matches;
+    QStringList conflicts;
+    for (const auto& track : folderTracks(id)) {
+        const QString candidate = QDir(target).filePath(QFileInfo(track.path).fileName());
+        const QFileInfo info(candidate);
+        if (!info.isFile() || info.size() != track.fileSize || info.lastModified().toMSecsSinceEpoch() != track.mtime)
+            continue;
+        bool conflict = false;
+        for (const auto& existing : tracksAtPath(candidate))
+            if (existing.id != track.id && existing.cueStartMs == track.cueStartMs)
+                conflict = true;
+        if (conflict)
+            conflicts << candidate;
+        else
+            matches.push_back({ track.id, candidate });
+    }
+    if (!conflicts.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("目标已有歌曲记录，未更改：\n") + conflicts.join(u'\n');
+        return false;
+    }
+    if (!m_database->updateRoot(id, target, matches, error))
+        return false;
+    watchRoots();
+    emit sourceChanged(id);
+    emit changed();
+    refreshRoot(id);
+    return true;
+}
+
+bool Library::relocateTrack(qint64 id, const QString& path, QString* error)
+{
+    const QString absolute = normalizedMusicPath(path);
+    if (!QFileInfo(absolute).isFile() || !isAudioFile(absolute)) {
+        if (error)
+            *error = QStringLiteral("请选择存在的音乐文件");
+        return false;
+    }
+    const auto previous = track(id);
+    if (!previous.id) {
+        if (error)
+            *error = QStringLiteral("找不到原歌曲记录");
+        return false;
+    }
+    auto tags = readTags(absolute);
+    if (!tags.ok) {
+        if (error)
+            *error = QStringLiteral("无法读取目标音乐文件");
+        return false;
+    }
+    if (!m_database->relocateTrack(id, absolute, error)) {
+        if (error && error->contains(QStringLiteral("UNIQUE")))
+            *error = QStringLiteral("目标文件已有歌曲记录，未更改原有引用。请选择其他文件。");
+        return false;
+    }
+    const auto moved = track(id);
+    if (previous.cueStartMs < 0) {
+        tags.track.rootId = moved.rootId;
+        tags.track.artworkHash = m_artwork->store(tags.artwork);
+        m_database->upsertTrack(tags.track);
+    }
+    emit changed();
+    const auto updated = track(id);
+    if (updated.rootId)
+        refreshRoot(updated.rootId);
+    return true;
+}
+
+QVector<Track> Library::tracksAtPath(const QString& path) const
+{
+    return m_database->queryTracks(QStringLiteral("WHERE path=?"), { normalizedMusicPath(path) }, { });
+}
+
+void Library::recheckTrack(qint64 id)
+{
+    const auto item = track(id);
+    if (item.rootId && root(item.rootId).active) {
+        refreshRoot(item.rootId);
+        return;
+    }
+    if (!QFileInfo(item.path).isFile()) {
+        m_database->markPathMissing(item.path);
+        emit changed();
+        return;
+    }
+    auto updated = item;
+    updated.missing = false;
+    m_database->upsertTrack(updated);
+    emit changed();
+}
+
+void Library::markMissingPath(const QString& path)
+{
+    m_database->markPathMissing(normalizedMusicPath(path));
+    const auto parent = QFileInfo(path).absolutePath();
+    for (const auto& source : roots())
+        if (source.path == parent)
+            refreshRoot(source.id);
+    emit changed();
+}
+
+bool Library::trashFile(const QString& path, QString* error)
+{
+    QFile file(path);
+    if (!file.moveToTrash()) {
+        if (error)
+            *error = file.errorString();
+        return false;
+    }
+    m_database->markPathMissing(normalizedMusicPath(path));
+    for (const auto& source : roots())
+        if (source.path == QFileInfo(path).absolutePath())
+            refreshRoot(source.id);
+    emit changed();
+    return true;
+}
+
+qint64 Library::createPlaylistFromFolder(qint64 rootId, const QString& name, const QVector<qint64>& ids)
+{
+    if (!root(rootId).id || name.trimmed().isEmpty() || ids.isEmpty())
+        return 0;
+    const qint64 id = m_database->createPlaylistWithItems(name.trimmed(), ids);
+    if (id) {
+        UndoStep step { };
+        step.kind = UndoStep::SnapshotPlaylist;
+        step.playlistId = id;
+        step.name = name.trimmed();
+        step.trackIds = ids;
+        remember(step);
+        emit changed();
+    }
+    return id;
 }
 
 QString Library::orderSql(const QString& column, bool descending)
@@ -158,7 +387,8 @@ QString Library::orderSql(const QString& column, bool descending)
                           || column == QLatin1String("track_number") || column == QLatin1String("duration_ms"))
                              ? column
                              : QStringLiteral("title");
-    return QStringLiteral("ORDER BY %1 %2, track_number, title").arg(safe, descending ? QStringLiteral("DESC") : QStringLiteral("ASC"));
+    return QStringLiteral("ORDER BY %1 %2, disc_number, track_number, title, id")
+        .arg(safe, descending ? QStringLiteral("DESC") : QStringLiteral("ASC"));
 }
 
 QVector<Track> Library::allTracks(const QString& sortColumn, bool descending) const
@@ -166,7 +396,8 @@ QVector<Track> Library::allTracks(const QString& sortColumn, bool descending) co
     if (!m_database) {
         return {};
     }
-    return m_database->queryTracks(QStringLiteral("WHERE missing=0"), {}, orderSql(sortColumn, descending));
+    return m_database->queryTracks(
+        QStringLiteral("WHERE ") + Database::libraryScope(), { }, orderSql(sortColumn, descending));
 }
 
 QVector<Track> Library::albumTracks(const QString& albumKey) const
@@ -174,8 +405,9 @@ QVector<Track> Library::albumTracks(const QString& albumKey) const
     if (!m_database) {
         return {};
     }
-    return m_database->queryTracks(QStringLiteral("WHERE missing=0 AND album_key=?"), {albumKey},
-                                   QStringLiteral("ORDER BY disc_number, track_number, title"));
+    return m_database->queryTracks(
+        QStringLiteral("WHERE ") + Database::libraryScope() + QStringLiteral(" AND album_key=?"), { albumKey },
+        QStringLiteral("ORDER BY disc_number, track_number, title"));
 }
 
 QVector<Track> Library::artistTracks(const QString& artistKey) const
@@ -183,21 +415,18 @@ QVector<Track> Library::artistTracks(const QString& artistKey) const
     if (!m_database) {
         return {};
     }
-    return m_database->queryTracks(QStringLiteral("WHERE missing=0 AND artist_key=?"), {artistKey},
-                                   QStringLiteral("ORDER BY album, disc_number, track_number"));
+    return m_database->queryTracks(
+        QStringLiteral("WHERE ") + Database::libraryScope() + QStringLiteral(" AND artist_key=?"), { artistKey },
+        QStringLiteral("ORDER BY album, disc_number, track_number"));
 }
 
-QVector<Track> Library::folderTracks(const QString& folder, bool recursive) const
+QVector<Track> Library::folderTracks(qint64 rootId) const
 {
-    if (!m_database) {
-        return {};
-    }
-    if (!recursive) {
-        return m_database->queryTracks(QStringLiteral("WHERE missing=0 AND folder=?"), {folder},
-                                       QStringLiteral("ORDER BY track_number, title"));
-    }
-    return m_database->queryTracks(QStringLiteral("WHERE missing=0 AND (folder=? OR folder LIKE ?)"),
-                                   {folder, folder + QStringLiteral("/%")}, QStringLiteral("ORDER BY folder, track_number, title"));
+    if (!m_database)
+        return { };
+    // Retain cached records after a move, including unmatched files needing relocation.
+    return m_database->queryTracks(QStringLiteral("WHERE root_id=?"), { rootId },
+        QStringLiteral("ORDER BY album, disc_number, track_number, title, id"));
 }
 
 QVector<Album> Library::albums(const QString& artistKey) const
@@ -210,11 +439,6 @@ QVector<Artist> Library::artists() const
     return m_database ? m_database->artists() : QVector<Artist> {};
 }
 
-QVector<QString> Library::folders() const
-{
-    return m_database ? m_database->folders() : QVector<QString> {};
-}
-
 Track Library::track(qint64 id) const
 {
     return m_database ? m_database->track(id) : Track {};
@@ -223,15 +447,6 @@ Track Library::track(qint64 id) const
 QVector<Track> Library::tracks(const QVector<qint64>& ids) const
 {
     return m_database ? m_database->tracksByIds(ids) : QVector<Track> {};
-}
-
-void Library::removeFromLibrary(const QVector<qint64>& ids)
-{
-    if (!m_database || ids.isEmpty()) {
-        return;
-    }
-    m_database->removeTracks(ids);
-    emit changed();
 }
 
 bool Library::saveTags(qint64 id, const TagEdit& edit, QString* error)
@@ -511,6 +726,25 @@ void Library::movePlaylistToFolder(qint64 id, qint64 folderId)
     }
 }
 
+QVector<Track> Library::playlistTracks(qint64 id) const
+{
+    QSqlQuery query(m_database->m_db);
+    query.prepare(QStringLiteral("SELECT id,track_id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id"));
+    query.addBindValue(id);
+    query.exec();
+    QVector<qint64> ids, entries;
+    while (query.next()) {
+        entries << query.value(0).toLongLong();
+        ids << query.value(1).toLongLong();
+    }
+    auto result = tracks(ids);
+    for (int i = 0; i < result.size(); ++i) {
+        result[i].listEntryId = entries[i];
+        result[i].playlistPosition = i;
+    }
+    return result;
+}
+
 QVector<qint64> Library::playlistTrackIds(qint64 id) const
 {
     return m_database ? m_database->playlistItems(id) : QVector<qint64> {};
@@ -541,20 +775,22 @@ void Library::removePlaylistPositions(qint64 playlistId, const QVector<int>& pos
         return;
     }
     const auto items = m_database->playlistItems(playlistId);
+    QVector<int> ordered = positions;
+    std::sort(ordered.begin(), ordered.end());
+    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+    ordered.erase(std::remove_if(ordered.begin(), ordered.end(), [&](int i) { return i < 0 || i >= items.size(); }),
+        ordered.end());
     QVector<qint64> removed;
-    for (const int position : positions) {
-        if (position >= 0 && position < items.size()) {
-            removed.push_back(items[position]);
-        }
-    }
+    for (const int position : ordered)
+        removed.push_back(items[position]);
     if (playlistId == favoritesPlaylistId()) { setFavorites(removed, false); return; }
-    m_database->removePlaylistItems(playlistId, positions);
+    m_database->removePlaylistItems(playlistId, ordered);
     if (!m_applyingUndo) {
         UndoStep step;
         step.kind = UndoStep::Remove;
         step.playlistId = playlistId;
         step.trackIds = removed;
-        step.positions = positions;
+        step.positions = ordered;
         remember(step);
     }
     emit changed();
@@ -572,7 +808,7 @@ void Library::movePlaylistItem(qint64 playlistId, int from, int to)
     }
     const qint64 id = items.takeAt(from);
     items.insert(to, id);
-    m_database->setPlaylistItems(playlistId, items);
+    m_database->reorderPlaylist(playlistId, from, to);
     if (!m_applyingUndo) {
         UndoStep step;
         step.kind = UndoStep::Move;
@@ -598,7 +834,7 @@ void Library::undo()
     if (m_undo.isEmpty()) {
         return;
     }
-    const UndoStep step = m_undo.last();
+    UndoStep step = m_undo.last();
     if (!apply(step, true)) return;
     m_undo.removeLast();
     m_redo.push_back(step);
@@ -609,16 +845,28 @@ void Library::redo()
     if (m_redo.isEmpty()) {
         return;
     }
-    const UndoStep step = m_redo.last();
+    UndoStep step = m_redo.last();
     if (!apply(step, false)) return;
     m_redo.removeLast();
     m_undo.push_back(step);
 }
 
-bool Library::apply(const UndoStep& step, bool inverse)
+bool Library::apply(UndoStep& step, bool inverse)
 {
     m_applyingUndo = true;
     switch (step.kind) {
+    case UndoStep::SnapshotPlaylist:
+        if (inverse)
+            m_database->deletePlaylist(step.playlistId);
+        else {
+            step.playlistId = m_database->createPlaylistWithItems(step.name, step.trackIds);
+            if (!step.playlistId) {
+                m_applyingUndo = false;
+                return false;
+            }
+        }
+        emit changed();
+        break;
     case UndoStep::Favorites: {
         QString error;
         if (!m_database->restoreFavorites(inverse ? step.beforeFavorites : step.afterFavorites, &error)) {
@@ -643,14 +891,10 @@ bool Library::apply(const UndoStep& step, bool inverse)
         break;
     case UndoStep::Remove:
         if (inverse) {
-            auto items = m_database->playlistItems(step.playlistId);
-            QVector<int> positions = step.positions;
+            auto positions = step.positions;
             std::sort(positions.begin(), positions.end());
-            for (int index = 0; index < positions.size() && index < step.trackIds.size(); ++index) {
-                const int at = std::clamp(positions[index], 0, static_cast<int>(items.size()));
-                items.insert(at, step.trackIds[index]);
-            }
-            m_database->setPlaylistItems(step.playlistId, items);
+            for (int i = 0; i < positions.size() && i < step.trackIds.size(); ++i)
+                m_database->insertPlaylistItems(step.playlistId, positions[i], { step.trackIds[i] });
             emit changed();
         } else {
             removePlaylistPositions(step.playlistId, step.positions);
@@ -710,22 +954,30 @@ bool Library::importM3u(qint64 playlistId, const QString& path, QString* error)
         if (line.isEmpty() || line.startsWith(u'#')) {
             continue;
         }
-        QString resolved = line;
+        const QUrl url(line);
+        if (!url.scheme().isEmpty() && !url.isLocalFile() && !QDir::isAbsolutePath(line))
+            continue;
+        QString resolved = url.isLocalFile() ? url.toLocalFile() : line;
         if (QFileInfo(resolved).isRelative()) {
             resolved = QDir(directory).filePath(resolved);
         }
-        resolved = QFileInfo(resolved).absoluteFilePath();
+        resolved = normalizedMusicPath(resolved);
         qint64 matched = 0;
         for (const Track& candidate : m_database->queryTracks(QStringLiteral("WHERE path=? AND cue_start_ms<0"), {resolved}, {})) {
             matched = candidate.id;
             break;
         }
-        if (matched == 0 && QFileInfo::exists(resolved) && isAudioFile(resolved)) {
+        if (matched == 0 && isAudioFile(resolved)) {
             auto scanned = readTags(resolved);
             scanned.track.cueStartMs = -1;
             if (m_artwork) {
                 scanned.track.artworkHash = m_artwork->store(scanned.artwork);
             }
+            scanned.track.missing = !QFileInfo::exists(resolved);
+            // Existing direct children can join their explicitly registered source; other files stay standalone.
+            for (const auto& source : roots())
+                if (source.path == scanned.track.folder)
+                    scanned.track.rootId = source.id;
             matched = m_database->upsertTrack(scanned.track);
         }
         if (matched > 0) {
@@ -751,7 +1003,7 @@ QVector<qint64> Library::importFiles(const QStringList& paths)
         if (!info.exists() || !isAudioFile(info.absoluteFilePath())) {
             continue;
         }
-        const QString resolved = info.absoluteFilePath();
+        const QString resolved = normalizedMusicPath(path);
         qint64 matched = 0;
         for (const Track& candidate : m_database->queryTracks(QStringLiteral("WHERE path=? AND cue_start_ms<0"), {resolved}, {})) {
             matched = candidate.id;
@@ -763,6 +1015,11 @@ QVector<qint64> Library::importFiles(const QStringList& paths)
             if (m_artwork) {
                 scanned.track.artworkHash = m_artwork->store(scanned.artwork);
             }
+            scanned.track.missing = !QFileInfo::exists(resolved);
+            // Existing direct children can join their explicitly registered source; other files stay standalone.
+            for (const auto& source : roots())
+                if (source.path == scanned.track.folder)
+                    scanned.track.rootId = source.id;
             matched = m_database->upsertTrack(scanned.track);
         }
         if (matched > 0) {
@@ -813,43 +1070,23 @@ void Library::scanRoot(qint64 id, const QString& path)
         return;
     }
     m_scanning = true;
-    suppressWatch(1500);
+    m_activeRoot = id;
+    emit scanStarted(id);
     QMetaObject::invokeMethod(m_scanner, "scanRoot", Qt::QueuedConnection, Q_ARG(qint64, id), Q_ARG(QString, path));
-}
-
-void Library::suppressWatch(int milliseconds)
-{
-    m_suppressWatch = true;
-    m_suppressTimer.start(milliseconds);
 }
 
 void Library::watchRoots()
 {
     QStringList wanted;
-    for (const LibraryRoot& root : roots()) {
-        wanted.push_back(root.path);
-    }
-    wanted.sort();
-    QStringList current = m_watcher.directories();
-    current.sort();
-    if (current == wanted) {
-        return;
-    }
-    suppressWatch(1500);
-    if (!m_watcher.directories().isEmpty()) {
-        m_watcher.removePaths(m_watcher.directories());
-    }
-    for (const QString& path : wanted) {
-        m_watcher.addPath(path);
-#if !defined(Q_OS_MACOS)
-        QDirIterator iterator(path, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-        int added = 0;
-        while (iterator.hasNext() && added < 4000) {
-            m_watcher.addPath(iterator.next());
-            ++added;
-        }
-#endif
-    }
+    for (const auto& source : roots())
+        wanted << source.path;
+    const auto current = m_watcher.directories();
+    for (const auto& path : current)
+        if (!wanted.contains(path))
+            m_watcher.removePath(path);
+    for (const auto& path : wanted)
+        if (!current.contains(path))
+            m_watcher.addPath(path);
 }
 
 } // namespace echo

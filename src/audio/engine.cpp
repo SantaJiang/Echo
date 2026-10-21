@@ -106,7 +106,7 @@ struct AudioEngine::Worker {
     std::atomic<int> fadeDone {0};
     float smoothedVolume = 1.f;
 
-    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain };
+    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain, ReleaseFiles };
 
     void post(Command command)
     {
@@ -182,6 +182,10 @@ struct AudioEngine::Worker {
                 output->start();
                 setState(State::Playing);
             }
+            break;
+        case ReleaseFiles:
+            stopPlayback();
+            emit owner->filesReleased();
             break;
         case Stop:
             if (queuedOutput) { stopPlayback(); break; }
@@ -962,6 +966,11 @@ void AudioEngine::resume()
 void AudioEngine::stop()
 {
     m_worker->post(Worker::Stop);
+}
+
+void AudioEngine::releaseFiles()
+{
+    m_worker->post(Worker::ReleaseFiles);
 }
 
 void AudioEngine::seekMs(qint64 positionMs)

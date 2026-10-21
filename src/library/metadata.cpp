@@ -82,7 +82,7 @@ ScannedTags readTags(const QString& path)
     scanned.track.folder = QFileInfo(path).absolutePath();
     scanned.track.codec = codecFromSuffix(path);
     const QFileInfo info(path);
-    scanned.track.mtime = info.lastModified().toSecsSinceEpoch();
+    scanned.track.mtime = info.lastModified().toMSecsSinceEpoch();
     scanned.track.fileSize = info.size();
 
     TagLib::FileStream stream(path.toUtf8().constData(), true);

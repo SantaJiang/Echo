@@ -320,9 +320,23 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     buildMenus();
 
     auto wire = [this](TrackTable* table, bool albumContext) {
-        connect(table, &TrackTable::tracksActivated, this, [this, albumContext](const QVector<qint64>& ids, int index) {
-            playVisible(ids, index, albumContext);
-        });
+        connect(table, &TrackTable::tracksActivated, this,
+            [this, table, albumContext](const QVector<qint64>& ids, int index) {
+                if (index < 0 || index >= ids.size())
+                    return;
+                const auto item = m_library->track(ids[index]);
+                if (item.missing || !QFileInfo(item.path).isFile()) {
+                    showUnavailable(item.id);
+                    return;
+                }
+                if ((table == m_folders->table() || table == m_playlist->table()) && !m_player->replaceContextQueue())
+                    m_player->playSinglePreservingQueue(item.id);
+                else
+                    playVisible(ids, index, albumContext);
+            });
+        connect(table, &TrackTable::trashRequested, this, &MainWindow::trashTracks);
+        connect(table, &TrackTable::recheckRequested, m_library, &Library::recheckTrack);
+        connect(table, &TrackTable::locateRequested, this, &MainWindow::locateTrack);
         connect(table, &TrackTable::playNextRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueueNext(ids); });
         connect(table, &TrackTable::enqueueRequested, this, [this](const QVector<qint64>& ids) { m_player->enqueue(ids); });
         connect(table, &TrackTable::playlistRequested, this, [this](const QVector<qint64>& ids) { addToPlaylist(ids); });
@@ -339,7 +353,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     wire(m_songs->table(), false);
     wire(m_albums->detailTable(), true);
     wire(m_artists->table(), false);
-    wire(m_folders->table(), true);
+    wire(m_folders->table(), false);
     wire(m_playlist->table(), false);
     wire(m_searchPage->table(), false);
     const QVector<TrackTable*> tables {m_songs->table(), m_albums->detailTable(), m_artists->table(),
@@ -383,11 +397,6 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
             columnSave->start();
         });
     }
-    connect(m_songs->table(), &TrackTable::removeRequested, this, [this](const QVector<qint64>& ids) {
-        if (QMessageBox::question(this, QStringLiteral("移除"), QStringLiteral("从资料库移除所选歌曲？文件不会被删除。")) == QMessageBox::Yes) {
-            m_library->removeFromLibrary(ids);
-        }
-    });
     connect(m_playlist->table(), &TrackTable::removeRequested, this, [this](const QVector<qint64>& ids) {
         if (m_playlist->playlistId() == m_library->favoritesPlaylistId()) {
             m_library->setFavorites(ids, false);
@@ -395,7 +404,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         }
         QVector<int> positions;
         for (const QModelIndex& row : m_playlist->table()->selectionModel()->selectedRows()) {
-            positions.push_back(row.row());
+            positions.push_back(m_playlist->table()->trackModel()->trackAt(row.row()).playlistPosition);
         }
         m_library->removePlaylistPositions(m_playlist->playlistId(), positions);
     });
@@ -405,9 +414,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_playlistId = id;
         m_playlist->setPlaylist(id);
         m_search->clear();
-        m_heading->setText(m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))
-                               ? m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))->text()
-                               : QStringLiteral("歌单"));
+        m_heading->setText(m_playlist->title());
         m_heading->show();
         m_stack->setCurrentWidget(m_playlist);
     });
@@ -441,18 +448,8 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     });
     connect(m_sidebar, &Sidebar::deletePlaylistRequested, this, [this](qint64 id) { m_library->deletePlaylist(id); });
     connect(m_sidebar, &Sidebar::deleteFolderRequested, this, [this](qint64 id) { m_library->deletePlaylistFolder(id); });
-    connect(m_sidebar, &Sidebar::addFolderRequested, this, [this] {
-        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
-        if (!path.isEmpty()) {
-            m_library->addRoot(path);
-        }
-    });
-    connect(m_songs, &SongsPage::addFolderRequested, this, [this] {
-        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
-        if (!path.isEmpty()) {
-            m_library->addRoot(path);
-        }
-    });
+    connect(m_sidebar, &Sidebar::addFolderRequested, this, &MainWindow::addMusicFolder);
+    connect(m_songs, &TrackListPage::addFolderRequested, this, &MainWindow::addMusicFolder);
 
     connect(m_albums, &AlbumsPage::albumPlayRequested, this, [this](const QString& key, bool shuffle) {
         const auto tracks = m_library->albumTracks(key);
@@ -474,14 +471,19 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         m_albums->openAlbum(key);
         m_sidebar->setSelectedLibrary(1);
     });
-    connect(m_folders, &FoldersPage::playFolderRequested, this, [this](const QString& folder) {
-        const auto tracks = m_library->folderTracks(folder, true);
-        QVector<qint64> ids;
-        for (const Track& track : tracks) {
-            ids.push_back(track.id);
-        }
-        playVisible(ids, 0, true);
+    connect(m_folders, &FoldersPage::addFolderRequested, this, &MainWindow::addMusicFolder);
+    connect(m_folders, &FoldersPage::titleChanged, this, [this](const QString& title) {
+        if (m_stack->currentWidget() == m_folders)
+            m_heading->setText(title);
     });
+    connect(m_playlist, &TrackListPage::titleChanged, this, [this](const QString& title) {
+        if (m_stack->currentWidget() == m_playlist)
+            m_heading->setText(title);
+    });
+    for (auto* page : QVector<TrackListPage*> { m_songs, m_folders->detailPage(), m_playlist }) {
+        connect(page, &TrackListPage::playAllRequested, this,
+            [this](const QVector<qint64>& ids, bool shuffle) { m_player->playTracks(ids, 0, false, shuffle); });
+    }
     connect(m_searchPage, &SearchPage::albumSelected, this, [this](const QString& key) {
         m_search->clear();
         m_albums->openAlbum(key);
@@ -530,17 +532,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     });
     connect(m_bar, &PlayerBar::queueToggled, this, [this] { m_queue->setVisible(!m_queue->isVisible()); });
 
-    connect(m_queue, &QueuePanel::activated, this, [this](int index) {
-        const auto queue = m_player->queue();
-        if (index < 0 || index >= queue.size()) {
-            return;
-        }
-        QVector<qint64> ids;
-        for (const Player::Entry& entry : queue) {
-            ids.push_back(entry.trackId);
-        }
-        m_player->playTracks(ids, index, queue[index].albumContext);
-    });
+    connect(m_queue, &QueuePanel::activated, m_player, &Player::activateQueueRow);
     connect(m_queue, &QueuePanel::removed, m_player, &Player::removeQueueRow);
     connect(m_queue, &QueuePanel::moved, m_player, &Player::moveQueue);
     connect(m_queue, &QueuePanel::cleared, m_player, &Player::clearUpcoming);
@@ -570,6 +562,26 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
         QMessageBox::warning(this, QStringLiteral("收藏失败"), message);
     });
     connect(m_library, &Library::changed, this, &MainWindow::refreshViews);
+    connect(m_library, &Library::sourceChanged, this, [this](qint64) {
+        m_songs->reload();
+        m_folders->reload();
+        m_albums->reload();
+        m_artists->reload();
+        m_playlist->reload();
+        if (m_showingSearch)
+            m_searchPage->search(m_search->text().trimmed());
+        syncPlayer();
+    });
+    connect(m_library, &Library::scanWarning, this, [this](const QString& message) { m_bar->setStatus(message); });
+    connect(m_player, &Player::playbackMessage, this, [this](const QString& message) { m_bar->setStatus(message); });
+    connect(m_player, &Player::trackUnavailable, this, &MainWindow::showUnavailable);
+    connect(m_player, &Player::trashFinished, this, [this](const QString& report) {
+        auto* box = new QMessageBox(
+            QMessageBox::Information, QStringLiteral("移到废纸篓"), report.section(u'\n', 0, 0), QMessageBox::Ok, this);
+        box->setDetailedText(report.section(u'\n', 1));
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->open();
+    });
     connect(m_library, &Library::scanProgress, this, [this](int done, int total) {
         if (total <= 0 || done >= total) {
             return;
@@ -667,12 +679,8 @@ void MainWindow::openPaths(const QStringList& paths)
 void MainWindow::buildMenus()
 {
     auto* file = menuBar()->addMenu(QStringLiteral("文件"));
-    file->addAction(QStringLiteral("添加音乐文件夹…"), QKeySequence(Qt::CTRL | Qt::Key_O), this, [this] {
-        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
-        if (!path.isEmpty()) {
-            m_library->addRoot(path);
-        }
-    });
+    file->addAction(
+        QStringLiteral("添加音乐文件夹…"), QKeySequence(Qt::CTRL | Qt::Key_O), this, &MainWindow::addMusicFolder);
     file->addAction(QStringLiteral("导入播放列表…"), this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入播放列表"), {}, QStringLiteral("播放列表 (*.m3u *.m3u8)"));
         if (path.isEmpty()) {
@@ -688,9 +696,7 @@ void MainWindow::buildMenus()
             QMessageBox::warning(this, QStringLiteral("导入失败"), error);
         } else {
             m_playlist->setPlaylist(id);
-            if (auto* title = m_playlist->findChild<QLabel*>(QStringLiteral("playlistTitle"))) {
-                m_heading->setText(title->text());
-            }
+            m_heading->setText(m_playlist->title());
             m_heading->show();
             m_stack->setCurrentWidget(m_playlist);
         }
@@ -783,6 +789,10 @@ void MainWindow::showLibraryPage(int index)
     m_heading->setText(index >= 0 && index < titles.size() ? titles.at(index) : QStringLiteral("歌曲"));
     m_heading->show();
     m_stack->setCurrentIndex(index);
+    if (index == 3) {
+        m_folders->showFolders();
+        m_heading->setText(m_folders->title());
+    }
 }
 
 void MainWindow::syncPlayer()
@@ -910,3 +920,90 @@ void MainWindow::dropEvent(QDropEvent* event)
 }
 
 } // namespace echo
+
+namespace echo {
+void MainWindow::showUnavailable(qint64 id)
+{
+    m_library->recheckTrack(id);
+    const auto track = m_library->track(id);
+    auto* box = new QMessageBox(QMessageBox::Warning, QStringLiteral("歌曲暂时无法播放"),
+        track.displayTitle() + u'\n' + track.path + QStringLiteral("\n文件可能已移动、磁盘未连接或访问权限已改变。"),
+        QMessageBox::Cancel, this);
+    box->setObjectName(QStringLiteral("unavailableTrackDialog"));
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    auto* check = box->addButton(QStringLiteral("重新检查"), QMessageBox::ActionRole);
+    auto* locate = box->addButton(QStringLiteral("重新定位…"), QMessageBox::ActionRole);
+    connect(box, &QMessageBox::buttonClicked, this, [this, id, check, locate](QAbstractButton* button) {
+        if (button == check)
+            m_library->recheckTrack(id);
+        if (button == locate)
+            locateTrack(id);
+    });
+    box->open();
+}
+void MainWindow::locateTrack(qint64 id)
+{
+    const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("重新定位音乐文件"));
+    if (path.isEmpty())
+        return;
+    bool registered = false;
+    for (const auto& root : m_library->roots())
+        if (root.path == QFileInfo(path).absolutePath())
+            registered = true;
+    if (QMessageBox::question(this, QStringLiteral("确认歌曲位置"),
+            path + u'\n'
+                + (registered ? QStringLiteral("该歌曲属于已添加的文件夹，将进入全局资料库。")
+                              : QStringLiteral("该文件夹尚未添加；歌曲只保留在队列、收藏或播放列表中。")))
+        != QMessageBox::Yes)
+        return;
+    QString error;
+    if (!m_library->relocateTrack(id, path, &error))
+        QMessageBox::warning(this, QStringLiteral("定位失败"), error);
+}
+void MainWindow::trashTracks(const QVector<qint64>& ids)
+{
+    QStringList paths;
+    QStringList details;
+    for (const auto& item : m_library->tracks(ids))
+        if (item.id && !item.path.isEmpty() && !paths.contains(item.path))
+            paths << item.path;
+    int affected = 0;
+    for (const auto& path : paths) {
+        details << path;
+        for (const auto& track : m_library->tracksAtPath(path)) {
+            details << QStringLiteral("    ") + track.displayTitle();
+            ++affected;
+        }
+    }
+    if (paths.isEmpty())
+        return;
+    QMessageBox box(QMessageBox::Warning, QStringLiteral("移到废纸篓"),
+        QStringLiteral("将 %1 个实际音乐文件移到废纸篓？\n会影响 %2 首曲目，包括同一音频文件中的其他 CUE "
+                       "曲目。歌曲引用将保留为不可用，旁边的封面、歌词和 CUE 文件会保留。")
+            .arg(paths.size())
+            .arg(affected),
+        QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setDetailedText(details.join(u'\n'));
+    if (box.exec() == QMessageBox::Yes)
+        m_player->trashFiles(paths);
+}
+}
+
+namespace echo {
+void MainWindow::addMusicFolder()
+{
+    const auto path = QFileDialog::getExistingDirectory(this, QStringLiteral("添加音乐文件夹"));
+    if (path.isEmpty())
+        return;
+    const auto id = m_library->addRoot(path);
+    if (!id) {
+        QMessageBox::warning(
+            this, QStringLiteral("无法添加"), QStringLiteral("无法登记这个音乐文件夹，请检查目录和权限。"));
+        return;
+    }
+    m_sidebar->setSelectedLibrary(3);
+    showLibraryPage(3);
+    m_folders->selectFolder(id);
+}
+}

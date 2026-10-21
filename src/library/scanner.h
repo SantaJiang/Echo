@@ -16,7 +16,10 @@ public slots:
 
 signals:
     void progress(qint64 rootId, int done, int total);
-    void finished(qint64 rootId);
+    void finished(qint64 rootId, bool changed);
+    void warning(const QString& message);
+    void retryRequested(qint64 rootId);
+    void statistics(qint64 rootId, int parsedFiles);
     void failed(const QString& message);
 
 private:

@@ -28,6 +28,15 @@ SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
     m_status->setWordWrap(true);
     m_status->setStyleSheet(QStringLiteral("color: #98989D; font-size: 12px;"));
     layout->addWidget(heading);
+    m_replaceQueue = new QCheckBox(QStringLiteral("双击文件夹或播放列表中的歌曲时，替换当前播放队列"), this);
+    m_replaceQueue->setObjectName(QStringLiteral("replaceContextQueueToggle"));
+    auto* queueDescription
+        = new QLabel(QStringLiteral("关闭后，仅插入并立即播放所选歌曲，播完接回原队列。单曲循环模式仍会保留。"), this);
+    queueDescription->setWordWrap(true);
+    queueDescription->setStyleSheet(QStringLiteral("color: #98989D;"));
+    layout->addWidget(m_replaceQueue);
+    layout->addWidget(queueDescription);
+    connect(m_replaceQueue, &QCheckBox::toggled, player, &Player::setReplaceContextQueue);
     layout->addWidget(m_normalize);
     layout->addWidget(description);
     layout->addWidget(m_status);
@@ -59,6 +68,9 @@ SettingsDialog::SettingsDialog(Player* player, QWidget* parent)
 
 void SettingsDialog::refresh()
 {
+    m_replaceQueue->blockSignals(true);
+    m_replaceQueue->setChecked(m_player->replaceContextQueue());
+    m_replaceQueue->blockSignals(false);
     m_normalize->blockSignals(true);
     m_normalize->setChecked(m_player->normalizationEnabled());
     m_normalize->blockSignals(false);
