@@ -582,7 +582,12 @@ void Player::restoreSession()
     m_volume = m_library->setting(QStringLiteral("volume"), QStringLiteral("1")).toFloat();
     m_exclusive = m_library->setting(QStringLiteral("exclusive"), QStringLiteral("0")) == QLatin1String("1");
 #ifdef Q_OS_MACOS
-    m_spatial = m_library->setting(QStringLiteral("spatial_audio"), QStringLiteral("0")) == QLatin1String("1");
+    // Apply the new macOS default once, then preserve subsequent user choices.
+    if (m_library->setting(QStringLiteral("spatial_default_v2")) != QLatin1String("1")) {
+        m_library->setSetting(QStringLiteral("spatial_audio"), QStringLiteral("1"));
+        m_library->setSetting(QStringLiteral("spatial_default_v2"), QStringLiteral("1"));
+    }
+    m_spatial = m_library->setting(QStringLiteral("spatial_audio"), QStringLiteral("1")) == QLatin1String("1");
     if (m_spatial) m_exclusive = false;
 #endif
     m_engine->setExclusive(m_exclusive);

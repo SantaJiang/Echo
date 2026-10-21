@@ -12,6 +12,7 @@
 #include <QWidget>
 
 #include <dispatch/dispatch.h>
+#include <cmath>
 
 #ifdef slots
 #undef slots
@@ -59,7 +60,42 @@ void dispatchCommand(MediaCommand command, qint64 argument)
 void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const std::function<void()>& settings)
 {
     NSStatusItem* item = [NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
-    NSImage* image = [NSImage imageWithSystemSymbolName:@"music.note" accessibilityDescription:@"Echo"];
+    // A template image lets macOS choose the correct menu-bar contrast.
+    NSImage* image = [NSImage imageWithSize:NSMakeSize(20, 20) flipped:NO drawingHandler:^BOOL(NSRect) {
+        [NSColor.blackColor setStroke];
+        NSBezierPath* record = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(1, 1, 18, 18)];
+        record.lineWidth = 1.2;
+        [record stroke];
+        NSBezierPath* groove = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(3, 3, 14, 14)];
+        groove.lineWidth = 0.65;
+        [groove stroke];
+        NSBezierPath* shine = [NSBezierPath bezierPath];
+        shine.lineWidth = 1.15;
+        shine.lineCapStyle = NSLineCapStyleRound;
+        [shine appendBezierPathWithArcWithCenter:NSMakePoint(10, 10) radius:8 startAngle:95 endAngle:145];
+        [shine moveToPoint:NSMakePoint(10 + 8 * cos(275 * M_PI / 180), 10 + 8 * sin(275 * M_PI / 180))];
+        [shine appendBezierPathWithArcWithCenter:NSMakePoint(10, 10) radius:8 startAngle:275 endAngle:325];
+        [shine stroke];
+        [NSColor.blackColor setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(5.2, 5.2, 9.6, 9.6)] fill];
+        // Knock the E out of the label so template contrast remains automatic.
+        CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+        CGContextSaveGState(context);
+        CGContextSetBlendMode(context, kCGBlendModeClear);
+        CGContextSetLineWidth(context, 1.1);
+        CGContextSetLineCap(context, kCGLineCapRound);
+        CGContextSetLineJoin(context, kCGLineJoinRound);
+        CGContextMoveToPoint(context, 11.7, 12.5);
+        CGContextAddLineToPoint(context, 8.3, 12.5);
+        CGContextAddLineToPoint(context, 8.3, 7.5);
+        CGContextAddLineToPoint(context, 11.7, 7.5);
+        CGContextMoveToPoint(context, 8.3, 10);
+        CGContextAddLineToPoint(context, 11, 10);
+        CGContextStrokePath(context);
+        CGContextRestoreGState(context);
+        return YES;
+    }];
+    image.accessibilityDescription = @"Echo";
     [image setTemplate:YES];
     item.button.image = image;
     item.button.toolTip = @"Echo";

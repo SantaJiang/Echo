@@ -2,5 +2,11 @@
     <qresource prefix="/">
         <file>fonts/fa-solid-900.ttf</file>
         <file alias="icons/checkmark.svg">checkmark.svg</file>
+        <file alias="icons/checkmark.png">checkmark.png</file>
+        <file alias="icons/echo-32.png">../data/icons/echo-32.png</file>
+        <file alias="icons/echo-64.png">../data/icons/echo-64.png</file>
+        <file alias="icons/echo-128.png">../data/icons/echo-128.png</file>
+        <file alias="icons/echo-256.png">../data/icons/echo-256.png</file>
+        <file alias="icons/echo-512.png">../data/icons/echo-512.png</file>
     </qresource>
 </RCC>

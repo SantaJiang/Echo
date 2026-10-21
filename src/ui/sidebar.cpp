@@ -209,15 +209,25 @@ Sidebar::Sidebar(QWidget* parent)
     layout->addWidget(m_playlists, 1);
     layout->addWidget(m_playlistEmpty, 1);
     layout->addWidget(m_status);
-    auto* settings = new QToolButton(this);
-    settings->setText(QStringLiteral("设置"));
-    settings->setIcon(icon(Icon::Settings, colors.secondary, 16));
-    settings->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    settings->setAutoRaise(true);
+    auto* settings = new QListWidget(this);
+    settings->setObjectName(QStringLiteral("settingsNav"));
+    settings->setAccessibleName(QStringLiteral("设置"));
+    settings->setFrameShape(QFrame::NoFrame);
+    settings->setFocusPolicy(Qt::NoFocus);
+    settings->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settings->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settings->setItemDelegate(new NavDelegate(settings));
+    settings->setMouseTracking(true);
     settings->setFixedHeight(32);
     settings->setCursor(Qt::PointingHandCursor);
-    connect(settings, &QToolButton::clicked, this, &Sidebar::settingsRequested);
-    layout->addWidget(settings, 0, Qt::AlignLeft);
+    auto* settingsItem = new QListWidgetItem(icon(Icon::Settings, colors.accent, 16), QStringLiteral("设置"));
+    settingsItem->setSizeHint(QSize(0, 32));
+    settings->addItem(settingsItem);
+    connect(settings, &QListWidget::itemClicked, this, [this, settings] {
+        emit settingsRequested();
+        settings->clearSelection();
+    });
+    layout->addWidget(settings);
     setFixedWidth(200);
 }
 

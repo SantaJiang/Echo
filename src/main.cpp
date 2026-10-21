@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
+#include <QIcon>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QMessageBox>
@@ -38,14 +39,24 @@ void writeLog(QtMsgType, const QMessageLogContext&, const QString& message)
 int main(int argc, char** argv)
 {
 #ifdef ECHO_QT_PLUGINS
-    QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
+    // Packaged macOS plugins must use the Qt frameworks inside the same bundle.
+    // Keep the development fallback only when no bundled platform plugin exists.
+    const QDir executableDirectory(QFileInfo(QString::fromLocal8Bit(argv[0])).absolutePath());
+    if (!executableDirectory.exists(QStringLiteral("../PlugIns/platforms"))) {
+        QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
+    }
 #endif
     QApplication application(argc, argv);
     echo::useDarkTheme();
     echo::useDarkAppearance();
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.1"));
+    QIcon appIcon;
+    for (const int size : {32, 64, 128, 256, 512}) {
+        appIcon.addFile(QStringLiteral(":/icons/echo-%1.png").arg(size));
+    }
+    application.setWindowIcon(appIcon);
     qInstallMessageHandler(writeLog);
 
     QFont font;

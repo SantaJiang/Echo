@@ -98,7 +98,9 @@ QMutex& Database::writeLock()
 bool Database::open(const QString& filePath, const QString& connectionName, QString* error, bool readOnly)
 {
 #ifdef ECHO_QT_PLUGINS
-    QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
+    if (!QDir(QCoreApplication::applicationDirPath()).exists(QStringLiteral("../PlugIns/sqldrivers"))) {
+        QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
+    }
 #endif
     if (QSqlDatabase::contains(connectionName)) {
         m_db = QSqlDatabase::database(connectionName);

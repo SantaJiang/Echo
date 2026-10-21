@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Echo VERSION 1.0.0 LANGUAGES CXX)
+project(Echo VERSION 1.0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -118,6 +118,8 @@ add_executable(echo-uishot tools/uishot.cpp ${ECHO_UI_SOURCES})
 target_link_libraries(echo PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
 target_link_libraries(echo-uishot PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
 if(APPLE)
+  target_sources(echo PRIVATE data/echo.icns)
+  set_source_files_properties(data/echo.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   target_sources(echo-uishot PRIVATE tools/macuitest.mm)
   set_source_files_properties(tools/macuitest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(echo PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
@@ -128,12 +130,16 @@ if(APPLE)
     MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_GUI_IDENTIFIER org.echo.player
     MACOSX_BUNDLE_BUNDLE_NAME Echo
+    MACOSX_BUNDLE_ICON_FILE echo.icns
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/data/MacOSXBundleInfo.plist.in
   )
 endif()
 if(WIN32)
+  enable_language(RC)
+  target_sources(echo PRIVATE data/echo.rc)
+  target_include_directories(echo PRIVATE ${CMAKE_SOURCE_DIR}/data)
   target_link_libraries(echo PRIVATE dwmapi comctl32)
   set_target_properties(echo PROPERTIES WIN32_EXECUTABLE TRUE OUTPUT_NAME Echo)
 endif()

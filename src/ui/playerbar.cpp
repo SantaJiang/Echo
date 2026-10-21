@@ -82,7 +82,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     setFixedHeight(92);
     const Palette colors = echo::palette();
     auto* layout = new QGridLayout(this);
-    layout->setContentsMargins(18, 12, 18, 12);
+    layout->setContentsMargins(ContentLeftMargin, 12, 18, 12);
     layout->setHorizontalSpacing(16);
     layout->setVerticalSpacing(2);
     layout->setRowMinimumHeight(0, 44);

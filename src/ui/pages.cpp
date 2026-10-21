@@ -263,7 +263,7 @@ TrackListPage::TrackListPage(Library* library, Source source, QWidget* parent)
     , m_source(source)
 {
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    layout->setContentsMargins(ContentLeftMargin, 4, ContentRightMargin, 8);
     layout->setSpacing(12);
     auto* path = new PathLabel(this);
     m_path = path;
@@ -460,7 +460,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
     m_stack = new QStackedWidget(this);
     auto* gridPage = new QWidget(m_stack);
     auto* gridLayout = new QVBoxLayout(gridPage);
-    gridLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    gridLayout->setContentsMargins(ContentLeftMargin, 4, ContentRightMargin, 8);
     m_grid = new QListWidget(gridPage);
     m_grid->setObjectName(QStringLiteral("albumGrid"));
     m_grid->setViewMode(QListView::IconMode);
@@ -486,7 +486,7 @@ AlbumsPage::AlbumsPage(Library* library, QWidget* parent)
 
     m_detailPage = new QWidget(m_stack);
     auto* detailLayout = new QVBoxLayout(m_detailPage);
-    detailLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    detailLayout->setContentsMargins(ContentLeftMargin, 4, ContentRightMargin, 8);
     auto* back = new QPushButton(QStringLiteral("‹  专辑"), m_detailPage);
     back->setObjectName(QStringLiteral("backButton"));
     back->setFlat(true);
@@ -698,7 +698,7 @@ ArtistsPage::ArtistsPage(Library* library, QWidget* parent)
     : QWidget(parent), m_library(library)
 {
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    layout->setContentsMargins(ContentLeftMargin, 4, ContentRightMargin, 8);
     layout->setSpacing(20);
     m_artists = new QListWidget(this);
     m_artists->setObjectName(QStringLiteral("artistList"));
@@ -864,7 +864,7 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     layout->addWidget(m_stack);
     auto* listing = new QWidget(this);
     auto* listLayout = new QVBoxLayout(listing);
-    listLayout->setContentsMargins(ContentLeftMargin, 4, 16, 8);
+    listLayout->setContentsMargins(ContentLeftMargin, 4, ContentRightMargin, 8);
     auto* add = new QPushButton(QStringLiteral("添加文件夹…"), listing);
     add->setObjectName(QStringLiteral("addMusicFolder"));
     add->setFixedHeight(32);
@@ -910,7 +910,7 @@ FoldersPage::FoldersPage(Library* library, QWidget* parent)
     auto* back = new QPushButton(QStringLiteral("‹ 文件夹"), detail);
     back->setObjectName(QStringLiteral("backToFolders"));
     auto* backRow = new QHBoxLayout;
-    backRow->setContentsMargins(ContentLeftMargin, 0, 16, 0);
+    backRow->setContentsMargins(ContentLeftMargin, 0, ContentRightMargin, 0);
     back->setFlat(true);
     back->setFixedHeight(26);
     back->setCursor(Qt::PointingHandCursor);
@@ -1098,7 +1098,7 @@ SearchPage::SearchPage(Library* library, QWidget* parent)
     m_searchTimer->setInterval(180);
     connect(m_searchTimer, &QTimer::timeout, this, &SearchPage::launchSearch);
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(ContentLeftMargin, 28, 16, 8);
+    layout->setContentsMargins(ContentLeftMargin, 28, ContentRightMargin, 8);
     m_empty = new QWidget(this);
     auto* emptyLayout = new QVBoxLayout(m_empty);
     emptyLayout->addStretch(2);

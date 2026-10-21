@@ -152,6 +152,16 @@ int main(int argc, char** argv)
         nav->setCurrentRow(0);
     }
     auto check = [](bool ok, const char* message) { if (!ok) qFatal("%s", message); };
+    auto* songsPage = window.findChild<echo::SongsPage*>();
+    QPushButton* shuffleAction = nullptr;
+    for (auto* button : songsPage->findChildren<QPushButton*>()) {
+        if (button->text() == QStringLiteral("随机播放")) shuffleAction = button;
+    }
+    check(shuffleAction && search->mapTo(&window, search->rect().topRight()).x()
+          == shuffleAction->mapTo(&window, shuffleAction->rect().topRight()).x(), "search and page actions align at right edge");
+    auto* settingsNav = window.findChild<QListWidget*>(QStringLiteral("settingsNav"));
+    check(settingsNav && settingsNav->width() == nav->width() && settingsNav->height() == 32,
+          "settings uses full sidebar navigation row");
     const auto tracks = library.allTracks(QStringLiteral("title"), false);
     check(!tracks.isEmpty(), "fixture tracks imported");
     auto* bar = window.findChild<echo::PlayerBar*>();
@@ -381,7 +391,17 @@ int main(int argc, char** argv)
     for (const auto& track : tracks) ids.append(track.id);
     ids.append(tracks.front().id);
     library.setSetting(QStringLiteral("queue"), QString::fromUtf8(QJsonDocument(ids).toJson(QJsonDocument::Compact)));
+#ifdef Q_OS_MACOS
+    library.setSetting(QStringLiteral("spatial_audio"), QStringLiteral("0"));
+    library.setSetting(QStringLiteral("spatial_default_v2"), QString());
+#endif
     player.restoreSession();
+#ifdef Q_OS_MACOS
+    check(player.spatialEnabled(), "macOS upgrade enables spatial audio by default");
+    player.setSpatialEnabled(false);
+    player.restoreSession();
+    check(!player.spatialEnabled(), "manual spatial opt out survives restore");
+#endif
     toggle->setChecked(true);
     check(player.normalizationEnabled(), "settings enables normalization");
     check(library.setting(QStringLiteral("normalization")) == QLatin1String("1"), "normalization persists immediately");

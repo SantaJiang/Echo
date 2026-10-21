@@ -24,6 +24,12 @@ cmake --build build --target package
 
 macOS 生成 dmg，Windows 生成 NSIS 安装程序，Linux 生成 deb。
 
+## 应用图标
+
+采用唱片与紫色 E 的图标，设计源文件为 `data/echo.svg`，1024px 主图为 `data/echo.png`。macOS 使用 `data/echo.icns`，Windows 使用 `data/echo.ico`，Qt 使用内嵌的多尺寸 PNG，Linux 安装 SVG。
+
+调整 SVG 后导出透明背景的 1024×1024 PNG，再在 macOS 上运行 `python3 tools/generate_icons.py` 重新生成各平台资源。构建使用已生成的资源，无需图像处理依赖。
+
 ## 播放与窗口
 
 - 关闭主窗口会隐藏到菜单栏 / 系统托盘，音乐继续播放；点击常驻图标打开主窗口，右键可退出。也可通过菜单或 Cmd/Ctrl+Q 退出。
@@ -56,7 +62,7 @@ macOS 生成 dmg，Windows 生成 NSIS 安装程序，Linux 生成 deb。
 
 开启后采用 Apple 的 `AVSampleBufferAudioRenderer`，允许单声道、立体声和多声道内容由系统空间化；解码、音量均衡、进度控制和无缝切歌仍由 Echo 处理。不需要访问头部姿态的额外权限。普通立体声的空间化不代表音源具有 Dolby Atmos 元数据。双耳录音建议关闭此开关，避免二次空间化。
 
-空间音频与独占输出互斥，切换时保留播放位置和暂停状态。系统输出失败时回退到 CoreAudio，并在设置中显示原因。默认关闭，选择会保存；系统输出会跟随默认设备，包括 AirPods 的自动切换。
+空间音频与独占输出互斥，切换时保留播放位置和暂停状态。系统输出失败时回退到 CoreAudio，并在设置中显示原因。仅在 macOS 显示，默认开启，手动选择会保存；系统输出会跟随默认设备，包括 AirPods 的自动切换。
 
 在连接实际输出设备的 Mac 上可运行静音原生后端测试（不播放测试音）：
 

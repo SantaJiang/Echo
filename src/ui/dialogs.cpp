@@ -43,7 +43,7 @@ void styleDialog(QDialog* dialog)
         "QTextEdit { background: #202023; color: #B4B4BB; border: 1px solid #414146; border-radius: 7px; padding: 8px; font-size: 12px; }"
         "QCheckBox { color: #F5F5F7; font-size: 13px; spacing: 8px; }"
         "QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #505056; border-radius: 4px; background: #202023; }"
-        "QCheckBox::indicator:checked { background: #FA2D48; border-color: #FA2D48; image: url(:/icons/checkmark.svg); }"));
+        "QCheckBox::indicator:checked { background: #FA2D48; border-color: #FA2D48; image: url(:/icons/checkmark.png); }"));
 }
 
 DialogShell::DialogShell(QWidget* parent)

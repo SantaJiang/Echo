@@ -187,7 +187,7 @@ MainWindow::MainWindow(Library* library, Player* player, AudioEngine* engine, QW
     m_heading->setStyleSheet(QStringLiteral("font-size: 28px; font-weight: 700;"));
     m_heading->setFixedHeight(36);
     auto* searchRow = new QHBoxLayout();
-    searchRow->setContentsMargins(ContentLeftMargin, 0, 24, 8);
+    searchRow->setContentsMargins(ContentLeftMargin, 0, ContentRightMargin, 8);
     searchRow->setAlignment(Qt::AlignVCenter);
     searchRow->addWidget(m_heading, 0, Qt::AlignVCenter);
     searchRow->addStretch();
