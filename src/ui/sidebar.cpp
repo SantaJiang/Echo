@@ -214,19 +214,21 @@ Sidebar::Sidebar(QWidget* parent)
     settings->setAccessibleName(QStringLiteral("设置"));
     settings->setFrameShape(QFrame::NoFrame);
     settings->setFocusPolicy(Qt::NoFocus);
+    settings->setSelectionMode(QAbstractItemView::NoSelection);
     settings->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     settings->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     settings->setItemDelegate(new NavDelegate(settings));
     settings->setMouseTracking(true);
     settings->setFixedHeight(32);
     settings->setCursor(Qt::PointingHandCursor);
-    auto* settingsItem = new QListWidgetItem(icon(Icon::Settings, colors.accent, 16), QStringLiteral("设置"));
+    auto* settingsItem = new QListWidgetItem(icon(Icon::Settings, colors.secondary, 16), QStringLiteral("设置"));
     settingsItem->setSizeHint(QSize(0, 32));
     settings->addItem(settingsItem);
     connect(settings, &QListWidget::itemClicked, this, [this, settings] {
         emit settingsRequested();
         settings->clearSelection();
     });
+    layout->addSpacing(8);
     layout->addWidget(settings);
     setFixedWidth(200);
 }

@@ -360,8 +360,25 @@ int main(int argc, char** argv)
     auto* seek = bar->findChild<QSlider*>(QStringLiteral("playbackSeek"));
     check(std::abs(format->mapTo(bar, format->rect().center()).y() - seek->mapTo(bar, seek->rect().center()).y()) <= 1,
           "format and progress share a horizontal centerline");
+    auto checkPlayerCenter = [&] {
+        QApplication::processEvents();
+        auto* playButton = bar->findChild<QToolButton*>(QStringLiteral("playbackToggle"));
+        const qreal barCenter = bar->width() / 2.0;
+        const qreal playCenter = playButton->mapTo(bar, QPoint()).x() + playButton->width() / 2.0;
+        const qreal seekCenter = seek->mapTo(bar, QPoint()).x() + seek->width() / 2.0;
+        check(std::abs(playCenter - barCenter) <= 1, "play button centers on full player bar");
+        check(std::abs(seekCenter - barCenter) <= 1, "seek track shares player center axis");
+        const QRect infoBounds(format->mapTo(bar, QPoint()), format->size());
+        const QRect seekBounds(seek->mapTo(bar, QPoint()), seek->size());
+        check(infoBounds.right() < seekBounds.left(), "metadata stays clear of centered timeline");
+    };
+    for (int width : {1040, 1180, 1440}) {
+        window.resize(width, 760);
+        checkPlayerCenter();
+    }
     window.resize(1040, 640);
     grab(&window, out, QStringLiteral("minimum"));
+    checkPlayerCenter();
     check(bar->width() <= window.centralWidget()->width() - window.findChild<QWidget*>(QStringLiteral("sidebar"))->width(), "player fits minimum width");
     check(seek->width() >= 120, "seek remains usable at minimum width");
     auto longTitleTrack = tracks.front();

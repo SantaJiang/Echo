@@ -87,7 +87,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     layout->setVerticalSpacing(2);
     layout->setRowMinimumHeight(0, 44);
     layout->setRowMinimumHeight(1, 20);
-    layout->setColumnStretch(2, 1);
+    layout->setColumnStretch(1, 1);
 
     m_art = new QLabel(this);
     m_art->setFixedSize(48, 48);
@@ -149,6 +149,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     m_shuffle = make(Icon::Shuffle, 16);
     auto* previous = make(Icon::Previous, 16);
     m_play = make(Icon::Play, 18);
+    m_play->setObjectName(QStringLiteral("playbackToggle"));
     auto* next = make(Icon::Next, 16);
     m_repeat = make(Icon::Repeat, 16);
     m_shuffle->setToolTip(QStringLiteral("随机播放"));
@@ -171,7 +172,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     m_duration->setStyleSheet(timeStyle);
     m_elapsed->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_duration->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_elapsed->setFixedSize(44, 16);
+    m_elapsed->setFixedSize(48, 16);
     m_duration->setFixedSize(48, 16);
     auto* seek = new BarSlider(this);
     seek->fill = colors.accent;
@@ -216,15 +217,26 @@ PlayerBar::PlayerBar(QWidget* parent)
     auto* rightWrap = new QWidget(this);
     rightWrap->setLayout(right);
     right->setContentsMargins(0, 0, 0, 0);
-    rightWrap->setFixedWidth(154);
+    // Match the complete left group, keeping the center independent of its contents.
+    constexpr int sideWidth = 48 + 16 + 200;
+    rightWrap->setFixedWidth(sideWidth);
     rightWrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-    layout->addWidget(m_art, 0, 0, 2, 1, Qt::AlignVCenter);
-    layout->addWidget(metadata, 0, 1);
-    layout->addWidget(m_format, 1, 1);
-    layout->addWidget(controls, 0, 2);
-    layout->addWidget(timeline, 1, 2);
-    layout->addWidget(rightWrap, 0, 3, Qt::AlignVCenter);
+    auto* leftWrap = new QWidget(this);
+    leftWrap->setFixedWidth(sideWidth);
+    auto* left = new QGridLayout(leftWrap);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setHorizontalSpacing(16);
+    left->setVerticalSpacing(2);
+    left->setRowMinimumHeight(0, 44);
+    left->setRowMinimumHeight(1, 20);
+    left->addWidget(m_art, 0, 0, 2, 1, Qt::AlignVCenter);
+    left->addWidget(metadata, 0, 1);
+    left->addWidget(m_format, 1, 1);
+    layout->addWidget(leftWrap, 0, 0, 2, 1);
+    layout->addWidget(controls, 0, 1);
+    layout->addWidget(timeline, 1, 1);
+    layout->addWidget(rightWrap, 0, 2, Qt::AlignVCenter);
 
     connect(m_play, &QToolButton::clicked, this, &PlayerBar::toggleRequested);
     connect(previous, &QToolButton::clicked, this, &PlayerBar::previousRequested);
