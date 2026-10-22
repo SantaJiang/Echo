@@ -1,5 +1,6 @@
 #include "platform/platform.h"
 
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -7,6 +8,12 @@
 #include <QUrl>
 
 namespace echo {
+
+void quitApplication()
+{
+    // Explicit quit must bypass close-to-tray handlers on the main and mini windows.
+    QCoreApplication::exit(0);
+}
 
 void showInFileManager(const QString& path)
 {

@@ -128,9 +128,12 @@ void Scanner::scanRoot(qint64 rootId, const QString& path)
         const QFileInfo info(file);
         return QString::number(info.lastModified().toMSecsSinceEpoch()) + u':' + QString::number(info.size());
     };
+    bool missingArtwork = false;
     auto unchanged = [&](const Track& track) {
         const QFileInfo info(track.path);
-        return info.isFile() && info.isReadable() && info.size() == track.fileSize
+        const bool coverAvailable = track.artworkHash.isEmpty() || QFileInfo::exists(artwork.filePath(track.artworkHash));
+        missingArtwork |= !coverAvailable;
+        return coverAvailable && info.isFile() && info.isReadable() && info.size() == track.fileSize
             && info.lastModified().toMSecsSinceEpoch() == track.mtime;
     };
     QSet<QString> failedPaths;
@@ -355,7 +358,7 @@ void Scanner::scanRoot(qint64 rootId, const QString& path)
         emit failed(error);
         return;
     }
-    bool changed = root.status != QStringLiteral("available");
+    bool changed = missingArtwork || root.status != QStringLiteral("available");
     QSet<QString> present;
     for (auto track : output) {
         const auto key = track.path + u'\n' + QString::number(track.cueStartMs);

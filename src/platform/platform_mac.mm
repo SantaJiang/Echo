@@ -1,15 +1,12 @@
 #include "platform/platform.h"
 
 #include <QImage>
-#include <QApplication>
-#include <QAbstractButton>
-#include <QAbstractItemView>
-#include <QLineEdit>
+#include <QGuiApplication>
 #include <QPointer>
 #include <QLoggingCategory>
 #include <QTimer>
 #include <QElapsedTimer>
-#include <QWidget>
+#include <QWindow>
 
 #include <dispatch/dispatch.h>
 #include <cmath>
@@ -35,7 +32,17 @@
 @implementation EchoStatusHandler
 - (void)open:(id)sender { Q_UNUSED(sender); [NSApp activateIgnoringOtherApps:YES]; openWindow(); }
 - (void)settings:(id)sender { Q_UNUSED(sender); [NSApp activateIgnoringOtherApps:YES]; openSettings(); }
-- (void)quit:(id)sender { Q_UNUSED(sender); qApp->quit(); }
+- (void)quit:(id)sender { Q_UNUSED(sender); echo::quitApplication(); }
+@end
+
+@interface EchoMenuAction : NSObject {
+@public
+    std::function<void()> callback;
+}
+- (void)invoke:(id)sender;
+@end
+@implementation EchoMenuAction
+- (void)invoke:(id)sender { Q_UNUSED(sender); if (callback) callback(); }
 @end
 
 namespace echo {
@@ -57,8 +64,10 @@ void dispatchCommand(MediaCommand command, qint64 argument)
 
 } // namespace
 
-void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const std::function<void()>& settings)
+void installTrayIcon(QObject* owner, const std::function<void()>& open, const std::function<void()>& settings,
+    const std::function<void(const QPoint&)>& context)
 {
+    Q_UNUSED(context);
     NSStatusItem* item = [NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
     // A template image lets macOS choose the correct menu-bar contrast.
     NSImage* image = [NSImage imageWithSize:NSMakeSize(20, 20) flipped:NO drawingHandler:^BOOL(NSRect) {
@@ -133,110 +142,183 @@ void installMenuBarIcon(QWidget* owner, const std::function<void()>& open, const
     });
 }
 
+void installApplicationMenu(QObject* owner, const QVariantList& menus, const std::function<void(int)>& invoke)
+{
+    if (QGuiApplication::platformName() != "cocoa") return;
+    const QPointer<QObject> guarded(owner);
+    NSMutableArray* targets = [NSMutableArray new];
+    std::function<NSMenu*(const QVariantList&)> build = [&](const QVariantList& entries) -> NSMenu* {
+        NSMenu* menu = [NSMenu new];
+        for (const auto& value : entries) {
+            const auto entry = value.toMap();
+            if (entry.value("separator").toBool()) { [menu addItem:NSMenuItem.separatorItem]; continue; }
+            NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:entry.value("text").toString().toNSString() action:nil keyEquivalent:@""];
+            if (entry.contains("children")) item.submenu = build(entry.value("children").toList());
+            else {
+                EchoMenuAction* action = [EchoMenuAction new]; const int token = entry.value("token").toInt();
+                action->callback = [guarded, invoke, token] { if (guarded) invoke(token); };
+                item.target = action; item.action = @selector(invoke:); [targets addObject:action];
+            }
+            [menu addItem:item];
+        }
+        return menu;
+    };
+    NSMenu* main = build(menus);
+    NSMenuItem* appEntry = [NSMenuItem new];
+    NSMenu* app = [[NSMenu alloc] initWithTitle:@"Echo"];
+    EchoMenuAction* quitAction = [EchoMenuAction new];
+    quitAction->callback = [] { echo::quitApplication(); }; [targets addObject:quitAction];
+    NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"退出 Echo" action:@selector(invoke:) keyEquivalent:@"q"];
+    quit.target = quitAction; [app addItem:quit]; appEntry.submenu = app; [main insertItem:appEntry atIndex:0];
+    NSApp.mainMenu = main;
+    QObject::connect(owner, &QObject::destroyed, [targets] { Q_UNUSED(targets); });
+}
+
 void useDarkAppearance()
 {
     [NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]];
 }
 
-void applyWindowChrome(QWidget* window)
+void applyMiniWindowChrome(QWindow* window)
 {
     if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
-    useDarkAppearance();
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
     NSWindow* native = view.window;
-    const bool mini = window->property("echoMiniPlayer").toBool();
-    if (mini) {
-        native.styleMask = NSWindowStyleMaskBorderless;
-        native.level = NSFloatingWindowLevel;
-        native.hidesOnDeactivate = NO;
-        native.collectionBehavior = (native.collectionBehavior & ~NSWindowCollectionBehaviorMoveToActiveSpace
-                                     & ~NSWindowCollectionBehaviorFullScreenPrimary)
-            | NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-        native.opaque = NO;
-        native.backgroundColor = NSColor.clearColor;
-        native.hasShadow = YES;
-    }
+    native.styleMask = NSWindowStyleMaskBorderless;
+    native.level = NSFloatingWindowLevel;
+    native.hidesOnDeactivate = NO;
+    native.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    native.opaque = NO; native.backgroundColor = NSColor.clearColor; native.hasShadow = YES;
+}
+
+void applyQuickWindowChrome(QWindow* window)
+{
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa") || window->property("echoQuickChrome").toBool())
+        return;
+    window->setProperty("echoQuickChrome", true);
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
+    NSWindow* native = view.window;
+    if (!(native.styleMask & NSWindowStyleMaskFullSizeContentView))
+        native.styleMask |= NSWindowStyleMaskFullSizeContentView;
     native.titlebarAppearsTransparent = YES;
     native.titleVisibility = NSWindowTitleHidden;
-    if (!mini) native.styleMask |= NSWindowStyleMaskFullSizeContentView;
     native.toolbar = nil;
     native.movableByWindowBackground = NO;
     native.movable = YES;
+    native.hasShadow = YES;
+    if (@available(macOS 11.0, *))
+        native.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
 
-    // Track the native press/drag/release sequence, including the first press
-    // that activates the window, rather than handing it back to a second
-    // AppKit drag loop through Qt's startSystemMove().
-    const QPointer<QWidget> guardedWindow(window);
+    const QPointer<QWindow> guarded(window);
+    const auto positionButtons = [guarded] {
+        if (!guarded)
+            return;
+        NSView* content = (__bridge NSView*)reinterpret_cast<void*>(guarded->winId());
+        NSWindow* host = content.window;
+        if (host.styleMask & NSWindowStyleMaskFullScreen)
+            return;
+        // Qt can update the native style during window state transitions.
+        // Reapply for older Qt versions too, which have no expanded-area hint.
+        if (!(host.styleMask & NSWindowStyleMaskFullSizeContentView))
+            host.styleMask |= NSWindowStyleMaskFullSizeContentView;
+        host.titlebarAppearsTransparent = YES;
+        host.titleVisibility = NSWindowTitleHidden;
+        const qreal scale = content.bounds.size.width / qMax(1, guarded->width());
+        int i = 0;
+        for (NSWindowButton kind : { NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton }) {
+            NSButton* button = [host standardWindowButton:kind];
+            // The standard titlebar container is only 22 pt high and clips
+            // repositioned controls. Host them in the full-size content view.
+            if (button.superview != content) {
+                [button removeFromSuperview];
+                [content addSubview:button];
+            }
+            button.autoresizingMask = content.isFlipped ? NSViewMaxYMargin : NSViewMinYMargin;
+            const qreal top = 24 * scale - button.frame.size.height / 2;
+            const NSPoint point = NSMakePoint((18 + i++ * 20) * scale,
+                content.isFlipped ? top : content.bounds.size.height - top - button.frame.size.height);
+            [button setFrameOrigin:[button.superview convertPoint:point fromView:content]];
+        }
+    };
+    positionButtons();
+    QObject::connect(window, &QWindow::widthChanged, window, [window, positionButtons] {
+        QTimer::singleShot(0, window, positionButtons);
+    });
+    QObject::connect(window, &QWindow::heightChanged, window, [window, positionButtons] {
+        QTimer::singleShot(0, window, positionButtons);
+    });
+    QObject::connect(window, &QWindow::visibilityChanged, window, [window, positionButtons] {
+        QTimer::singleShot(0, window, positionButtons);
+    });
+    id fullscreenObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidExitFullScreenNotification object:native queue:nil
+        usingBlock:^(NSNotification*) {
+            if (guarded)
+                QTimer::singleShot(0, guarded.data(), positionButtons);
+        }];
+    QObject::connect(window, &QObject::destroyed, [fullscreenObserver] {
+        [[NSNotificationCenter defaultCenter] removeObserver:fullscreenObserver];
+    });
     __block BOOL dragging = NO;
     __block NSPoint pressPoint;
-    __block NSPoint windowOrigin;
+    __block NSPoint origin;
     id monitor = [NSEvent addLocalMonitorForEventsMatchingMask:
         NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
         handler:^NSEvent*(NSEvent* event) {
-            QWidget* target = guardedWindow.data();
-            if (!target || !target->isVisible()) {
+            QWindow* target = guarded.data();
+            if (!target || !target->isVisible())
                 return event;
-            }
-            NSView* targetView = (__bridge NSView*)reinterpret_cast<void*>(target->winId());
-            if (event.window != targetView.window) {
+            NSView* content = (__bridge NSView*)reinterpret_cast<void*>(target->winId());
+            NSWindow* host = content.window;
+            if (event.window != host)
                 return event;
-            }
             if (event.type == NSEventTypeLeftMouseUp) {
                 if (dragging) {
-                    const NSPoint origin = targetView.window.frame.origin;
-                    qCDebug(windowLog) << (target->property("echoMiniPlayer").toBool() ? "Mini drag" : "Main drag")
-                        << windowOrigin.x << windowOrigin.y << "->" << origin.x << origin.y;
+                    const NSPoint end = host.frame.origin;
+                    qCDebug(windowLog) << "Quick drag" << origin.x << origin.y << "->" << end.x << end.y;
                 }
                 const BOOL wasDragging = dragging;
                 dragging = NO;
                 return wasDragging ? nil : event;
             }
             if (event.type == NSEventTypeLeftMouseDragged) {
-                if (!dragging) {
+                if (!dragging)
                     return event;
-                }
-                const NSPoint point = [event.window convertPointToScreen:event.locationInWindow];
-                [targetView.window setFrameOrigin:NSMakePoint(windowOrigin.x + point.x - pressPoint.x,
-                                                             windowOrigin.y + point.y - pressPoint.y)];
+                const NSPoint point = [host convertPointToScreen:event.locationInWindow];
+                [host setFrameOrigin:NSMakePoint(origin.x + point.x - pressPoint.x, origin.y + point.y - pressPoint.y)];
                 return nil;
             }
             dragging = NO;
-            if (event.clickCount > 1 || (targetView.window.styleMask & NSWindowStyleMaskFullScreen)) {
+            const NSPoint point = [content convertPoint:event.locationInWindow fromView:nil];
+            const qreal y = content.isFlipped ? point.y : content.bounds.size.height - point.y;
+            const qreal scale = content.bounds.size.width / qMax(1, target->width());
+            const bool dragArea = point.x >= 88 * scale && point.x < content.bounds.size.width - 6 * scale
+                && y >= 6 * scale && (y < 24 * scale
+                    || (y < 48 * scale && (point.x < 218 * scale || point.x >= 650 * scale)));
+            if ((host.styleMask & NSWindowStyleMaskFullScreen) || !dragArea)
                 return event;
+            if (event.clickCount == 2) {
+                // The first press is consumed by this native drag monitor, so
+                // QML cannot recognize the second press as a double click.
+                NSString* action = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleActionOnDoubleClick"];
+                if (action && [action caseInsensitiveCompare:@"Minimize"] == NSOrderedSame)
+                    [host performMiniaturize:nil];
+                else if (!action || [action caseInsensitiveCompare:@"None"] != NSOrderedSame)
+                    [host performZoom:nil];
+                return nil;
             }
-            const NSPoint point = [targetView convertPoint:event.locationInWindow fromView:nil];
-            const qreal y = targetView.isFlipped ? point.y : targetView.bounds.size.height - point.y;
-            const QPoint local(qRound(point.x), qRound(y));
-            const bool mini = target->property("echoMiniPlayer").toBool();
-            const bool trafficLights = !mini && local.x() < 74 && local.y() < 36;
-            if (!target->rect().contains(local) || (!mini && local.y() >= 52) || trafficLights) {
+            if (event.clickCount > 2)
                 return event;
-            }
-            for (QWidget* hit = QApplication::widgetAt(target->mapToGlobal(local)); hit && hit != target;
-                 hit = hit->parentWidget()) {
-                if (qobject_cast<QAbstractButton*>(hit) || qobject_cast<QLineEdit*>(hit)
-                    || qobject_cast<QAbstractItemView*>(hit)) {
-                    return event;
-                }
-            }
-            pressPoint = [event.window convertPointToScreen:event.locationInWindow];
-            windowOrigin = targetView.window.frame.origin;
+            pressPoint = [host convertPointToScreen:event.locationInWindow];
+            origin = host.frame.origin;
             dragging = YES;
-            [targetView.window makeKeyAndOrderFront:nil];
+            [host makeKeyAndOrderFront:nil];
             return nil;
         }];
-    QObject::connect(window, &QObject::destroyed, [monitor] {
-        [NSEvent removeMonitor:monitor];
-    });
+    QObject::connect(window, &QObject::destroyed, [monitor] { [NSEvent removeMonitor:monitor]; });
 }
 
-void installSidebarEffect(QWidget*)
-{
-    // Qt 把控件画在 NSView 的图层上。再叠一层 NSVisualEffectView 会盖住侧边栏文字，
-    // 所以这里用实色侧边栏，不插入系统材质视图。
-}
-
-void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qint64)>& handler)
+void installMediaIntegration(QWindow*, const std::function<void(MediaCommand, qint64)>& handler)
 {
     g_handler = handler;
     MPRemoteCommandCenter* center = [MPRemoteCommandCenter sharedCommandCenter];

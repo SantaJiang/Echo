@@ -1,7 +1,4 @@
 #include "ui/icons.h"
-#include "ui/theme.h"
-#include <QToolButton>
-#include <QSignalBlocker>
 
 #include <algorithm>
 
@@ -10,6 +7,11 @@
 #include <QFontMetrics>
 #include <QPainter>
 #include <QPainterPath>
+
+static void initializeIconResources()
+{
+    Q_INIT_RESOURCE(echo);
+}
 
 namespace echo {
 namespace {
@@ -23,6 +25,7 @@ GlyphFont& glyphs()
 {
     static GlyphFont font;
     if (!font.ready) {
+        initializeIconResources();
         const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/fa-solid-900.ttf"));
         const QStringList families = QFontDatabase::applicationFontFamilies(id);
         font.family = families.isEmpty() ? QStringLiteral("Font Awesome 6 Free") : families.constFirst();
@@ -119,20 +122,6 @@ QIcon icon(Icon kind, const QColor& color, int size)
     const qreal y = (side - bounds.height()) / 2.0 - bounds.y();
     painter.drawText(QPointF(x, y), glyph);
     return QIcon(pixmap);
-}
-
-void setFavoriteButton(QToolButton* button, bool liked, bool enabled)
-{
-    if (!button->icon().isNull() && button->isChecked() == liked && button->isEnabled() == enabled) return;
-    const QSignalBlocker blocker(button);
-    button->setCheckable(true);
-    button->setChecked(liked);
-    button->setEnabled(enabled);
-    button->setIcon(icon(liked ? Icon::HeartFilled : Icon::Heart,
-                         liked ? palette().accent : palette().secondary, 18));
-    const QString tip = liked ? QStringLiteral("取消喜欢") : QStringLiteral("添加到我喜欢的");
-    button->setToolTip(tip);
-    button->setAccessibleName(tip);
 }
 
 QPixmap placeholderCover(int side)

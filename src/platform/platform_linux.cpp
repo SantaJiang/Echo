@@ -1,14 +1,16 @@
 #include "platform/platform.h"
 
-#include <QWidget>
+#include <QWindow>
 
 namespace echo {
 
 void useDarkAppearance() {}
 
-void applyWindowChrome(QWidget*) {}
+void applyMiniWindowChrome(QWindow*) {}
+void installApplicationMenu(QObject*, const QVariantList&, const std::function<void(int)>&) {}
+void applyQuickWindowChrome(QWindow*) {}
 
-void installSidebarEffect(QWidget*) {}
+
 
 } // namespace echo
 
@@ -16,18 +18,21 @@ void installSidebarEffect(QWidget*) {}
 
 namespace echo {
 
-void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qint64)>&) {}
+void installMediaIntegration(QWindow*, const std::function<void(MediaCommand, qint64)>&) {}
 
 void updateSystemNowPlaying(const Track&, const QImage&, qint64, qint64, bool, bool) {}
+void installTrayIcon(QObject*, const std::function<void()>&, const std::function<void()>&, const std::function<void(const QPoint&)>&) {}
 
 } // namespace echo
 
 #else
 
 #include <QDBusAbstractAdaptor>
+#include <QDBusServiceWatcher>
+#include <QDBusPendingCall>
 #include <QDBusConnection>
 #include <QDBusMessage>
-#include <QApplication>
+#include <QGuiApplication>
 
 namespace echo {
 
@@ -43,6 +48,49 @@ qint64 g_durationMs = 0;
 QObject* g_object = nullptr;
 
 } // namespace
+
+class StatusNotifier : public QDBusAbstractAdaptor {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.kde.StatusNotifierItem")
+    Q_PROPERTY(QString Category READ category CONSTANT)
+    Q_PROPERTY(QString Id READ id CONSTANT)
+    Q_PROPERTY(QString Title READ id CONSTANT)
+    Q_PROPERTY(QString Status READ status CONSTANT)
+    Q_PROPERTY(QString IconName READ iconName CONSTANT)
+    Q_PROPERTY(bool ItemIsMenu READ itemIsMenu CONSTANT)
+public:
+    std::function<void()> open;
+    std::function<void(const QPoint&)> context;
+    StatusNotifier(QObject* owner) : QDBusAbstractAdaptor(owner) {}
+    QString category() const { return "ApplicationStatus"; }
+    QString id() const { return "Echo"; }
+    QString status() const { return "Active"; }
+    QString iconName() const { return "audio-x-generic"; }
+    bool itemIsMenu() const { return false; }
+public slots:
+    void Activate(int, int) { if (open) open(); }
+    void SecondaryActivate(int, int) { if (open) open(); }
+    void ContextMenu(int x, int y) { if (context) context(QPoint(x, y)); }
+};
+void installTrayIcon(QObject* owner, const std::function<void()>& open, const std::function<void()>& settings,
+    const std::function<void(const QPoint&)>& context)
+{
+    Q_UNUSED(settings);
+    auto* object = new QObject(owner); auto* item = new StatusNotifier(object); item->open = open; item->context = context;
+    const QString service = "org.kde.StatusNotifierItem-" + QString::number(QCoreApplication::applicationPid()) + "-1";
+    auto bus = QDBusConnection::sessionBus();
+    if (!bus.registerService(service)) return;
+    bus.registerObject("/StatusNotifierItem", object, QDBusConnection::ExportAdaptors);
+    auto registerItem = [service] {
+        auto message = QDBusMessage::createMethodCall("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher", "RegisterStatusNotifierItem");
+        message << service; QDBusConnection::sessionBus().asyncCall(message);
+    };
+    registerItem();
+    auto* watcher = new QDBusServiceWatcher("org.kde.StatusNotifierWatcher", bus, QDBusServiceWatcher::WatchForRegistration, object);
+    QObject::connect(watcher, &QDBusServiceWatcher::serviceRegistered, object, [registerItem](const QString&) { registerItem(); });
+    QObject::connect(owner, &QObject::destroyed, [service] { auto bus = QDBusConnection::sessionBus(); bus.unregisterObject("/StatusNotifierItem"); bus.unregisterService(service); });
+}
 
 class MprisRoot : public QDBusAbstractAdaptor {
     Q_OBJECT
@@ -66,14 +114,19 @@ public:
     QString desktop() const { return QStringLiteral("echo"); }
 
 public slots:
-    void Quit() { qApp->quit(); }
+    void Quit() { quitApplication(); }
     void Raise()
     {
-        for (QWidget* widget : QApplication::topLevelWidgets()) {
-            widget->show();
-            widget->raise();
-            widget->activateWindow();
+        for (QWindow* window : QGuiApplication::allWindows()) {
+            if (window->property("echoMainWindow").toBool()) {
+                if (window->visibility() == QWindow::Minimized) window->showNormal();
+                else window->show();
+                window->raise();
+                window->requestActivate();
+                return;
+            }
         }
+
     }
 };
 
@@ -149,13 +202,13 @@ public slots:
     }
 };
 
-void installMediaIntegration(QWidget*, const std::function<void(MediaCommand, qint64)>& handler)
+void installMediaIntegration(QWindow*, const std::function<void(MediaCommand, qint64)>& handler)
 {
     g_handler = handler;
     if (g_object) {
         return;
     }
-    g_object = new QObject(qApp);
+    g_object = new QObject(qGuiApp);
     new MprisRoot(g_object);
     new MprisPlayer(g_object);
     auto bus = QDBusConnection::sessionBus();

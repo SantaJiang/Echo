@@ -4,15 +4,15 @@
 
 ## 构建
 
-依赖：Qt 6.5+（Widgets、Sql）、FFmpeg、TagLib、libebur128、CMake 3.24+、C++20。Linux 额外需要 PipeWire 或 ALSA，以及 Qt DBus。
+依赖：Qt 6.5+（Quick、QuickControls2、QuickDialogs2、Sql、Concurrent、Network、Test）、FFmpeg、TagLib、libebur128、CMake 3.24+、C++20。macOS 打包需要 Python 3.9+；Linux 额外需要 PipeWire 或 ALSA，以及 Qt DBus。
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/Qt/6.x/macos"
 cmake --build build -j
 ./build/echo-selftest
 ./build/echo-playbacktest
+./build/echo-quicktest
 ./build/echo-foldertest
-QT_QPA_PLATFORM=offscreen ./build/echo-uitest
 ./build/Echo.app/Contents/MacOS/Echo
 ```
 
@@ -23,6 +23,18 @@ cmake --build build --target package
 ```
 
 macOS 生成 dmg，Windows 生成 NSIS 安装程序，Linux 生成 deb。
+
+## Qt Quick 客户端
+
+默认主界面采用 Qt Quick/QML，资料库查询、播放控制和音频输出仍使用现有 C++ 核心。封面网格、歌曲列表和队列按可见区域创建界面项，读取资料库使用独立只读连接；切换页面和搜索时丢弃过期结果。播放详情提供上下滑动过渡、封面模糊背景、LRC 歌词跟随和点击定位；支持纯文本歌词，无歌词时显示空状态。
+
+底部播放栏贯穿整个主窗口；单击空白处打开详情后，底栏隐藏，详情页使用自己的播放控件。通过收起按钮或 Escape 返回主窗口并恢复底栏。详情页以 360 ms 上下滑动过渡，不缩放封面或页面。设置位于侧栏底部、播放栏上方；队列可拖动重排，也可通过右键菜单调整。歌曲支持多选、键盘导航和右键操作；普通歌单可通过右键菜单或 Option/Alt+方向键调整顺序。设置、歌曲信息、文件选择、右键菜单和迷你播放器均使用 QML；「减少动态效果」位于设置中。macOS 应用菜单和托盘保留系统原生集成。
+
+界面仅使用 Qt Quick，启动基于 QGuiApplication，不链接或打包 Qt Widgets；资料库和播放核心继续使用 C++。
+
+`echo-quicktest` 使用独立的临时资料库和静音输出，但会实际解码并检查非零 PCM、真实 QML 鼠标/键盘交互、播放/定位/收藏、歌词、搜索竞态、重复歌单条目、队列与关闭常驻行为，以及 10,003 首歌曲的后台读取与列表复用。截图写入 `/tmp/echo-quick-qa`。可用 `QT_SCALE_FACTOR=2 ./build/echo-quicktest` 检查 2× 缩放；`./build/echo-quicktest --preview` 完成测试后保留一个临时资料库窗口供交互预览，五分钟后退出。
+
+macOS 安装构建产物时会扫描 QML 依赖，只部署需要的 Cocoa、SQLite、图像和控件插件，检查 bundle 中的动态依赖并重新做 ad-hoc 签名。此签名用于本地运行，不代表 Developer ID 签名或公证。
 
 ## 应用图标
 

@@ -13,14 +13,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Sql Concurrent Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Gui Sql Concurrent Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 QuickDialogs2 Test)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
 pkg_check_modules(EBUR128 REQUIRED IMPORTED_TARGET libebur128)
 
 if(UNIX AND NOT APPLE)
-  find_package(Qt6 COMPONENTS DBus)
+  find_package(Qt6 REQUIRED COMPONENTS DBus)
   pkg_check_modules(PIPEWIRE libpipewire-0.3)
   pkg_check_modules(ALSA alsa)
 endif()
@@ -89,94 +90,63 @@ else()
   target_compile_options(echo_core PRIVATE -Wall -Wextra)
 endif()
 
-set(ECHO_UI_SOURCES
-  src/ui/dialogs.cpp
-  src/ui/theme.cpp
-  src/ui/icons.cpp
-  src/ui/tracktable.cpp
-  src/ui/sidebar.cpp
-  src/ui/pages.cpp
-  src/ui/playerbar.cpp
-  src/ui/queuepanel.cpp
-  src/ui/miniplayer.cpp
-  src/ui/trackdialog.cpp
-  src/ui/settingsdialog.cpp
-  src/ui/mainwindow.cpp
-  src/platform/platform.cpp
-  resources/echo.qrc
-)
+set(ECHO_SUPPORT_SOURCES src/ui/theme.cpp src/ui/icons.cpp src/platform/platform.cpp resources/echo.qrc)
 if(APPLE)
-  list(APPEND ECHO_UI_SOURCES src/platform/platform_mac.mm)
+  list(APPEND ECHO_SUPPORT_SOURCES src/platform/platform_mac.mm)
 elseif(WIN32)
-  list(APPEND ECHO_UI_SOURCES src/platform/platform_win.cpp)
+  list(APPEND ECHO_SUPPORT_SOURCES src/platform/platform_win.cpp)
 else()
-  list(APPEND ECHO_UI_SOURCES src/platform/platform_linux.cpp)
+  list(APPEND ECHO_SUPPORT_SOURCES src/platform/platform_linux.cpp)
 endif()
-
-add_executable(echo src/main.cpp ${ECHO_UI_SOURCES})
-add_executable(echo-uishot tools/uishot.cpp ${ECHO_UI_SOURCES})
-target_link_libraries(echo PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
-target_link_libraries(echo-uishot PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
+add_library(echo_ui_support STATIC ${ECHO_SUPPORT_SOURCES})
+target_link_libraries(echo_ui_support PUBLIC echo_core Qt6::Network)
+add_library(echo_quick STATIC src/quick/playbackview.cpp src/quick/quickview.cpp src/quick/client.cpp src/quick/rowmodel.h src/quick/quick.qrc)
+target_include_directories(echo_quick PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(echo_quick PUBLIC echo_ui_support Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
+add_executable(echo src/main.cpp)
+target_link_libraries(echo PRIVATE echo_quick)
 if(APPLE)
+  target_link_libraries(echo_ui_support PUBLIC "-framework AppKit" "-framework MediaPlayer")
   target_sources(echo PRIVATE data/echo.icns)
   set_source_files_properties(data/echo.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-  target_sources(echo-uishot PRIVATE tools/macuitest.mm)
-  set_source_files_properties(tools/macuitest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  target_link_libraries(echo PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
-  target_link_libraries(echo-uishot PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
   set_source_files_properties(src/platform/platform_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-  set_target_properties(echo PROPERTIES
-    OUTPUT_NAME Echo
-    MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_GUI_IDENTIFIER org.echo.player
-    MACOSX_BUNDLE_BUNDLE_NAME Echo
-    MACOSX_BUNDLE_ICON_FILE echo.icns
-    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+  set_target_properties(echo PROPERTIES OUTPUT_NAME Echo MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.echo.player MACOSX_BUNDLE_BUNDLE_NAME Echo
+    MACOSX_BUNDLE_ICON_FILE echo.icns MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
-    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/data/MacOSXBundleInfo.plist.in
-  )
-endif()
-if(WIN32)
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/data/MacOSXBundleInfo.plist.in)
+elseif(WIN32)
   enable_language(RC)
   target_sources(echo PRIVATE data/echo.rc)
   target_include_directories(echo PRIVATE ${CMAKE_SOURCE_DIR}/data)
-  target_link_libraries(echo PRIVATE dwmapi comctl32)
+  target_link_libraries(echo_ui_support PUBLIC dwmapi shell32)
   set_target_properties(echo PROPERTIES WIN32_EXECUTABLE TRUE OUTPUT_NAME Echo)
-endif()
-if(UNIX AND NOT APPLE)
+else()
   set_target_properties(echo PROPERTIES OUTPUT_NAME Echo)
-endif()
-if(Qt6DBus_FOUND)
-  target_link_libraries(echo PRIVATE Qt6::DBus)
-  target_compile_definitions(echo PRIVATE ECHO_HAS_MPRIS=1)
+  if(Qt6DBus_FOUND)
+    target_compile_definitions(echo_ui_support PRIVATE ECHO_HAS_MPRIS=1)
+    target_link_libraries(echo_ui_support PRIVATE Qt6::DBus)
+  endif()
 endif()
 if(NOT MSVC)
   target_compile_options(echo PRIVATE -Wall -Wextra)
-  target_compile_options(echo-uishot PRIVATE -Wall -Wextra)
+  target_compile_options(echo_quick PRIVATE -Wall -Wextra)
+  target_compile_options(echo_ui_support PRIVATE -Wall -Wextra)
 endif()
-
-add_executable(echo-foldertest tools/foldertest.cpp ${ECHO_UI_SOURCES})
-target_link_libraries(echo-foldertest PRIVATE echo_core Qt6::Widgets Qt6::Concurrent Qt6::Network)
-if(APPLE)
-  target_link_libraries(echo-foldertest PRIVATE "-framework AppKit" "-framework MediaPlayer" "-framework CoreFoundation")
-endif()
-
+add_executable(echo-quicktest tools/quicktest.cpp)
+target_link_libraries(echo-quicktest PRIVATE echo_quick Qt6::Test)
+add_executable(echo-foldertest tools/foldertest.cpp)
+target_link_libraries(echo-foldertest PRIVATE echo_ui_support)
 add_executable(echo-probe tools/probe.cpp)
 target_link_libraries(echo-probe PRIVATE echo_core)
-
 add_executable(echo-selftest tools/selftest.cpp)
 target_link_libraries(echo-selftest PRIVATE echo_core)
-
+add_executable(echo-playbacktest tools/playbacktest.cpp)
+target_link_libraries(echo-playbacktest PRIVATE echo_core)
 if(APPLE)
   add_executable(echo-spatialtest tools/spatialtest.cpp)
   target_link_libraries(echo-spatialtest PRIVATE echo_core)
 endif()
-
-add_executable(echo-playbacktest tools/playbacktest.cpp)
-target_link_libraries(echo-playbacktest PRIVATE echo_core)
-
-add_executable(echo-uitest tools/uitest.cpp src/ui/dialogs.cpp src/ui/tracktable.cpp src/ui/theme.cpp src/ui/icons.cpp resources/echo.qrc)
-target_link_libraries(echo-uitest PRIVATE echo_core Qt6::Widgets)
 
 if(APPLE)
   get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
@@ -190,10 +160,11 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS echo BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(ECHO_MACDEPLOYQT)
-  install(CODE "execute_process(COMMAND \"${ECHO_MACDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/Echo.app\" -always-overwrite)")
+  find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+  install(CODE "execute_process(COMMAND \"${Python3_EXECUTABLE}\" \"${CMAKE_SOURCE_DIR}/tools/deploy_macos.py\" --bundle \"\${CMAKE_INSTALL_PREFIX}/Echo.app\" --qt \"${ECHO_QT_PREFIX}\" --qml \"${CMAKE_SOURCE_DIR}/src/quick/qml\" --macdeployqt \"${ECHO_MACDEPLOYQT}\" COMMAND_ERROR_IS_FATAL ANY)")
 endif()
 if(ECHO_WINDEPLOYQT)
-  install(CODE "execute_process(COMMAND \"${ECHO_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe\")")
+  install(CODE "execute_process(COMMAND \"${ECHO_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe\" --qmldir \"${CMAKE_SOURCE_DIR}/src/quick/qml\" COMMAND_ERROR_IS_FATAL ANY)")
 endif()
 install(TARGETS echo-probe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(UNIX AND NOT APPLE)

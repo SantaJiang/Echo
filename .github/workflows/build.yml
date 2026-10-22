@@ -10,9 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 安装依赖
-        run: brew install cmake ninja pkg-config qtbase ffmpeg taglib libebur128
+        run: brew install cmake ninja pkg-config qtbase qtdeclarative ffmpeg taglib libebur128
       - name: 配置
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix qtdeclarative)"
       - name: 编译
         run: cmake --build build
       - name: 自测
@@ -20,7 +20,7 @@ jobs:
           ./build/echo-selftest
           ./build/echo-playbacktest
           ./build/echo-foldertest
-          QT_QPA_PLATFORM=offscreen ./build/echo-uitest
+          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest --qml-smoke
 
   ubuntu:
     runs-on: ubuntu-24.04
@@ -32,15 +32,19 @@ jobs:
           sudo apt-get install -y cmake ninja-build pkg-config qt6-base-dev \
             libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
             libebur128-dev libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
       - name: 配置
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
       - name: 编译
         run: cmake --build build
       - name: 自测
         run: |
           ./build/echo-selftest
           ./build/echo-playbacktest
-          QT_QPA_PLATFORM=offscreen ./build/echo-uitest
+          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest --qml-smoke
 
   windows:
     runs-on: windows-latest
@@ -58,6 +62,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-libebur128
             mingw-w64-ucrt-x86_64-taglib
@@ -70,4 +75,4 @@ jobs:
         run: |
           ./build/echo-selftest.exe
           ./build/echo-playbacktest.exe
-          QT_QPA_PLATFORM=offscreen ./build/echo-uitest.exe
+          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest.exe --qml-smoke

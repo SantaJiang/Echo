@@ -1,12 +1,17 @@
-#include "ui/dialogs.h"
 #include "audio/engine.h"
 #include "library/library.h"
 #include "platform/platform.h"
 #include "playback/player.h"
-#include "ui/mainwindow.h"
+#include "quick/client.h"
+#include "quick/playbackview.h"
+#include "quick/quickview.h"
 #include "ui/theme.h"
 
-#include <QApplication>
+#include <QGuiApplication>
+#include <QCommandLineParser>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QQuickStyle>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -14,8 +19,9 @@
 #include <QIcon>
 #include <QLocalServer>
 #include <QLocalSocket>
-#include <QMessageBox>
 #include <QStandardPaths>
+#include <functional>
+#include <memory>
 
 namespace {
 
@@ -46,14 +52,17 @@ int main(int argc, char** argv)
         QCoreApplication::addLibraryPath(QString::fromUtf8(ECHO_QT_PLUGINS));
     }
 #endif
-    QApplication application(argc, argv);
+    QGuiApplication application(argc, argv);
+    Q_INIT_RESOURCE(quick);
+    Q_INIT_RESOURCE(echo);
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
     echo::useDarkTheme();
     echo::useDarkAppearance();
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationVersion(QStringLiteral("1.0.2"));
     QIcon appIcon;
-    for (const int size : {32, 64, 128, 256, 512}) {
+    for (const int size : { 32, 64, 128, 256, 512 }) {
         appIcon.addFile(QStringLiteral(":/icons/echo-%1.png").arg(size));
     }
     application.setWindowIcon(appIcon);
@@ -70,10 +79,11 @@ int main(int argc, char** argv)
     font.setPointSize(13);
     application.setFont(font);
 
-    QStringList paths;
-    for (int index = 1; index < argc; ++index) {
-        paths.push_back(QString::fromLocal8Bit(argv[index]));
-    }
+    QCommandLineParser parser;
+    parser.addHelpOption(); parser.addVersionOption();
+    parser.addPositionalArgument("files", QStringLiteral("音乐文件或资料库文件夹"), "[files...]");
+    parser.process(application);
+    const auto paths = parser.positionalArguments();
     QLocalSocket socket;
     socket.connectToServer(QStringLiteral("echo-player"));
     if (socket.waitForConnected(200)) {
@@ -85,30 +95,41 @@ int main(int argc, char** argv)
     echo::Library library;
     QString error;
     if (!library.open(&error)) {
-        echo::MessageDialog::critical(nullptr, QStringLiteral("Echo"), error.isEmpty() ? QStringLiteral("无法打开资料库") : error);
+        QQmlApplicationEngine errorView;
+        errorView.rootContext()->setContextProperty("startupMessage", error.isEmpty() ? QStringLiteral("无法打开资料库") : error);
+        errorView.load(QUrl("qrc:/echo/quick/StartupError.qml"));
+        if (!errorView.rootObjects().isEmpty()) application.exec();
         return 1;
     }
     echo::AudioEngine engine;
     echo::Player player(&library, &engine);
     player.restoreSession();
-    echo::MainWindow window(&library, &player, &engine);
+    echo::PlaybackView playback(&library, &player, &engine);
+    echo::Client client(&library, &player, &engine);
+    echo::QuickView quick(&playback, &client);
+    if (quick.status() != QQuickView::Ready) {
+        qCritical("无法加载 Qt Quick 界面，请检查 QML 运行依赖。"); return 1;
+    }
+    client.attach(&quick);
+    auto openPaths = [&](const QStringList& files) { client.openPaths(files); };
+    auto showWindow = [&] { client.showMainWindow(); };
 
     QLocalServer::removeServer(QStringLiteral("echo-player"));
     QLocalServer server;
     server.listen(QStringLiteral("echo-player"));
-    QObject::connect(&server, &QLocalServer::newConnection, &window, [&server, &window] {
+    QObject::connect(&server, &QLocalServer::newConnection, &application, [&server, &openPaths, &showWindow] {
         while (QLocalSocket* client = server.nextPendingConnection()) {
             client->waitForReadyRead(300);
             const QStringList incoming = QString::fromUtf8(client->readAll()).split(u'\n', Qt::SkipEmptyParts);
-            window.openPaths(incoming);
-            window.showMainWindow();
+            openPaths(incoming);
+            showWindow();
             client->deleteLater();
         }
     });
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &player, &echo::Player::saveSession);
     if (!paths.isEmpty()) {
-        window.openPaths(paths);
+        openPaths(paths);
     }
-    window.show();
+    showWindow();
     return application.exec();
 }

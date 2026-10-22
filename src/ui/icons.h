@@ -4,7 +4,6 @@
 #include <QIcon>
 #include <QPixmap>
 
-class QToolButton;
 
 namespace echo {
 
@@ -31,7 +30,6 @@ enum class Icon {
 };
 
 [[nodiscard]] QIcon icon(Icon kind, const QColor& color, int size = 16);
-void setFavoriteButton(QToolButton* button, bool liked, bool enabled);
 [[nodiscard]] QPixmap placeholderCover(int side);
 
 } // namespace echo
