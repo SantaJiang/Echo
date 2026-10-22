@@ -20,6 +20,26 @@
 namespace echo {
 namespace {
 
+constexpr int CoverSide = 66;
+
+// Center the visible digits on the painted slider rather than the font's line box.
+class TimeLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setFont(font());
+        painter.setPen(echo::palette().secondary);
+        const QRectF ink = QFontMetricsF(font()).tightBoundingRect(text());
+        const qreal x = alignment().testFlag(Qt::AlignRight)
+            ? width() - ink.right() : -ink.left();
+        painter.drawText(QPointF(x, height() / 2.0 - ink.center().y()), text());
+    }
+};
+
 class BarSlider : public QSlider {
 public:
     QColor fill {QStringLiteral("#1D1D1F")};
@@ -65,6 +85,7 @@ QPixmap roundedCover(const QPixmap& source, int side)
     output.fill(Qt::transparent);
     QPainter painter(&output);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, side, side), 6, 6);
     painter.setClipPath(path);
@@ -90,8 +111,8 @@ PlayerBar::PlayerBar(QWidget* parent)
     layout->setColumnStretch(1, 1);
 
     m_art = new QLabel(this);
-    m_art->setFixedSize(48, 48);
-    m_art->setPixmap(placeholderCover(48));
+    m_art->setFixedSize(CoverSide, CoverSide);
+    m_art->setPixmap(placeholderCover(CoverSide));
     auto* meta = new QVBoxLayout();
     meta->setSpacing(2);
     meta->setContentsMargins(0, 0, 0, 0);
@@ -119,7 +140,7 @@ PlayerBar::PlayerBar(QWidget* parent)
         button->setIcon(icon(kind, colors.text, size));
         button->setAutoRaise(true);
         button->setIconSize(QSize(size, size));
-        button->setFixedSize(36, 36);
+        button->setFixedSize(32, 32);
         button->setFocusPolicy(Qt::NoFocus);
         return button;
     };
@@ -150,6 +171,14 @@ PlayerBar::PlayerBar(QWidget* parent)
     auto* previous = make(Icon::Previous, 16);
     m_play = make(Icon::Play, 18);
     m_play->setObjectName(QStringLiteral("playbackToggle"));
+    m_play->setFixedSize(38, 38);
+    m_play->setStyleSheet(QStringLiteral(
+        "QToolButton { background: %1; border: none; border-radius: 19px; }"
+        "QToolButton:hover { background: %2; }"
+        "QToolButton:pressed { background: %3; }")
+        .arg(colors.text.name(), colors.dark ? QStringLiteral("#FFFFFF") : QStringLiteral("#3A3A3C"),
+             colors.dark ? QStringLiteral("#CCCCD0") : QStringLiteral("#48484A")));
+    m_play->setIcon(icon(Icon::Play, colors.window, 18));
     auto* next = make(Icon::Next, 16);
     m_repeat = make(Icon::Repeat, 16);
     m_shuffle->setToolTip(QStringLiteral("随机播放"));
@@ -159,14 +188,16 @@ PlayerBar::PlayerBar(QWidget* parent)
     m_repeat->setToolTip(QStringLiteral("循环播放"));
     buttons->addStretch();
     buttons->addWidget(m_shuffle, 0, Qt::AlignVCenter);
+    buttons->addSpacing(12);
     buttons->addWidget(previous, 0, Qt::AlignVCenter);
     buttons->addWidget(m_play, 0, Qt::AlignVCenter);
     buttons->addWidget(next, 0, Qt::AlignVCenter);
+    buttons->addSpacing(12);
     buttons->addWidget(m_repeat, 0, Qt::AlignVCenter);
     buttons->addStretch();
 
-    m_elapsed = new QLabel(QStringLiteral("0:00"), this);
-    m_duration = new QLabel(QStringLiteral("0:00"), this);
+    m_elapsed = new TimeLabel(QStringLiteral("0:00"), this);
+    m_duration = new TimeLabel(QStringLiteral("0:00"), this);
     const QString timeStyle = QStringLiteral("color: %1; font-size: 11px; padding: 0; margin: 0;").arg(colors.secondary.name());
     m_elapsed->setStyleSheet(timeStyle);
     m_duration->setStyleSheet(timeStyle);
@@ -218,7 +249,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     rightWrap->setLayout(right);
     right->setContentsMargins(0, 0, 0, 0);
     // Match the complete left group, keeping the center independent of its contents.
-    constexpr int sideWidth = 48 + 16 + 200;
+    constexpr int sideWidth = CoverSide + 16 + 200;
     rightWrap->setFixedWidth(sideWidth);
     rightWrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
@@ -236,7 +267,7 @@ PlayerBar::PlayerBar(QWidget* parent)
     layout->addWidget(leftWrap, 0, 0, 2, 1);
     layout->addWidget(controls, 0, 1);
     layout->addWidget(timeline, 1, 1);
-    layout->addWidget(rightWrap, 0, 2, Qt::AlignVCenter);
+    layout->addWidget(rightWrap, 0, 2, 2, 1, Qt::AlignVCenter);
 
     connect(m_play, &QToolButton::clicked, this, &PlayerBar::toggleRequested);
     connect(previous, &QToolButton::clicked, this, &PlayerBar::previousRequested);
@@ -266,7 +297,7 @@ void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
         m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600; color: %1;").arg(echo::palette().secondary.name()));
         m_artist->clear();
         m_format->clear();
-        m_art->setPixmap(placeholderCover(48));
+        m_art->setPixmap(placeholderCover(CoverSide));
         return;
     }
     m_title->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 600;"));
@@ -279,7 +310,7 @@ void PlayerBar::setTrack(const Track& track, const QPixmap& artwork)
     m_title->setText(metrics.elidedText(title, Qt::ElideRight, titleWidth));
     m_artist->setText(track.displayArtist());
     m_artist->show();
-    m_art->setPixmap(roundedCover(artwork, 48));
+    m_art->setPixmap(roundedCover(artwork, CoverSide));
 }
 
 void PlayerBar::setPosition(qint64 positionMs, qint64 durationMs)
@@ -295,7 +326,7 @@ void PlayerBar::setPosition(qint64 positionMs, qint64 durationMs)
 void PlayerBar::setPlaying(bool playing)
 {
     m_play->setToolTip(playing ? QStringLiteral("暂停") : QStringLiteral("播放"));
-    m_play->setIcon(icon(playing ? Icon::Pause : Icon::Play, echo::palette().text, 18));
+    m_play->setIcon(icon(playing ? Icon::Pause : Icon::Play, echo::palette().window, 18));
     m_play->setIconSize(QSize(18, 18));
 }
 
