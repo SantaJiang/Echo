@@ -7,6 +7,7 @@ Rectangle {
     property real imageScale: 1
     property bool zoomable: false
     property int decodeSize: Math.min(2048, Math.pow(2, Math.ceil(Math.log2(Math.max(128, cover.width * Screen.devicePixelRatio * 2)))))
+    property size renderTextureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio * 2), Math.ceil(height * Screen.devicePixelRatio * 2))
     radius: 12
     color: "#302c3d"
     antialiasing: true
@@ -44,7 +45,7 @@ Rectangle {
         live: true
         smooth: true
         visible: false
-        textureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio * 2), Math.ceil(height * Screen.devicePixelRatio * 2))
+        textureSize: cover.renderTextureSize
     }
     Rectangle {
         id: mask
@@ -54,7 +55,7 @@ Rectangle {
         layer.enabled: true
         layer.smooth: true
         layer.samples: 4
-        layer.textureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio * 2), Math.ceil(height * Screen.devicePixelRatio * 2))
+        layer.textureSize: cover.renderTextureSize
         visible: false
     }
     MultiEffect {

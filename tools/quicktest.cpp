@@ -23,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QWheelEvent>
 #include <atomic>
 #include <cmath>
 #include <thread>
@@ -252,6 +253,67 @@ int main(int argc, char** argv)
         playback.toggleFavorite();
         check(library.isFavorite(ids[0]), "favorite reaches library");
         check(lyricChanges.count() == 0, "favorite never resets lyric model");
+        auto* lyrics = window.rootObject()->findChild<QQuickItem*>("lyricsView");
+        check(lyrics, "lyrics scroll view exists");
+        playback.toggle();
+        check(waitFor([&] { return !playback.playing(); }), "pause clock for trackpad regression");
+        QVariantList longLyrics;
+        for (int i = 0; i < 40; ++i)
+            longLyrics << QVariantMap { { "text", QString("Lyric line %1").arg(i) }, { "time", i * 1000 } };
+        lyrics->setProperty("model", longLyrics);
+        pump(500);
+        const QPointF lyricPoint = lyrics->mapToScene(QPointF(lyrics->width() / 2, lyrics->height() / 2));
+        QElapsedTimer lyricClock;
+        lyricClock.start();
+        auto lyricWheel = [&](int delta, Qt::ScrollPhase phase) {
+            QWheelEvent event(lyricPoint, window.mapToGlobal(lyricPoint.toPoint()), QPoint(0, delta), QPoint(0, delta * 8),
+                Qt::NoButton, Qt::NoModifier, phase, false, Qt::MouseEventSynthesizedBySystem);
+            event.setTimestamp(1 + lyricClock.elapsed());
+            QCoreApplication::sendEvent(&window, &event);
+        };
+        lyrics->setProperty("contentY", 300);
+        lyricWheel(-1, Qt::ScrollBegin);
+        pump(20);
+        check(lyrics->property("manualScrolling").toBool(), "first trackpad event suspends lyric following");
+        bool scrollContinuous = true, followsClock = true, staysManual = true;
+        qreal lyricTravel = 0;
+        // Keep a gesture active beyond the old five-second timeout, with
+        // direction changes and playback index changes during manual scrolling.
+        for (int i = 0; i < 440; ++i) {
+            if (i == 80)
+                playback.seek(7500);
+            const qreal beforeScroll = lyrics->property("contentY").toReal();
+            const int delta = (i / 20) % 2 ? 2 : -2;
+            lyricWheel(delta, i > 400 ? Qt::ScrollMomentum : Qt::ScrollUpdate);
+            pump(13);
+            const qreal moved = lyrics->property("contentY").toReal() - beforeScroll;
+            lyricTravel += std::abs(moved);
+            if (std::abs(moved) > 20 || moved * delta > 0)
+                qInfo() << "Lyric discontinuity" << i << beforeScroll << moved << delta
+                        << lyrics->property("manualScrolling") << lyrics->property("activeLyricIndex");
+            scrollContinuous &= std::abs(moved) <= 20 && moved * delta <= 0;
+            followsClock &= lyrics->property("activeLyricIndex").toInt() == playback.lyricIndex();
+            staysManual &= lyrics->property("manualScrolling").toBool();
+        }
+        lyricWheel(0, Qt::ScrollEnd);
+        check(scrollContinuous, "trackpad lyric updates and reversals never jump or pull against input");
+        check(lyricTravel > 300, "trackpad events actually move the lyric viewport");
+        check(followsClock, "manual lyric scrolling never changes the playback highlight index");
+        check(staysManual, "long gestures and momentum remain in manual lyric mode");
+        const qreal manualY = lyrics->property("contentY").toReal();
+        pump(700);
+        check(std::abs(lyrics->property("contentY").toReal() - manualY) < 1,
+            "lyrics stay where released while automatic following is suspended");
+        check(waitFor([&] { return !lyrics->property("manualScrolling").toBool(); }, 6000),
+            "lyric following resumes only after idle timeout");
+        pump(500);
+        check(lyrics->property("activeLyricIndex").toInt() == playback.lyricIndex(),
+            "idle resume retains current playback lyric");
+        check(std::abs(lyrics->property("contentY").toReal() - manualY) > 30,
+            "idle resume scrolls back to the playback lyric");
+        lyrics->setProperty("model", playback.lyrics());
+        playback.seek(4500);
+        playback.toggle();
         const int before = probe->blocks;
         pump(500);
         QVector<double> intervals;
@@ -319,6 +381,18 @@ int main(int argc, char** argv)
         for (int i = 0; i < client.navigation()->count(); ++i)
             playlistSection |= client.navigation()->get(i).value("kind") == "playlistSection";
         check(playlistSection, "playlist section exists even before creating a user playlist");
+        const auto favoriteNavigation = client.navigation()->get(5);
+        check(client.navigation()->get(4).value("kind") == "playlistSection"
+                && favoriteNavigation.value("key").toLongLong() == library.favoritesPlaylistId()
+                && favoriteNavigation.value("protected").toBool(),
+            "favorites is the fixed first entry under the playlist section");
+        library.renamePlaylist(library.favoritesPlaylistId(), "Changed");
+        library.deletePlaylist(library.favoritesPlaylistId());
+        check(client.navigation()->get(5) == favoriteNavigation
+                && library.favoritesPlaylistId() == favoriteNavigation.value("key").toLongLong(),
+            "favorites cannot be renamed or deleted");
+        check(shell.rootObject()->findChild<QQuickItem*>("backButton")->property("filled").toBool(),
+            "back button has a persistent circular background");
         auto* caption = shell.rootObject()->findChild<QQuickItem*>("windowBar");
         check(caption && caption->height() == 48 && caption->width() == shell.width(),
             "integrated caption fills window width");
@@ -467,6 +541,131 @@ int main(int argc, char** argv)
         check(grid, "album grid exists");
         pump(150);
         check(grid->height() > 100, "album grid laid out before pointer interaction");
+        // Exercise column thresholds with enough cards to wrap, without touching the library.
+        QVector<QVariantMap> originalCards;
+        for (int i = 0; i < client.cards()->count(); ++i) originalCards << client.cards()->get(i);
+        QVector<QVariantMap> layoutCards;
+        for (int i = 0; i < 20; ++i) {
+            auto row = originalCards[i % originalCards.size()];
+            row["key"] = QString("queue-layout-fixture-%1").arg(i);
+            layoutCards << row;
+        }
+        client.cards()->replace(layoutCards);
+        std::function<QQuickItem*(QQuickItem*, const QString&)> findGridItem = [&](QQuickItem* parent, const QString& name) -> QQuickItem* {
+            if (parent->objectName() == name) return parent;
+            for (auto* child : parent->childItems()) if (auto* found = findGridItem(child, name)) return found;
+            return nullptr;
+        };
+        QVector<double> reflowFrames;
+        QElapsedTimer reflowFrameClock;
+        reflowFrameClock.start();
+        qint64 previousReflowFrame = 0;
+        const auto reflowConnection = QObject::connect(&shell, &QQuickWindow::frameSwapped, &app, [&] {
+            const auto now = reflowFrameClock.nsecsElapsed();
+            if (grid->property("animateQueueLayout").toBool()) {
+                if (previousReflowFrame) reflowFrames << (now-previousReflowFrame)/1e6;
+                previousReflowFrame = now;
+            } else previousReflowFrame = 0;
+        });
+        const auto beforeGridResize = shell.size();
+        auto* layoutQueueToggle = shell.rootObject()->findChild<QQuickItem*>("queueToggle");
+        for (const int viewportWidth : {1180, 1040}) {
+            shell.resize(viewportWidth, 800);
+            grid->setProperty("contentY", 0);
+            pump(350);
+            QPointer<QQuickItem> cover = findGridItem(grid, "cardArtwork2");
+            check(cover, "third album remains instantiated for queue reflow regression");
+            const auto originalDecode = cover->property("decodeSize");
+            const auto originalTexture = cover->property("renderTextureSize");
+            for (const bool opening : {true, false}) {
+                const QRectF before = cover->mapRectToScene(cover->boundingRect());
+                const qreal available = viewportWidth - 218 - 60 - (opening ? 270 : 0);
+                const int columns = qMax(2, int(available / 188));
+                const qreal cell = available / columns;
+                const QPointF origin = grid->mapToScene(QPointF(0, 0));
+                const QRectF destination(origin.x() + (2 % columns) * cell,
+                    origin.y() + (2 / columns) * (cell + 40), cell - 18, cell - 18);
+                QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                    layoutQueueToggle->mapToScene(QPointF(18, 18)).toPoint());
+                bool monotonic = true, bounded = true, stableTextures = true, noSteps = true;
+                int interpolatedFrames = 0;
+                QRectF previous = before;
+                QElapsedTimer reflowClock;
+                reflowClock.start();
+                qint64 previousTime = 0;
+                while (reflowClock.elapsed() < 320) {
+                    pump(8);
+                    if (!cover) qFatal("FAIL visible album identity survives queue reflow");
+                    const QRectF current = cover->mapRectToScene(cover->boundingRect());
+                    const qint64 now = reflowClock.elapsed();
+                    const qreal oldValues[] {before.x(), before.y(), before.width()};
+                    const qreal endValues[] {destination.x(), destination.y(), destination.width()};
+                    const qreal values[] {current.x(), current.y(), current.width()};
+                    const qreal previousValues[] {previous.x(), previous.y(), previous.width()};
+                    for (int axis = 0; axis < 3; ++axis) {
+                        const qreal delta = endValues[axis] - oldValues[axis];
+                        bounded &= values[axis] >= qMin(oldValues[axis], endValues[axis]) - .75
+                            && values[axis] <= qMax(oldValues[axis], endValues[axis]) + .75;
+                        monotonic &= (values[axis] - previousValues[axis]) * (delta < 0 ? -1 : 1) >= -.75;
+                        if (now - previousTime < 40)
+                            noSteps &= qAbs(values[axis] - previousValues[axis]) <= qAbs(delta) * .55 + 2;
+                    }
+                    if (qAbs(current.width()-before.width()) > .5 && qAbs(current.width()-destination.width()) > .5)
+                        ++interpolatedFrames;
+                    stableTextures &= cover->property("decodeSize") == originalDecode
+                        && cover->property("renderTextureSize") == originalTexture;
+                    previous = current; previousTime = now;
+                }
+                check(bounded && monotonic, "queue toggle moves album monotonically to final grid without size reversals");
+                if (!noSteps || interpolatedFrames <= 5) qInfo() << "Grid reflow diagnostics" << viewportWidth << opening << noSteps << interpolatedFrames << before << destination << previous << grid->property("animateQueueLayout");
+                check(noSteps && interpolatedFrames > 5, "album row wrapping and resizing interpolate across frames without jumps");
+                check(stableTextures, "queue toggle does not reload artwork or reallocate cover texture sizes");
+                const QRectF after = cover->mapRectToScene(cover->boundingRect());
+                check(qAbs(after.x()-destination.x()) < 1 && qAbs(after.y()-destination.y()) < 1
+                    && qAbs(after.width()-destination.width()) < 1, "album arrives at correct queue layout endpoint");
+            }
+        }
+        grid->setProperty("contentY", grid->property("cellHeight").toReal() + 35);
+        pump(100);
+        QPointer<QQuickItem> scrolledCover = findGridItem(grid, "cardArtwork4");
+        check(bool(scrolledCover), "scrolled album is instantiated before queue reflow");
+        for (const bool opening : {true, false}) {
+            const auto before = scrolledCover->mapToScene(QPointF(0, 0));
+            shell.rootObject()->setProperty("queueOpen", opening);
+            QGuiApplication::processEvents();
+            check(bool(scrolledCover), "scrolled album survives queue layout change");
+            const auto after = scrolledCover->mapToScene(QPointF(0, 0));
+            check(qAbs(after.y()-before.y()) < 20, "queue reflow preserves scrolled album position at transition start");
+            pump(350);
+        }
+        grid->setProperty("contentY", 0);
+        pump(100);
+        // Reversing an in-flight toggle keeps current visual geometry as the starting point.
+        shell.rootObject()->setProperty("queueOpen", true);
+        pump(75);
+        auto* reversingCover = findGridItem(grid, "cardArtwork2");
+        const auto reversingBounds = reversingCover->mapRectToScene(reversingCover->boundingRect());
+        shell.rootObject()->setProperty("queueOpen", false);
+        QGuiApplication::processEvents();
+        const auto reversedBounds = reversingCover->mapRectToScene(reversingCover->boundingRect());
+        check(qAbs(reversedBounds.x()-reversingBounds.x()) < 8 && qAbs(reversedBounds.y()-reversingBounds.y()) < 8,
+            "reversing queue animation retains current album position");
+        pump(350);
+        client.setReduceMotion(true);
+        shell.rootObject()->setProperty("queueOpen", true);
+        pump(30);
+        check(!grid->property("animateQueueLayout").toBool(), "reduced motion skips album reflow animation");
+        shell.rootObject()->setProperty("queueOpen", false);
+        client.setReduceMotion(false);
+        shell.resize(beforeGridResize);
+        client.cards()->replace(originalCards);
+        pump(350);
+        QObject::disconnect(reflowConnection);
+        check(reflowFrames.size() > 20, "queue reflow presents continuous animation frames");
+        std::sort(reflowFrames.begin(), reflowFrames.end());
+        qInfo() << "Queue album reflow frame intervals median/p95/max ms" << reflowFrames[reflowFrames.size()/2]
+            << reflowFrames[reflowFrames.size()*95/100] << reflowFrames.last();
+        check(reflowFrames[reflowFrames.size()*95/100] < 25, "queue album reflow frame p95 stays under 25 ms");
         std::function<QQuickItem*(QQuickItem*)> findHoverCover = [&](QQuickItem* parent) -> QQuickItem* {
             if (parent->objectName() == "cardArtwork0")
                 return parent;
@@ -558,6 +757,27 @@ int main(int argc, char** argv)
         pump(300);
         auto* queueList = shell.rootObject()->findChild<QQuickItem*>("queueList");
         check(queueList, "queue view exists");
+        auto* libraryContent = shell.rootObject()->findChild<QQuickItem*>("libraryContent");
+        auto* openQueuePanel = shell.rootObject()->findChild<QQuickItem*>("queuePanel");
+        check(libraryContent && qAbs(libraryContent->x() + libraryContent->width() - openQueuePanel->x()) < .5,
+            "open queue meets library content without a blank vertical strip");
+        QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+            queueList->mapToScene(QPointF(100, queueList->height() - 15)).toPoint());
+        check(shell.rootObject()->property("queueOpen").toBool(), "blank space inside queue keeps it open");
+        auto* dismissTrackList = shell.rootObject()->findChild<QQuickItem*>("trackList");
+        QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+            dismissTrackList->mapToScene(QPointF(150, 24)).toPoint());
+        check(shell.rootObject()->property("queueOpen").toBool(), "song selection does not dismiss queue");
+        QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+            dismissTrackList->mapToScene(QPointF(150, dismissTrackList->height() - 20)).toPoint());
+        check(!shell.rootObject()->property("queueOpen").toBool(), "blank track viewport dismisses queue");
+        shell.rootObject()->setProperty("queueOpen", true);
+        pump(300);
+        QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+            libraryContent->mapToScene(QPointF(libraryContent->width() / 2, 48)).toPoint());
+        check(!shell.rootObject()->property("queueOpen").toBool(), "blank header background dismisses queue");
+        shell.rootObject()->setProperty("queueOpen", true);
+        pump(300);
         shell.raise(); shell.requestActivate();
         pump(100);
         const auto oldQueueFirst = player.queue().constFirst().token;
@@ -639,7 +859,8 @@ int main(int argc, char** argv)
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, blank);
         check(shell.rootObject()->property("expanded").toBool(), "player bar expands actual detail");
         pump(500);
-        check(!bar->isVisible() && detail->y() == 48 && detail->height() + 48 == shell.height(),
+        check(!bar->isVisible() && detail->y() == 0 && detail->height() == shell.height()
+                && detail->property("topInset").toReal() == 48,
             "expanded detail fills window with bottom bar hidden");
         auto* detailButton = detail->findChild<QQuickItem*>("detailToggle");
         check(detailButton && detailButton->isVisible(), "detail has its own visible playback controls");

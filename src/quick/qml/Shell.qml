@@ -8,6 +8,16 @@ FocusScope {
     property bool expanded: false
     property bool queueOpen: false
     property var contextMenuPoint: null
+    onQueueOpenChanged: {
+        cardGrid.queueAnimationWidth = root.width;
+        if (!client.reduceMotion) cardLayoutTimer.restart();
+        // Prepare animation before changing any grid geometry, regardless of binding evaluation order.
+        cardGrid.queueLayoutOpen = root.queueOpen;
+    }
+    Timer {
+        id: cardLayoutTimer
+        interval: 280
+    }
     function contextAt(item, position, action) {
         contextMenuPoint = item.mapToItem(root, position.x, position.y);
         action();
@@ -63,6 +73,16 @@ FocusScope {
         anchors.fill: parent
         visible: root.reveal < 1
         enabled: !root.expanded
+        MouseArea {
+            // Behind the library controls: only unhandled background clicks
+            // dismiss the queue, without intercepting normal button actions.
+            objectName: "queueDismissBackground"
+            y: windowChrome.height
+            width: queuePanel.x
+            height: Math.max(0, playerBar.y - y)
+            enabled: root.queueOpen
+            onClicked: root.queueOpen = false
+        }
         Rectangle {
             id: sidebar
             width: root.sideWidth
@@ -76,7 +96,7 @@ FocusScope {
                 anchors.topMargin: 50
                 spacing: 8
                 Text {
-                    text: "你的资料库"
+                    text: "资料库"
                     color: "#847e90"
                     font.pixelSize: 11
                     font.weight: Font.DemiBold
@@ -91,6 +111,11 @@ FocusScope {
                     model: client.navigation
                     clip: true
                     spacing: 4
+                    TapHandler {
+                        enabled: root.queueOpen
+                        onTapped: if (navigation.indexAt(point.position.x + navigation.contentX,
+                            point.position.y + navigation.contentY) < 0) root.queueOpen = false
+                    }
                     ScrollBar.vertical: ScrollBar {
                         policy: ScrollBar.AsNeeded
                     }
@@ -209,13 +234,14 @@ FocusScope {
             }
         }
         ColumnLayout {
+            objectName: "libraryContent"
             anchors.left: sidebar.right
             anchors.right: queuePanel.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.bottomMargin: playerBar.height
             anchors.leftMargin: 30
-            anchors.rightMargin: 30
+            anchors.rightMargin: 30 * (1 - queuePanel.openness)
             anchors.topMargin: 28
             spacing: 16
             RowLayout {
@@ -223,6 +249,7 @@ FocusScope {
                 ActionButton {
                     objectName: "backButton"
                     symbol: "back"
+                    filled: true
                     implicitWidth: 32
                     implicitHeight: 32
                     iconSize: 18
@@ -348,101 +375,152 @@ FocusScope {
                         onClicked: client.action("addSource")
                     }
                 }
-                GridView {
-                    id: cardGrid
-                    objectName: "cardGrid"
+                Item {
+                    id: cardViewport
                     Layout.fillWidth: true
                     Layout.fillHeight: client.tracks.count === 0
-                    Layout.preferredHeight: client.tracks.count > 0 ? Math.min(280, cellHeight + 8) : 0
+                    Layout.preferredHeight: client.tracks.count > 0 ? Math.min(280, cardGrid.cellHeight + 8) : 0
                     visible: client.cards.count > 0
-                    model: client.cards
-                    cellWidth: width / Math.max(2, Math.floor(width / 188))
-                    cellHeight: cellWidth - 18 + 58
                     clip: true
-                    reuseItems: true
-                    cacheBuffer: 300
-                    ScrollBar.vertical: ScrollBar {}
-                    onMovementEnded: if (client.tracks.count === 0)
-                        client.setScroll(contentY)
-                    delegate: Item {
-                        id: card
-                        required property var item
-                        required property int index
-                        width: cardGrid.cellWidth
-                        height: cardGrid.cellHeight
-                        Column {
-                            anchors.left: parent.left
+                    GridView {
+                        id: cardGrid
+                        objectName: "cardGrid"
+                        property bool queueLayoutOpen: false
+                        property real queueAnimationWidth: -1
+                        readonly property bool animateQueueLayout: cardLayoutTimer.running && queueAnimationWidth === root.width && !client.reduceMotion
+                        readonly property real fullWidth: Math.max(1, root.width - root.sideWidth - 60)
+                        readonly property real queuedWidth: Math.max(1, fullWidth - queuePanel.width + 30)
+                        function cellFor(available) { return available / Math.max(2, Math.floor(available / 188)); }
+                        // Share decode and render sizes across both endpoints to avoid texture churn.
+                        readonly property real largestCover: Math.max(cellFor(fullWidth), cellFor(queuedWidth)) - 18
+                        readonly property int artworkResolution: Math.min(2048, Math.pow(2, Math.ceil(Math.log2(Math.max(128, largestCover * Screen.devicePixelRatio * 2)))))
+                        readonly property int artworkTextureSide: Math.ceil(largestCover * Screen.devicePixelRatio * 2)
+                        // Resolve the destination once per toggle. The viewport still follows the panel live.
+                        width: queueLayoutOpen ? queuedWidth : fullWidth
+                        height: cardViewport.height
+                        enabled: !animateQueueLayout
+                        model: client.cards
+                        cellWidth: cellFor(width)
+                        cellHeight: cellWidth - 18 + 58
+                        clip: false
+                        reuseItems: true
+                        cacheBuffer: 300
+                        TapHandler {
+                            enabled: root.queueOpen
+                            onTapped: if (cardGrid.indexAt(point.position.x + cardGrid.contentX,
+                                point.position.y + cardGrid.contentY) < 0) root.queueOpen = false
+                        }
+                        ScrollBar.vertical: ScrollBar {
+                            parent: cardViewport
+                            enabled: cardGrid.enabled
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
                             anchors.right: parent.right
-                            anchors.rightMargin: 18
-                            spacing: 8
-                            Item {
-                                width: parent.width
-                                height: width
-                                Cover {
-                                    id: cardArt
-                                    objectName: "cardArtwork" + card.index
-                                    anchors.fill: parent
-                                    artwork: card.item.artwork || ""
-                                    radius: 10
-                                    zoomable: true
-                                    imageScale: cardHover.hovered && !client.reduceMotion ? 1.02 : 1
-                                    Behavior on imageScale {
-                                        NumberAnimation {
-                                            duration: 180
-                                            easing.type: Easing.OutCubic
+                        }
+                        onMovementEnded: if (client.tracks.count === 0)
+                            client.setScroll(contentY)
+                        delegate: Item {
+                            id: card
+                            required property var item
+                            required property int index
+                            width: cardGrid.cellWidth
+                            height: cardGrid.cellHeight
+                            property bool positioned: false
+                            Component.onCompleted: Qt.callLater(function() { card.positioned = true; })
+                            Column {
+                                id: cardVisual
+                                objectName: "cardVisual" + card.index
+                                // Keep viewport coordinates stable even if GridView adjusts its scroll origin.
+                                property real visualX: card.x - cardGrid.contentX
+                                property real visualY: card.y - cardGrid.contentY
+                                property real visualWidth: card.width
+                                x: visualX - card.x + cardGrid.contentX
+                                y: visualY - card.y + cardGrid.contentY
+                                width: visualWidth - 18
+                                spacing: 8
+                                Behavior on visualX {
+                                    enabled: card.positioned && cardGrid.animateQueueLayout
+                                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+                                }
+                                Behavior on visualY {
+                                    enabled: card.positioned && cardGrid.animateQueueLayout
+                                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+                                }
+                                Behavior on visualWidth {
+                                    enabled: card.positioned && cardGrid.animateQueueLayout
+                                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+                                }
+                                Item {
+                                    width: parent.width
+                                    height: width
+                                    Cover {
+                                        id: cardArt
+                                        objectName: "cardArtwork" + card.index
+                                        anchors.fill: parent
+                                        artwork: card.item.artwork || ""
+                                        decodeSize: cardGrid.artworkResolution
+                                        renderTextureSize: Qt.size(cardGrid.artworkTextureSide, cardGrid.artworkTextureSide)
+                                        radius: 10
+                                        zoomable: true
+                                        imageScale: cardHover.hovered && !client.reduceMotion ? 1.02 : 1
+                                        Behavior on imageScale {
+                                            NumberAnimation {
+                                                duration: 180
+                                                easing.type: Easing.OutCubic
+                                            }
+                                        }
+                                    }
+                                    ActionButton {
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 10
+                                        symbol: "play"
+                                        prominent: true
+                                        implicitWidth: 38
+                                        implicitHeight: 38
+                                        label: "播放"
+                                        opacity: cardHover.hovered ? 1 : 0
+                                        enabled: opacity > 0
+                                        visible: card.item.kind !== "source"
+                                        onClicked: client.playCard(card.index)
+                                        Behavior on opacity {
+                                            NumberAnimation {
+                                                duration: 140
+                                            }
                                         }
                                     }
                                 }
-                                ActionButton {
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    anchors.margins: 10
-                                    symbol: "play"
-                                    prominent: true
-                                    implicitWidth: 38
-                                    implicitHeight: 38
-                                    label: "播放"
-                                    opacity: cardHover.hovered ? 1 : 0
-                                    enabled: opacity > 0
-                                    visible: card.item.kind !== "source"
-                                    onClicked: client.playCard(card.index)
-                                    Behavior on opacity {
-                                        NumberAnimation {
-                                            duration: 140
-                                        }
-                                    }
+                                Text {
+                                    width: parent.width
+                                    text: card.item.title
+                                    color: "#e6dfef"
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: card.item.subtitle || ""
+                                    color: "#82788f"
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
                                 }
                             }
-                            Text {
-                                width: parent.width
-                                text: card.item.title
-                                color: "#e6dfef"
-                                font.pixelSize: 13
-                                font.weight: Font.DemiBold
-                                elide: Text.ElideRight
+                            HoverHandler {
+                                id: cardHover
                             }
-                            Text {
-                                width: parent.width
-                                text: card.item.subtitle || ""
-                                color: "#82788f"
-                                font.pixelSize: 11
-                                elide: Text.ElideRight
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                onTapped: client.openCard(index)
                             }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: eventPoint => root.contextAt(card, eventPoint.position, function() { client.cardMenu(index); })
+                            }
+                            Accessible.role: Accessible.Button
+                            Accessible.name: item.title
+                            Accessible.onPressAction: client.openCard(index)
                         }
-                        HoverHandler {
-                            id: cardHover
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            onTapped: client.openCard(index)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.RightButton
-                            onTapped: eventPoint => root.contextAt(card, eventPoint.position, function() { client.cardMenu(index); })
-                        }
-                        Accessible.role: Accessible.Button
-                        Accessible.name: item.title
-                        Accessible.onPressAction: client.openCard(index)
                     }
                 }
                 Item {
@@ -516,6 +594,11 @@ FocusScope {
                         reuseItems: true
                         cacheBuffer: 160
                         keyNavigationEnabled: false
+                        TapHandler {
+                            enabled: root.queueOpen
+                            onTapped: if (trackList.indexAt(point.position.x + trackList.contentX,
+                                point.position.y + trackList.contentY) < 0) root.queueOpen = false
+                        }
                         ScrollBar.vertical: ScrollBar {}
                         ScrollBar.horizontal: ScrollBar {}
                         onMovementEnded: client.setScroll(contentY)
@@ -1055,8 +1138,9 @@ FocusScope {
         z: 4
         objectName: "nowPlaying"
         width: root.width
-        height: root.height - 48
-        y: 48 + (1 - root.reveal) * height
+        height: root.height
+        y: (1 - root.reveal) * height
+        topInset: windowChrome.height
         playback: root.playbackObject
         expanded: root.expanded
         reduceMotion: client.reduceMotion

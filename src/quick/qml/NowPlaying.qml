@@ -11,6 +11,8 @@ Item {
     property bool reduceMotion: false
     property bool transitioning: false
     property bool persistentBar: false
+    property real topInset: 0
+    readonly property real contentHeight: height - topInset
     property alias coverItem: largeCover
     Rectangle {
         anchors.fill: parent
@@ -51,7 +53,7 @@ Item {
     }
     ActionButton {
         x: 28
-        y: 16
+        y: 16 + page.topInset
         symbol: "collapse"
         label: "收起播放详情"
         onClicked: page.collapse()
@@ -59,13 +61,13 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.margins: 52
-        anchors.topMargin: 64
+        anchors.topMargin: 64 + page.topInset
         anchors.bottomMargin: 32
         spacing: Math.max(48, page.width * 0.07)
         ColumnLayout {
-            Layout.preferredWidth: Math.min(440, page.width * 0.43, page.height - (page.persistentBar ? 260 : 380))
+            Layout.preferredWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
             Layout.minimumWidth: 280
-            Layout.maximumWidth: Math.min(440, page.width * 0.43, page.height - (page.persistentBar ? 260 : 380))
+            Layout.maximumWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
             Layout.fillHeight: true
             spacing: 16
             Item {
@@ -223,19 +225,71 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     model: page.playback.lyrics
-                    currentIndex: page.playback.lyricIndex
+                    property int activeLyricIndex: page.playback.lyricIndex
+                    // Keep ListView's selection separate from the playback row:
+                    // changing currentIndex can reposition even without a highlight.
+                    currentIndex: -1
                     clip: true
                     spacing: 20
                     topMargin: height * 0.3
                     bottomMargin: height * 0.5
-                    preferredHighlightBegin: height * 0.3
-                    preferredHighlightEnd: height * 0.3 + 36
-                    highlightRangeMode: manualResume.running ? ListView.NoHighlightRange : ListView.StrictlyEnforceRange
-                    highlightMoveDuration: page.reduceMotion ? 0 : 420
-                    onMovementStarted: manualResume.restart()
+                    property bool manualScrolling: false
+                    function followCurrent() {
+                        if (manualScrolling || activeLyricIndex < 0 || count === 0)
+                            return;
+                        followAnimation.stop();
+                        cancelFlick();
+                        const previous = contentY;
+                        positionViewAtIndex(activeLyricIndex, ListView.Beginning);
+                        const line = itemAtIndex(activeLyricIndex);
+                        const targetY = line ? Math.max(originY - topMargin,
+                            Math.min(line.y - height * 0.3, originY + contentHeight - height + bottomMargin)) : contentY;
+                        contentY = previous;
+                        if (page.reduceMotion)
+                            contentY = targetY;
+                        else {
+                            followAnimation.to = targetY;
+                            followAnimation.restart();
+                        }
+                    }
+                    onActiveLyricIndexChanged: Qt.callLater(followCurrent)
+                    onModelChanged: Qt.callLater(followCurrent)
+                    onHeightChanged: Qt.callLater(followCurrent)
+                    onManualScrollingChanged: if (!manualScrolling) Qt.callLater(followCurrent)
+                    NumberAnimation {
+                        id: followAnimation
+                        target: lyrics
+                        property: "contentY"
+                        duration: 420
+                        easing.type: Easing.OutCubic
+                    }
+                    function pauseFollowing() {
+                        followAnimation.stop();
+                        manualScrolling = true;
+                        manualResume.restart();
+                    }
+                    onMovementStarted: pauseFollowing()
+                    onMovementEnded: if (manualScrolling) manualResume.restart()
+                    WheelHandler {
+                        target: null
+                        blocking: false
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: event => {
+                            // Suspend following before ListView handles the first
+                            // trackpad delta, including updates during momentum.
+                            lyrics.pauseFollowing();
+                            event.accepted = false;
+                        }
+                    }
                     Timer {
                         id: manualResume
                         interval: 5000
+                        onTriggered: {
+                            if (lyrics.moving || lyrics.dragging || lyrics.flicking)
+                                restart();
+                            else
+                                lyrics.manualScrolling = false;
+                        }
                     }
                     delegate: Text {
                         required property var modelData
@@ -245,8 +299,8 @@ Item {
                         wrapMode: Text.Wrap
                         font.pixelSize: 25
                         font.weight: Font.DemiBold
-                        color: index === lyrics.currentIndex || lyrics.currentIndex < 0 ? "#f6f2ff" : "#8b829b"
-                        opacity: index === lyrics.currentIndex || lyrics.currentIndex < 0 ? 1 : Math.max(0.22, 0.6 - Math.abs(index - lyrics.currentIndex) * 0.08)
+                        color: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? "#f6f2ff" : "#8b829b"
+                        opacity: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? 1 : Math.max(0.22, 0.6 - Math.abs(index - lyrics.activeLyricIndex) * 0.08)
                         Behavior on opacity {
                             NumberAnimation {
                                 duration: page.reduceMotion ? 0 : 260

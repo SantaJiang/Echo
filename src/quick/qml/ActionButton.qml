@@ -6,6 +6,7 @@ Button {
     property string symbol: "play"
     property bool active: false
     property bool prominent: false
+    property bool filled: false
     property string label: ""
     property int iconSize: prominent ? 26 : 24
     implicitWidth: prominent ? 56 : 44
@@ -23,7 +24,7 @@ Button {
         radius: width / 2
         border.width: control.visualFocus ? 2 : 0
         border.color: "#c9aaff"
-        color: control.prominent ? "#f3f1f8" : control.down ? "#30ffffff" : control.hovered ? "#18ffffff" : "transparent"
+        color: control.prominent ? "#f3f1f8" : control.down ? "#30ffffff" : control.hovered ? "#18ffffff" : control.filled ? "#12ffffff" : "transparent"
         scale: control.down ? 0.94 : 1
         Behavior on scale {
             NumberAnimation {

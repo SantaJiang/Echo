@@ -114,6 +114,16 @@ QIcon icon(Icon kind, const QColor& color, int size)
     }
     const QString glyph(codepoint(kind));
     const QFont font = iconFont(std::max(8, side * 4 / 5));
+    if (kind == Icon::Play) {
+        QPainterPath triangle;
+        triangle.addText(QPointF(0, 0), font, glyph);
+        // Center the outline vertically without rounded font metrics. A triangle
+        // needs a small optical offset toward its tip to balance its visual mass.
+        const QPointF center = triangle.boundingRect().center();
+        triangle.translate(side * 0.57 - center.x(), side * 0.5 - center.y());
+        painter.fillPath(triangle, color);
+        return QIcon(pixmap);
+    }
     painter.setFont(font);
     painter.setPen(color);
     const QFontMetrics metrics(font);

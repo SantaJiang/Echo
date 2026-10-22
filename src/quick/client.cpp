@@ -456,12 +456,12 @@ void Client::rebuildNavigation()
             { "icon", i == 3 ? "folders" : kinds[i] }, { "depth", 0 } };
     const auto lists = m_library->playlists();
     const auto folders = m_library->playlistFolders();
+    rows << QVariantMap { { "key", "playlistSection" }, { "kind", "playlistSection" },
+        { "title", QStringLiteral("播放列表") }, { "icon", "" }, { "depth", 0 } };
     for (const auto& p : lists)
         if (p.isFavorites())
             rows << QVariantMap { { "key", QString::number(p.id) }, { "kind", "playlist" }, { "title", p.name },
                 { "icon", "heartFilled" }, { "depth", 0 }, { "protected", true } };
-    rows << QVariantMap { { "key", "playlistSection" }, { "kind", "playlistSection" },
-        { "title", QStringLiteral("播放列表") }, { "icon", "" }, { "depth", 0 } };
     QSet<qint64> visited;
     std::function<void(qint64, int)> append = [&](qint64 parent, int depth) {
         for (const auto& f : folders)
