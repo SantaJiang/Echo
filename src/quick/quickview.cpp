@@ -48,6 +48,8 @@ namespace {
                 gradient.setColorAt(.5, QColor("#b2678c"));
                 gradient.setColorAt(1, QColor("#edba91"));
                 painter.fillRect(QRect(0, 0, 800, 800), gradient);
+                if (id == QStringLiteral("cover/background"))
+                    return cover;
                 painter.setPen(QColor("#ccffffff"));
                 QFont font("Helvetica");
                 font.setPixelSize(64);

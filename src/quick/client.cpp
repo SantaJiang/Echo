@@ -690,7 +690,8 @@ QVariantMap Client::preferences() const
 {
     return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()},
         {"spatial", m_player->spatialEnabled()}, {"spatialStatus", m_player->spatialStatus()},
-        {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion}};
+        {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion},
+        {"dynamicPlaybackBackground", m_library->setting("dynamic_playback_background", "0") == "1"}};
 }
 void Client::setPreference(const QString& key, bool value)
 {
@@ -700,6 +701,7 @@ void Client::setPreference(const QString& key, bool value)
     else if (key == "exclusive") m_player->setExclusive(value);
     else if (key == "replayGain") m_player->setReplayGainEnabled(value);
     else if (key == "reduceMotion") setReduceMotion(value);
+    else if (key == "dynamicPlaybackBackground") m_library->setSetting("dynamic_playback_background", value ? "1" : "0");
     emit preferencesChanged();
 }
 void Client::requestDialog(QVariantMap data, Reply reply)

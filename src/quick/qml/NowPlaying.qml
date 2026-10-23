@@ -11,6 +11,7 @@ Item {
     property bool reduceMotion: false
     property bool transitioning: false
     property bool persistentBar: false
+    property bool dynamicBackground: false
     property real topInset: 0
     readonly property real contentHeight: height - topInset
     property alias coverItem: largeCover
@@ -20,8 +21,10 @@ Item {
     }
     Image {
         id: backgroundImage
+        objectName: "playbackBackgroundImage"
         anchors.fill: parent
-        source: page.playback.track.artwork
+        source: page.dynamicBackground && page.playback.track.artwork
+            ? page.playback.track.artwork : "image://echo-icons/cover/background"
         sourceSize: Qt.size(96, 96)
         asynchronous: true
         fillMode: Image.PreserveAspectCrop

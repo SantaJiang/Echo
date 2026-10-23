@@ -321,29 +321,33 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.topMargin: 16
                     Layout.bottomMargin: 4
+                    spacing: headerArtwork.visible ? 18 : 5
                     Cover {
-                        Layout.preferredWidth: 76
-                        Layout.preferredHeight: 76
-                        radius: 9
+                        id: headerArtwork
+                        Layout.preferredWidth: 96
+                        Layout.preferredHeight: 96
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 12
                         artwork: client.page.artwork
                         visible: ["album", "artist", "playlist"].includes(client.page.kind) && client.tracks.count > 0
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 7
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: headerArtwork.visible ? 10 : 7
                         Text {
                             Layout.fillWidth: true
                             text: client.page.title
                             color: "#f4f0f8"
-                            font.pixelSize: 30
-                            font.weight: Font.Bold
+                            font.pixelSize: headerArtwork.visible ? 28 : 30
+                            font.weight: headerArtwork.visible ? Font.DemiBold : Font.Bold
                             elide: Text.ElideRight
                         }
                         Text {
                             Layout.fillWidth: true
                             text: client.page.busy ? "正在读取资料库…" : client.page.subtitle
                             color: "#8d849b"
-                            font.pixelSize: 12
+                            font.pixelSize: headerArtwork.visible ? 13 : 12
                             elide: Text.ElideMiddle
                         }
                     }
@@ -594,6 +598,26 @@ FocusScope {
                         reuseItems: true
                         cacheBuffer: 160
                         keyNavigationEnabled: false
+                        WheelHandler {
+                            // Physical wheel notches should move a predictable
+                            // three rows. Touchpad pixel scrolling stays native.
+                            acceptedDevices: PointerDevice.Mouse
+                            target: null
+                            onWheel: event => {
+                                const distance = event.pixelDelta.y || event.angleDelta.y / 120 * 48 * 3;
+                                if (!distance)
+                                    return;
+                                trackList.cancelFlick();
+                                if (event.modifiers & Qt.ShiftModifier)
+                                    trackList.contentX = Math.max(0, Math.min(trackList.contentWidth - trackList.width,
+                                        trackList.contentX - distance));
+                                else {
+                                    trackList.contentY = Math.max(0, Math.min(trackList.contentHeight - trackList.height,
+                                        trackList.contentY - distance));
+                                    client.setScroll(trackList.contentY);
+                                }
+                            }
+                        }
                         TapHandler {
                             enabled: root.queueOpen
                             onTapped: if (trackList.indexAt(point.position.x + trackList.contentX,
@@ -1141,6 +1165,7 @@ FocusScope {
         height: root.height
         y: (1 - root.reveal) * height
         topInset: windowChrome.height
+        dynamicBackground: Boolean(client.preferences.dynamicPlaybackBackground)
         playback: root.playbackObject
         expanded: root.expanded
         reduceMotion: client.reduceMotion

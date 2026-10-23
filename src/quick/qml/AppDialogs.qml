@@ -128,7 +128,6 @@ Item {
         id: filePicker
         objectName: "filePicker"
         title: dialogs.request.title || ""
-        options: Files.FileDialog.DontUseNativeDialog
         fileMode: dialogs.request.mode === "save" ? Files.FileDialog.SaveFile : Files.FileDialog.OpenFile
         nameFilters: dialogs.request.filters && dialogs.request.filters.length ? dialogs.request.filters : ["所有文件 (*)"]
         onAccepted: dialogs.answer({accepted:true, path:selectedFile.toString()})
@@ -138,14 +137,12 @@ Item {
         id: folderPicker
         objectName: "folderPicker"
         title: dialogs.request.title || ""
-        options: Files.FolderDialog.DontUseNativeDialog
         onAccepted: dialogs.answer({accepted:true, path:selectedFolder.toString()})
         onRejected: dialogs.answer({accepted:false})
     }
     Files.FileDialog {
         id: artPicker
         title: "选择封面"
-        options: Files.FileDialog.DontUseNativeDialog
         nameFilters: ["封面图片 (*.jpg *.jpeg *.png)"]
         onAccepted: trackDialog.artFile = selectedFile.toString()
     }
@@ -209,6 +206,7 @@ Item {
             AppCheck { Layout.fillWidth: true; text: "空间音频"; preference: "spatial"; visible: Qt.platform.os === "osx" }
             Label { Layout.fillWidth: true; text: client.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
+            AppCheck { objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#20ffffff"; Layout.topMargin: 8; Layout.bottomMargin: 8 }
             RowLayout {
                 Layout.fillWidth: true

@@ -15,6 +15,8 @@
 #include <QPainter>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
+#include <QQuickImageProvider>
+#include <QQmlEngine>
 #include <QSignalSpy>
 #include <QScopeGuard>
 #include <QSqlDatabase>
@@ -377,6 +379,73 @@ int main(int argc, char** argv)
             "custom window respects minimum size at current scale");
         check(waitFor([&] { return !client.page().value("busy").toBool(); }), "asynchronous library query completes");
         check(client.tracks()->count() == 3, "registered tracks visible in new library");
+        check(!client.preferences().value("dynamicPlaybackBackground").toBool(),
+            "dynamic playback background defaults to disabled");
+        {
+            auto object = [&](const char* name) { return shell.rootObject()->findChild<QObject*>(name); };
+            auto* settings = object("settingsDialog");
+            auto* detail = shell.rootObject()->findChild<QQuickItem*>("nowPlaying");
+            client.showSettings();
+            check(waitFor([&] { return settings->property("opened").toBool(); }), "background settings opens");
+            auto* backgroundSetting = qobject_cast<QQuickItem*>(object("dynamicBackgroundSetting"));
+            check(backgroundSetting && !backgroundSetting->property("checked").toBool(),
+                "settings exposes an unchecked dynamic background option by default");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                backgroundSetting->mapToScene(QPointF(12, backgroundSetting->height() / 2)).toPoint());
+            check(client.preferences().value("dynamicPlaybackBackground").toBool()
+                    && library.setting("dynamic_playback_background") == "1" && detail->property("dynamicBackground").toBool(),
+                "dynamic background checkbox applies immediately and persists its value");
+            QMetaObject::invokeMethod(settings, "close");
+            check(waitFor([&] { return !settings->property("visible").toBool(); }), "background settings closes");
+            shell.rootObject()->setProperty("expanded", true);
+            pump(550);
+            const auto backgroundPoint = detail->mapToScene(QPointF(20, 100)) * shell.devicePixelRatio();
+            const auto dynamicImage = shell.grabWindow();
+            check(dynamicImage.pixelColor(backgroundPoint.toPoint()) != QColor("#16141d"),
+                "enabled playback background uses the current artwork");
+            client.setPreference("dynamicPlaybackBackground", false);
+            pump(100);
+            const auto staticImage = shell.grabWindow();
+            check(detail->findChild<QObject*>("playbackBackgroundImage")->property("source").toUrl()
+                        == QUrl("image://echo-icons/cover/background")
+                    && staticImage.pixelColor(backgroundPoint.toPoint()) != QColor("#16141d")
+                    && library.setting("dynamic_playback_background") == "0",
+                "disabled playback background uses the fixed default cover gradient");
+            shell.rootObject()->setProperty("expanded", false);
+            pump(450);
+            auto* provider = static_cast<QQuickImageProvider*>(shell.engine()->imageProvider("echo-icons"));
+            QSize backdropSize;
+            const auto plainBackdrop = provider->requestPixmap("cover/background", &backdropSize, QSize(800, 800)).toImage();
+            const auto labeledCover = provider->requestPixmap("cover/light", &backdropSize, QSize(800, 800)).toImage();
+            int largestColorStep = 0;
+            for (int y = 0; y < plainBackdrop.height(); ++y)
+                for (int x = 1; x < plainBackdrop.width(); ++x) {
+                    const auto previous = plainBackdrop.pixelColor(x - 1, y);
+                    const auto current = plainBackdrop.pixelColor(x, y);
+                    largestColorStep = std::max({largestColorStep, qAbs(previous.red() - current.red()),
+                        qAbs(previous.green() - current.green()), qAbs(previous.blue() - current.blue())});
+                }
+            check(largestColorStep <= 2 && labeledCover != plainBackdrop,
+                "default backdrop is a continuous gradient while the cover retains its lettering");
+            client.showMini();
+            auto* mini = shell.rootObject()->findChild<QQuickWindow*>("miniPlayer");
+            check(mini && waitFor([&] { return mini->isVisible(); }), "mini player opens for alignment regression");
+            pump(100);
+            bool alignedMiniButtons = true;
+            for (const char* name : {"miniFavorite", "miniPrevious", "miniToggle", "miniNext", "miniReturn"}) {
+                const auto* button = mini->findChild<QQuickItem*>(name);
+                alignedMiniButtons &= button && qAbs(button->mapToScene(QPointF(0, button->height() / 2)).y() - 41) < .5
+                    && button->width() == button->height();
+            }
+            check(alignedMiniButtons, "all five mini transport buttons share a vertical center and square bounds");
+            client.showMainWindow();
+            check(waitFor([&] { return shell.isVisible() && !mini->isVisible(); }), "return to main after alignment check");
+        }
+        if (app.arguments().contains("--background-test")) {
+            check(qmlIssues.isEmpty(), "background settings produce no QML warnings");
+            qInfo() << "PASS" << checks << "focused playback background checks";
+            return 0;
+        }
         bool playlistSection = false;
         for (int i = 0; i < client.navigation()->count(); ++i)
             playlistSection |= client.navigation()->get(i).value("kind") == "playlistSection";
@@ -955,12 +1024,14 @@ int main(int argc, char** argv)
         for (const auto& p : library.playlists()) if (p.name == "Quick auxiliary QA") library.deletePlaylist(p.id);
         client.action("addSource");
         auto* folderPicker = object("folderPicker");
-        check(waitFor([&] { return folderPicker->property("visible").toBool(); }), "folder selection opens Qt Quick dialog");
+        check(waitFor([&] { return folderPicker->property("visible").toBool(); }), "folder selection opens dialog");
+        check(folderPicker->property("options").toInt() == 0, "folder picker permits the native system dialog");
         check(QMetaObject::invokeMethod(folderPicker, "reject"), "folder picker exposes cancel");
         check(waitFor([&] { return client.dialog().isEmpty(); }), "folder picker cancel clears pending request");
         client.action("import");
         auto* filePicker = object("filePicker");
-        check(waitFor([&] { return filePicker->property("visible").toBool(); }), "playlist import opens Quick file dialog");
+        check(waitFor([&] { return filePicker->property("visible").toBool(); }), "playlist import opens file dialog");
+        check(filePicker->property("options").toInt() == 0, "file picker permits the native system dialog");
         QMetaObject::invokeMethod(filePicker, "reject");
         check(waitFor([&] { return client.dialog().isEmpty(); }), "file picker cancel clears pending request");
         client.navigate("songs", {}, QStringLiteral("歌曲"));
@@ -1072,6 +1143,36 @@ int main(int argc, char** argv)
                 << maxTickGap;
         check(ticks >= 3 && maxTickGap < 50, "UI continues processing during large query");
         pump(100);
+        list->setProperty("contentY", 0);
+        QElapsedTimer wheelClock;
+        wheelClock.start();
+        const QPointF wheelPoint = list->mapToScene(QPointF(200, 120));
+        auto sendListWheel = [&](QPoint pixels, QPoint angle, Qt::ScrollPhase phase, Qt::MouseEventSource source) {
+            QWheelEvent event(wheelPoint, shell.mapToGlobal(wheelPoint.toPoint()), pixels, angle,
+                Qt::NoButton, Qt::NoModifier, phase, false, source);
+            event.setTimestamp(1 + wheelClock.elapsed());
+            QCoreApplication::sendEvent(&shell, &event);
+            pump(15);
+        };
+        bool consistentWheel = true;
+        for (int i = 0; i < 6; ++i) {
+            const qreal previousY = list->property("contentY").toReal();
+            sendListWheel({}, QPoint(0, -120), Qt::NoScrollPhase, Qt::MouseEventNotSynthesized);
+            consistentWheel &= qAbs(list->property("contentY").toReal() - previousY - 144) < 1;
+        }
+        check(consistentWheel, "each physical wheel notch scrolls three complete song rows");
+        sendListWheel({}, QPoint(0, 120), Qt::NoScrollPhase, Qt::MouseEventNotSynthesized);
+        check(qAbs(list->property("contentY").toReal() - 720) < 1, "wheel reverses immediately without residual inertia");
+        sendListWheel(QPoint(0, -12), {}, Qt::NoScrollPhase, Qt::MouseEventNotSynthesized);
+        check(qAbs(list->property("contentY").toReal() - 732) < 1,
+            "pixel-only mouse wheels retain their precise distance");
+        list->setProperty("contentY", 0);
+        sendListWheel({}, {}, Qt::ScrollBegin, Qt::MouseEventSynthesizedBySystem);
+        for (int i = 0; i < 6; ++i)
+            sendListWheel(QPoint(0, -12), QPoint(0, -96), Qt::ScrollUpdate, Qt::MouseEventSynthesizedBySystem);
+        sendListWheel({}, {}, Qt::ScrollEnd, Qt::MouseEventSynthesizedBySystem);
+        const qreal preciseScroll = list->property("contentY").toReal();
+        check(preciseScroll > 20 && preciseScroll < 100, "touchpad retains precise pixel scrolling without wheel amplification");
         client.setScroll(1000);
         list->setProperty("contentY", 1000);
         pump(100);
