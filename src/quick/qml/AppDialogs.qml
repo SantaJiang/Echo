@@ -199,6 +199,8 @@ Item {
         contentItem: ColumnLayout {
             spacing: 12
             AppCheck { Layout.fillWidth: true; text: "从页面播放时替换当前队列"; preference: "replaceQueue" }
+            AppCheck { objectName: "fadingSetting"; Layout.fillWidth: true; text: "淡入淡出"; preference: "fading" }
+            Label { Layout.fillWidth: true; text: "柔和地播放、暂停和切歌。"; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { Layout.fillWidth: true; text: "响度均衡"; preference: "normalize" }
             Label { Layout.fillWidth: true; text: "让不同歌曲的音量更接近，分析结果会自动缓存。"; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { Layout.fillWidth: true; text: "使用 ReplayGain 标签"; preference: "replayGain" }

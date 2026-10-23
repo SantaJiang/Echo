@@ -38,6 +38,8 @@ public:
     void previous();
     void seek(qint64 positionMs);
     void setVolume(float slider);
+    void setFadingEnabled(bool enabled);
+    [[nodiscard]] bool fadingEnabled() const { return m_fading; }
     void setExclusive(bool exclusive);
     void setSpatialEnabled(bool enabled);
     [[nodiscard]] bool spatialEnabled() const { return m_spatial; }
@@ -100,6 +102,7 @@ private:
     int m_index = -1;
     qint64 m_nextToken = 1;
     float m_volume = 1;
+    bool m_fading = true;
     bool m_shuffle = false;
     bool m_replayGain = true;
     bool m_exclusive = false;

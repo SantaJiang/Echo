@@ -428,6 +428,15 @@ void Player::seek(qint64 positionMs)
     m_engine->seekMs(std::max<qint64>(0, positionMs));
 }
 
+void Player::setFadingEnabled(bool enabled)
+{
+    if (m_fading == enabled) return;
+    m_fading = enabled;
+    m_library->setSetting(QStringLiteral("fading"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    m_engine->setFadingEnabled(enabled);
+    emit changed();
+}
+
 void Player::setVolume(float slider)
 {
     m_volume = std::clamp(slider, 0.f, 1.f);
@@ -578,6 +587,8 @@ void Player::clearUpcoming()
 
 void Player::restoreSession()
 {
+    m_fading = m_library->setting(QStringLiteral("fading"), QStringLiteral("1")) != QLatin1String("0");
+    m_engine->setFadingEnabled(m_fading);
     m_normalization = m_library->setting(QStringLiteral("normalization"), QStringLiteral("0")) == QLatin1String("1");
     m_volume = m_library->setting(QStringLiteral("volume"), QStringLiteral("1")).toFloat();
     m_exclusive = m_library->setting(QStringLiteral("exclusive"), QStringLiteral("0")) == QLatin1String("1");

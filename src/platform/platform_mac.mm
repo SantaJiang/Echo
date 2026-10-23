@@ -191,6 +191,47 @@ void applyMiniWindowChrome(QWindow* window)
     native.opaque = NO; native.backgroundColor = NSColor.clearColor; native.hasShadow = YES;
 }
 
+bool deferHideUntilFullscreenExit(QWindow* window, const std::function<void()>& ready)
+{
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return false;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
+    NSWindow* native = view.window;
+    const QString phase = window->property("echoFullscreenTransition").toString();
+    if (!(native.styleMask & NSWindowStyleMaskFullScreen) && phase.isEmpty()) {
+        // Qt can report fullscreen without a native Space (for example in a test host).
+        if (window->windowState() == Qt::WindowFullScreen) window->showNormal();
+        return false;
+    }
+    // Keep the window visible until AppKit has removed its fullscreen Space.
+    // Qt's windowStateChanged fires before that native animation has completed.
+    auto* context = new QObject(window);
+    const QPointer<QObject> guardedContext(context);
+    const QPointer<QWindow> guardedWindow(window);
+    const auto completion = ready; // Own the callback beyond this stack frame.
+    id exited = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidExitFullScreenNotification object:native queue:nil
+        usingBlock:^(NSNotification*) {
+            if (guardedContext) QTimer::singleShot(0, guardedContext.data(), [guardedContext, completion] {
+                if (!guardedContext) return;
+                completion();
+                if (guardedContext) guardedContext->deleteLater();
+            });
+        }];
+    id entered = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidEnterFullScreenNotification object:native queue:nil
+        usingBlock:^(NSNotification*) {
+            if (guardedContext) QTimer::singleShot(0, guardedContext.data(), [guardedWindow] {
+                if (guardedWindow) guardedWindow->showNormal();
+            });
+        }];
+    QObject::connect(context, &QObject::destroyed, [exited, entered] {
+        [[NSNotificationCenter defaultCenter] removeObserver:exited];
+        [[NSNotificationCenter defaultCenter] removeObserver:entered];
+    });
+    if (phase.isEmpty()) window->showNormal();
+    return true;
+}
+
 void applyQuickWindowChrome(QWindow* window)
 {
     if (QGuiApplication::platformName() != QStringLiteral("cocoa") || window->property("echoQuickChrome").toBool())
@@ -250,14 +291,24 @@ void applyQuickWindowChrome(QWindow* window)
     QObject::connect(window, &QWindow::visibilityChanged, window, [window, positionButtons] {
         QTimer::singleShot(0, window, positionButtons);
     });
-    id fullscreenObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:NSWindowDidExitFullScreenNotification object:native queue:nil
-        usingBlock:^(NSNotification*) {
-            if (guarded)
-                QTimer::singleShot(0, guarded.data(), positionButtons);
-        }];
-    QObject::connect(window, &QObject::destroyed, [fullscreenObserver] {
-        [[NSNotificationCenter defaultCenter] removeObserver:fullscreenObserver];
+    NSMutableArray* fullscreenObservers = [NSMutableArray array];
+    for (NSNotificationName name : @[NSWindowWillEnterFullScreenNotification, NSWindowDidEnterFullScreenNotification,
+             NSWindowWillExitFullScreenNotification, NSWindowDidExitFullScreenNotification]) {
+        id observer = [[NSNotificationCenter defaultCenter] addObserverForName:name object:native queue:nil
+            usingBlock:^(NSNotification*) {
+                if (!guarded) return;
+                const QString phase = [name isEqual:NSWindowWillEnterFullScreenNotification] ? QStringLiteral("entering")
+                    : [name isEqual:NSWindowWillExitFullScreenNotification] ? QStringLiteral("exiting") : QString();
+                guarded->setProperty("echoFullscreenTransition", phase);
+                if ([name isEqual:NSWindowDidEnterFullScreenNotification]) guarded->setProperty("echoNativeFullscreen", true);
+                if ([name isEqual:NSWindowDidExitFullScreenNotification]) guarded->setProperty("echoNativeFullscreen", false);
+                if ([name isEqual:NSWindowDidExitFullScreenNotification])
+                    QTimer::singleShot(0, guarded.data(), positionButtons);
+            }];
+        [fullscreenObservers addObject:observer];
+    }
+    QObject::connect(window, &QObject::destroyed, [fullscreenObservers] {
+        for (id observer in fullscreenObservers) [[NSNotificationCenter defaultCenter] removeObserver:observer];
     });
     __block BOOL dragging = NO;
     __block NSPoint pressPoint;

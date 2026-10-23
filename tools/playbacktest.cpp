@@ -21,8 +21,8 @@ struct Capture {
 };
 class CaptureOutput final : public echo::AudioOutput {
 public:
-    explicit CaptureOutput(Capture* capture, int forcedRate = 0, int bits = 0, int bytes = 0, bool aligned = false, int outputChannels = 0)
-        : capture(capture), forcedRate(forcedRate), bits(bits), bytes(bytes), aligned(aligned), outputChannels(outputChannels) {}
+    explicit CaptureOutput(Capture* capture, int forcedRate = 0, int bits = 0, int bytes = 0, bool aligned = false, int outputChannels = 0, bool queued = false)
+        : queued(queued), capture(capture), forcedRate(forcedRate), bits(bits), bytes(bytes), aligned(aligned), outputChannels(outputChannels) {}
     ~CaptureOutput() override { close(); }
     bool open(const echo::SampleFormat& source, bool, echo::DeviceFormat* opened, QString*) override
     {
@@ -41,6 +41,8 @@ public:
         running = true;
         ++capture->starts;
         thread = std::thread([this] {
+            // Model native renderer preroll before any samples become audible.
+            if (queued) std::this_thread::sleep_for(std::chrono::milliseconds(180));
             const int frames = rate / 200;
             std::vector<float> block(frames * channels);
             std::vector<uint8_t> raw(frames * channels * (bytes ? bytes : 4));
@@ -50,15 +52,19 @@ public:
             echo::DeviceFormat floating {rate, channels, 32, 4, true};
             while (running) {
                 const int got = pull(raw.data(), frames);
-                echo::convertSamples(raw.data(), input, got, reinterpret_cast<uint8_t*>(block.data()), floating, 1, nullptr);
+                echo::convertSamples(raw.data(), input, got, reinterpret_cast<uint8_t*>(block.data()), floating, queued ? outputVolume.load() : 1.f, nullptr);
                 { std::lock_guard lock(capture->mutex); capture->samples.insert(capture->samples.end(), block.begin(), block.begin() + got * channels); }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         });
     }
     void pause() override { running = false; if (thread.joinable()) thread.join(); }
+    void setVolume(float value) override { outputVolume.store(value); }
+    bool queuedPlayback() const override { return queued; }
     bool isOpen() const override { return isOpened; }
 private:
+    bool queued = false;
+    std::atomic<float> outputVolume {1.f};
     Capture* capture;
     Pull pull;
     int forcedRate = 0;
@@ -101,6 +107,74 @@ int main(int argc, char** argv)
     ffmpeg.start(QStringLiteral("ffmpeg"), {QStringLiteral("-y"), QStringLiteral("-f"), QStringLiteral("lavfi"),
         QStringLiteral("-i"), QStringLiteral("sine=frequency=1000:duration=12:sample_rate=48000"), QStringLiteral("-c:a"), QStringLiteral("pcm_f32le"), path});
     check(ffmpeg.waitForFinished(10000) && ffmpeg.exitCode() == 0, "generate audio fixture");
+    // Exercise envelopes at the PCM output, for both pull and queued renderer policies.
+    for (const bool queued : {false, true}) {
+        Capture faded;
+        echo::AudioEngine fadeEngine(std::make_unique<CaptureOutput>(&faded, 0, 0, 0, false, 0, queued));
+        echo::PlaybackItem tone; tone.path = path; tone.token = 800;
+        const auto clear = [&] { std::lock_guard lock(faded.mutex); faded.samples.clear(); };
+        const auto edgeRms = [&](bool first) {
+            std::lock_guard lock(faded.mutex);
+            const size_t count = std::min<size_t>(960, faded.samples.size());
+            const size_t start = first ? 0 : faded.samples.size() - count;
+            double sum = 0;
+            for (size_t i = start; i < start + count; ++i) sum += faded.samples[i] * faded.samples[i];
+            return count ? std::sqrt(sum / count) : 0.;
+        };
+        fadeEngine.play(tone, {});
+        check(waitFor([&] { return fadeEngine.positionMs() > 220; }), "fade-in starts playback");
+        check(edgeRms(true) < .025 && edgeRms(false) > .08, "start fades from silence to full PCM level");
+        fadeEngine.pause();
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Paused; }), "fade-out reaches paused state");
+        check(edgeRms(false) < .025, "pause fades actual output toward silence");
+        clear();
+        fadeEngine.resume();
+        check(waitFor([&] { return edgeRms(false) > .08; }), "resume recovers full PCM level");
+        check(edgeRms(true) < .025, "resume begins with fade-in");
+        tone.token = 801;
+        fadeEngine.play(tone, {});
+        check(waitFor([&] { return fadeEngine.activeToken() == 801 && fadeEngine.positionMs() > 160; }), "manual switch completes both fades");
+        fadeEngine.seekMs(2000);
+        check(waitFor([&] { return fadeEngine.positionMs() > 2200; }), "seek completes fade-out and fade-in");
+        fadeEngine.pause();
+        QThread::msleep(25);
+        fadeEngine.resume();
+        check(waitFor([&] { return edgeRms(false) > .08 && fadeEngine.state() == echo::AudioEngine::State::Playing; }), "rapid pause/resume recovers");
+        fadeEngine.stop();
+        QThread::msleep(25);
+        fadeEngine.setFadingEnabled(false);
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Stopped; }), "disabling mid-fade completes pending stop");
+        clear();
+        fadeEngine.play(tone, {});
+        check(waitFor([&] { return edgeRms(true) > .08; }), "disabled fading starts at full PCM level");
+        fadeEngine.pause();
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Paused; }), "disabled pause completes");
+        check(edgeRms(false) > .08, "disabled fading bypasses pause envelope");
+        clear();
+        fadeEngine.resume();
+        check(waitFor([&] { return edgeRms(true) > .08; }), "disabled fading bypasses resume envelope");
+        fadeEngine.stop();
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Stopped; }), "disabled stop completes");
+        fadeEngine.setFadingEnabled(true);
+        // Decoding is ahead of the audible position; seeking must exit the pending EOF drain.
+        tone.endMs = 600;
+        fadeEngine.play(tone, {});
+        check(waitFor([&] { return fadeEngine.positionMs() > 250; }), "short track approaches decoded EOF");
+        fadeEngine.seekMs(0);
+        check(waitFor([&] { return fadeEngine.positionMs() < 180; }), "seek near EOF resets the drain");
+        check(waitFor([&] { return fadeEngine.positionMs() > 250; }), "seek near EOF continues playback");
+        fadeEngine.pause();
+        fadeEngine.setExclusive(true);
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Paused; }), "output reconfiguration preserves pending pause");
+        fadeEngine.stop();
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Stopped; }), "short-track stop completes");
+        tone.endMs = -1;
+        clear();
+        fadeEngine.play(tone, {});
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Playing; }), "re-enabled fade starts");
+        fadeEngine.stop();
+        check(waitFor([&] { return fadeEngine.state() == echo::AudioEngine::State::Stopped; }), "stop during fade-in completes");
+    }
     Capture capture;
     echo::AudioEngine engine(std::make_unique<CaptureOutput>(&capture));
     echo::PlaybackItem item;
@@ -215,5 +289,5 @@ int main(int argc, char** argv)
             maximumError = std::max(maximumError, double(std::abs(fullResampled.samples[i] - splitResampled.samples[i])));
         check(maximumError < .000001, "resampled CUE seam equals continuous decode PCM");
     }
-    qInfo() << "Live normalization PCM, position, pause, gapless and resampling checks passed";
+    qInfo() << "Fade PCM, queued preroll, transport, normalization, gapless and resampling checks passed";
 }

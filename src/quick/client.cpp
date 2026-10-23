@@ -688,7 +688,7 @@ void Client::report(const QString& text)
 }
 QVariantMap Client::preferences() const
 {
-    return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()},
+    return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()}, {"fading", m_player->fadingEnabled()},
         {"spatial", m_player->spatialEnabled()}, {"spatialStatus", m_player->spatialStatus()},
         {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion},
         {"dynamicPlaybackBackground", m_library->setting("dynamic_playback_background", "0") == "1"}};
@@ -696,6 +696,7 @@ QVariantMap Client::preferences() const
 void Client::setPreference(const QString& key, bool value)
 {
     if (key == "replaceQueue") m_player->setReplaceContextQueue(value);
+    else if (key == "fading") m_player->setFadingEnabled(value);
     else if (key == "normalize") m_player->setNormalizationEnabled(value);
     else if (key == "spatial") m_player->setSpatialEnabled(value);
     else if (key == "exclusive") m_player->setExclusive(value);
@@ -767,14 +768,13 @@ void Client::showMainWindow()
     if (m_mini) m_mini->hide();
     emit mainRequested();
     if (!m_window) return;
-    if (m_window->visibility() == QWindow::Minimized) m_window->showNormal(); else m_window->show();
-    m_window->raise(); m_window->requestActivate();
+    m_window->showFromBackground();
 }
 void Client::showSettings() { showMainWindow(); emit settingsRequested(); }
 void Client::showMini()
 {
     emit miniRequested();
-    if (m_window) m_window->hide();
+    if (m_window) m_window->hideToBackground();
     if (m_mini) { m_mini->show(); m_mini->raise(); m_mini->requestActivate(); }
 }
 void Client::openUrls(const QVariantList& urls)

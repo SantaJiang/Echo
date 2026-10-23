@@ -17,7 +17,9 @@
 #include <QQuickItemGrabResult>
 #include <QQuickImageProvider>
 #include <QQmlEngine>
+#include <QQmlProperty>
 #include <QSignalSpy>
+#include <QScreen>
 #include <QScopeGuard>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -222,6 +224,231 @@ int main(int argc, char** argv)
             QTimer::singleShot(0, &smokeClient, [&smokeClient] { smokeClient.action("quit"); });
             check(app.exec() == 0, "explicit quit exits the application loop");
             qInfo() << "PASS" << checks << "headless QML startup checks; GPU interaction suite runs separately";
+            return 0;
+        }
+        const auto verifyFading = [&](echo::QuickView& shell, echo::Client& client) {
+            const auto object = [&](const char* name) { return shell.rootObject()->findChild<QObject*>(name); };
+            auto* fading = qobject_cast<QQuickItem*>(object("fadingSetting"));
+            check(fading && fading->property("checked").toBool(), "fading defaults on in settings");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                fading->mapToScene(QPointF(fading->width() / 2, fading->height() / 2)).toPoint());
+            check(waitFor([&] { return !player.fadingEnabled() && library.setting("fading") == "0"; }),
+                "settings click disables and persists fading");
+            {
+                echo::AudioEngine restoredEngine(std::make_unique<SilentOutput>());
+                echo::Player restoredPlayer(&library, &restoredEngine);
+                restoredPlayer.restoreSession();
+                check(!restoredPlayer.fadingEnabled(), "fading choice survives player recreation");
+            }
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                fading->mapToScene(QPointF(fading->width() / 2, fading->height() / 2)).toPoint());
+            check(waitFor([&] { return player.fadingEnabled() && library.setting("fading") == "1"; }),
+                "settings click re-enables fading");
+        };
+        if (app.arguments().contains("--fading-test")) {
+            echo::Client client(&library, &player, &engine);
+            echo::QuickView shell(&playback, &client);
+            client.attach(&shell);
+            shell.show();
+            check(QTest::qWaitForWindowExposed(&shell), "fading settings window exposed");
+            client.showSettings();
+            auto* settings = shell.rootObject()->findChild<QObject*>("settingsDialog");
+            check(waitFor([&] { return settings->property("opened").toBool(); }), "fading settings opens");
+            verifyFading(shell, client);
+            QDir().mkpath("/tmp/echo-quick-qa");
+            check(shell.grabWindow().save("/tmp/echo-quick-qa/settings-fading.png"), "fading settings screenshot saved");
+            check(qmlIssues.isEmpty(), "fading settings QML has no warnings");
+            qInfo() << "PASS" << checks << "fading settings and persistence checks";
+            return 0;
+        }
+        if (app.arguments().contains("--fullscreen-close-test")) {
+            QTimer::singleShot(0, &app, [&] {
+                echo::Client client(&library, &player, &engine);
+                echo::QuickView shell(&playback, &client);
+                client.attach(&shell);
+                client.showMainWindow();
+                check(QTest::qWaitForWindowExposed(&shell), "fullscreen close fixture exposed");
+                player.setRepeat(echo::Player::Repeat::One);
+                player.playTracks(ids, 0, false);
+                check(waitFor([&] { return playback.playing(); }), "background audio starts");
+                const auto originalSize = shell.size();
+                qInfo() << "Ready for fullscreen" << shell.size() << shell.screen()->size();
+                if (!app.arguments().contains("--manual-fullscreen")) shell.showFullScreen();
+                check(waitFor([&] { return shell.property("echoNativeFullscreen").toBool(); }, 120000),
+                    "AppKit confirms native fullscreen entered");
+                qInfo() << "Native fullscreen entered" << shell.size() << shell.fullscreen();
+                pump(700);
+                QSignalSpy hidden(&shell, &echo::QuickView::hiddenToTray);
+                shell.closeWindow();
+                shell.closeWindow();
+                check(waitFor([&] { return !shell.isVisible() && !shell.fullscreen() && !shell.property("echoNativeFullscreen").toBool(); }), "close leaves fullscreen before hiding");
+                check(hidden.count() == 1 && playback.playing(), "close preserves background playback and emits once");
+                pump(700);
+                client.showMainWindow();
+                check(waitFor([&] { return shell.isVisible() && !shell.fullscreen(); }), "resident action reopens a normal window");
+                check(shell.size() == originalSize && shell.frameMargins().top() == 0, "reopen restores size and window chrome");
+                const auto enterFullscreen = [&] {
+                    shell.showFullScreen();
+                    check(waitFor([&] { return shell.property("echoNativeFullscreen").toBool(); }), "re-enter native fullscreen");
+                    pump(150);
+                };
+                enterFullscreen();
+                shell.closeWindow();
+                client.showMainWindow();
+                pump(1200);
+                check(shell.isVisible() && !shell.fullscreen() && !shell.property("echoNativeFullscreen").toBool()
+                        && hidden.count() == 1, "reopen during native exit cancels the pending hide");
+                enterFullscreen();
+                client.showMini();
+                check(waitFor([&] { return !shell.isVisible() && !shell.property("echoNativeFullscreen").toBool(); }),
+                    "mini-player switch releases fullscreen Space before hiding");
+                bool miniVisible = false;
+                for (auto* candidate : QGuiApplication::allWindows())
+                    miniVisible |= candidate->property("echoMiniPlayer").toBool() && candidate->isVisible();
+                check(miniVisible && playback.playing(), "mini-player remains visible with background playback");
+                client.showMainWindow();
+                check(waitFor([&] { return shell.isVisible() && !shell.fullscreen(); }), "main window restores after fullscreen mini-player switch");
+                qInfo() << "PASS" << checks << "native fullscreen close checks";
+                QTimer::singleShot(0, &app, [] { QCoreApplication::exit(0); });
+            });
+            return app.exec();
+        }
+        if (app.arguments().contains("--detail-layout-test")) {
+            echo::Client client(&library, &player, &engine);
+            echo::QuickView shell(&playback, &client);
+            client.attach(&shell);
+            client.setReduceMotion(true);
+            player.playTracks(ids, 0, false);
+            check(waitFor([&] { return playback.playing(); }), "detail fixture plays");
+            player.toggle();
+            check(waitFor([&] { return !playback.playing(); }), "detail fixture pauses");
+            shell.rootObject()->setProperty("expanded", true);
+            shell.show();
+            check(QTest::qWaitForWindowExposed(&shell), "detail layout window exposed");
+            auto* detail = shell.rootObject()->findChild<QQuickItem*>("nowPlaying");
+            auto* content = detail->findChild<QQuickItem*>("detailContent");
+            auto* cover = detail->findChild<QQuickItem*>("detailCover");
+            auto* lyrics = detail->findChild<QQuickItem*>("lyricsView");
+            auto* button = detail->findChild<QQuickItem*>("detailToggle");
+            check(content && cover && lyrics && button, "detail layout surfaces exist");
+            QVariantList lines;
+            const QStringList text = {QStringLiteral("数到十 - 曾沛慈"), QStringLiteral("优雅的蝴蝶 自由穿梭在花蕊"),
+                QStringLiteral("沉默的落叶 风来了就要道别"), QStringLiteral("不同的世界 没有错与对"),
+                QStringLiteral("人有各自的终点"), QStringLiteral("你看不见 心酸那些"),
+                QStringLiteral("天亮了又黑 爱走了才又后悔"), QStringLiteral("我们都在学 每天都勇敢一点"),
+                QStringLiteral("在这个人间 路过了伤悲"), QStringLiteral("距离幸福就不远"),
+                QStringLiteral("抬头让阳光晒干我的泪"), QStringLiteral("爱上一个人 两颗心 三分想念")};
+            for (int i = 0; i < text.size(); ++i) lines << QVariantMap{{"text", text[i]}, {"time", i * 1000}};
+            lyrics->setProperty("model", lines);
+            lyrics->setProperty("activeLyricIndex", 0);
+            QDir().mkpath("/tmp/echo-detail-layout");
+            for (const QSize size : {QSize(1920, 1050), QSize(1440, 900), QSize(1180, 800), QSize(1040, 680)}) {
+                shell.resize(size);
+                pump(250);
+                const auto body = content->mapRectToScene(content->boundingRect());
+                const auto art = cover->mapRectToScene(cover->boundingRect());
+                const auto lyricArea = lyrics->mapRectToScene(lyrics->boundingRect());
+                const auto controls = button->mapRectToScene(button->boundingRect());
+                check(std::abs(body.center().x() - shell.width() / 2.) < 1, "two-column body stays centered");
+                check(art.right() < lyricArea.left() && lyricArea.right() < shell.width(), "cover and lyrics remain separated and inside window");
+                check(controls.bottom() < shell.height() && art.top() > 60, "cover and playback controls stay inside window");
+                if (lyricArea.top() < body.top() + 24 || lyricArea.bottom() > body.bottom() - 24)
+                    qInfo() << "Lyric boundary geometry" << body << lyricArea;
+                check(lyricArea.top() >= body.top() + 24 && lyricArea.bottom() <= body.bottom() - 24,
+                    "lyrics retain breathing room at both vertical boundaries");
+                check(std::abs(controls.center().x() - art.center().x()) < 1 && controls.width() == 56,
+                    "primary control retains size and cover centering");
+                if (shell.width() >= 1920 && shell.height() >= 900) {
+                    check(art.left() >= 200 && lyricArea.left() >= 900 && lyricArea.width() <= 641,
+                        "fullscreen proportions distribute both columns across canvas");
+                }
+                check(shell.grabWindow().save(QString("/tmp/echo-detail-layout/detail-%1x%2.png").arg(size.width()).arg(size.height())),
+                    "detail layout screenshot saved");
+                qInfo() << "Detail layout" << shell.size() << "requested" << size << "DPR" << shell.devicePixelRatio() << "cover" << art << "lyrics" << lyricArea << "play" << controls;
+            }
+            shell.resize(1920, 1050);
+            pump(250);
+            const auto detailItems = detail->findChildren<QObject*>();
+            check(std::none_of(detailItems.cbegin(), detailItems.cend(), [&](QObject* item) {
+                return item->property("text").toString() == playback.track().value("album").toString();
+            }), "album header is absent from playback detail");
+            // Compare actual composited text to the same frame without its mask.
+            // Background subtraction verifies transparent fading over the real gradient.
+            QVariantList fadeLines;
+            for (int i = 0; i < 60; ++i)
+                fadeLines << QVariantMap{{"text", QStringLiteral("歌词边缘渐隐  TEXT 0123456789")}, {"time", -1}};
+            lyrics->setProperty("manualScrolling", true);
+            lyrics->setProperty("model", fadeLines);
+            lyrics->setProperty("activeLyricIndex", -1);
+            pump(100);
+            lyrics->setProperty("contentY", 0);
+            lyrics->setOpacity(0);
+            pump(50);
+            const auto backdrop = shell.grabWindow();
+            lyrics->setOpacity(1);
+            pump(100);
+            const auto faded = shell.grabWindow();
+            check(QQmlProperty::write(lyrics, "layer.enabled", false), "lyric mask can be bypassed for pixel comparison");
+            pump(100);
+            const auto unmasked = shell.grabWindow();
+            const auto viewport = lyrics->mapRectToScene(lyrics->boundingRect());
+            const auto fadeHeight = lyrics->property("edgeFadeHeight").toReal();
+            const auto energyRatio = [&](qreal top, qreal bottom) {
+                double maskedEnergy = 0, plainEnergy = 0;
+                const qreal dpr = shell.devicePixelRatio();
+                for (int y = qCeil((viewport.top() + top) * dpr); y < (viewport.top() + bottom) * dpr; ++y)
+                    for (int x = qCeil(viewport.left() * dpr); x < viewport.right() * dpr; ++x) {
+                        const auto bg = backdrop.pixelColor(x, y), mask = faded.pixelColor(x, y), plain = unmasked.pixelColor(x, y);
+                        maskedEnergy += std::abs(mask.red() - bg.red()) + std::abs(mask.green() - bg.green()) + std::abs(mask.blue() - bg.blue());
+                        plainEnergy += std::abs(plain.red() - bg.red()) + std::abs(plain.green() - bg.green()) + std::abs(plain.blue() - bg.blue());
+                    }
+                check(plainEnergy > 1000, "pixel comparison contains actual lyric strokes");
+                return maskedEnergy / plainEnergy;
+            };
+            const auto topFade = energyRatio(0, fadeHeight / 2);
+            const auto bodyFade = energyRatio(fadeHeight, lyrics->height() - fadeHeight);
+            const auto bottomFade = energyRatio(lyrics->height() - fadeHeight / 2, lyrics->height());
+            qInfo() << "Lyric fade pixel ratios top/body/bottom" << topFade << bodyFade << bottomFade;
+            check(topFade < .6 && bottomFade < .6 && bodyFade > .9, "both lyric edges fade while reading area remains opaque");
+            check(faded.save("/tmp/echo-detail-layout/lyric-edge-fade.png"), "actual lyric fade proof saved");
+            check(QQmlProperty::write(lyrics, "layer.enabled", true), "lyric mask restored");
+            lyrics->setProperty("model", lines);
+            lyrics->setProperty("manualScrolling", false);
+            lyrics->setProperty("activeLyricIndex", 6);
+            pump(200);
+            QQuickItem* activeLine = nullptr;
+            check(QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, activeLine), Q_ARG(int, 6))
+                    && activeLine, "active lyric is instantiated");
+            const auto localLine = activeLine->mapToItem(lyrics, QPointF(0, 0));
+            check(std::abs(localLine.y() - lyrics->height() * .34) < 2, "current lyric follows the reading anchor");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                activeLine->mapToScene(QPointF(40, activeLine->height() / 2)).toPoint());
+            check(waitFor([&] { return playback.position() >= 6000 && playback.position() < 6100; }), "clicking a lyric still seeks playback");
+            const auto point = lyrics->mapToScene(QPointF(lyrics->width() / 2, lyrics->height() / 2));
+            const auto beforeScroll = lyrics->property("contentY").toReal();
+            QElapsedTimer scrollClock;
+            scrollClock.start();
+            const auto sendWheel = [&](int delta, Qt::ScrollPhase phase) {
+                QWheelEvent wheel(point, shell.mapToGlobal(point.toPoint()), QPoint(0, delta), QPoint(0, delta * 8),
+                    Qt::NoButton, Qt::NoModifier, phase, false, Qt::MouseEventSynthesizedBySystem);
+                wheel.setTimestamp(1 + scrollClock.elapsed());
+                QCoreApplication::sendEvent(&shell, &wheel);
+            };
+            sendWheel(-1, Qt::ScrollBegin);
+            for (int i = 0; i < 20; ++i) { sendWheel(-3, Qt::ScrollUpdate); pump(15); }
+            sendWheel(0, Qt::ScrollEnd);
+            qInfo() << "Lyric scroll" << beforeScroll << lyrics->property("contentY") << lyrics->property("manualScrolling");
+            check(lyrics->property("manualScrolling").toBool()
+                    && std::abs(lyrics->property("contentY").toReal() - beforeScroll) > 10,
+                "manual lyric scrolling still moves and suspends following");
+            lyrics->setProperty("manualScrolling", false);
+            pump(200);
+            check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-active.png"), "middle lyric reading layout saved");
+            lyrics->setProperty("model", QVariantList{});
+            pump(100);
+            check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-empty.png"), "empty lyric layout saved");
+            check(qmlIssues.isEmpty(), "detail layout has no QML warnings");
+            qInfo() << "PASS" << checks << "detail layout checks";
             return 0;
         }
         window.show();
@@ -993,6 +1220,7 @@ int main(int argc, char** argv)
         check(settings, "QML settings surface exists");
         client.showSettings();
         check(waitFor([&] { return settings->property("opened").toBool(); }), "settings opens in Quick overlay");
+        verifyFading(shell, client);
         check(shell.grabWindow().save("/tmp/echo-quick-qa/settings.png"), "QML settings screenshot saved");
         QTest::keyClick(&shell, Qt::Key_Escape);
         check(waitFor([&] { return !settings->property("visible").toBool(); }), "Escape dismisses settings");

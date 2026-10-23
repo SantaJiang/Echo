@@ -1,12 +1,11 @@
 #include "audio/engine.h"
 
-#include <core/engine/fadingdefs.h>
-
 #include "audio/convert.h"
 #include "audio/decoder.h"
 #include "audio/output.h"
 #include "audio/ringbuffer.h"
 
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QHash>
 #include <QMutexLocker>
@@ -78,6 +77,8 @@ struct AudioEngine::Worker {
     std::atomic<bool> exclusive {false};
     std::atomic<bool> spatial {false};
     QString lastSpatialStatus;
+    bool fadingEnabled = true;
+    bool pendingFading = true;
     bool quit = false;
 
     Loaded current;
@@ -103,13 +104,17 @@ struct AudioEngine::Worker {
     std::atomic<qint64> framesPlayed {0};
     std::vector<Marker> markers;
     QThread* thread = nullptr;
-    enum class OutputFade { None, In, OutPause, OutStop, OutSeek };
+    enum class OutputFade { None, In, OutPause, OutStop, OutSeek, OutPlay };
     std::atomic<int> fadeKind {static_cast<int>(OutputFade::None)};
     std::atomic<int> fadeTotal {0};
     std::atomic<int> fadeDone {0};
     float smoothedVolume = 1.f;
+    std::atomic<float> fadeLevel {1.f};
+    std::atomic<float> fadeStart {0.f};
+    QElapsedTimer fadeClock;
+    qint64 fadeAudibleStart = 0;
 
-    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain, ReleaseFiles };
+    enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain, ReleaseFiles, Fading };
 
     void post(Command command)
     {
@@ -144,7 +149,7 @@ struct AudioEngine::Worker {
             }
             pump();
             publishPosition();
-            if (fadeKind.load() != static_cast<int>(OutputFade::None) && fadeKind.load() != static_cast<int>(OutputFade::In)
+            if (!queuedOutput && fadeKind.load() != static_cast<int>(OutputFade::None) && fadeKind.load() != static_cast<int>(OutputFade::In)
                 && ring.availableRead() == 0) {
                 fadeDone.store(fadeTotal.load());
             }
@@ -159,19 +164,12 @@ struct AudioEngine::Worker {
     {
         switch (command) {
         case Play:
-            startPlayback();
+            if (!beginFade(OutputFade::OutPlay, 300)) startPlayback();
             break;
         case Upcoming:
             loadUpcoming();
             break;
         case Pause:
-            if (queuedOutput && output) {
-                output->pause();
-                publishPosition();
-                cancelFade();
-                setState(State::Paused);
-                break;
-            }
             if (!beginFade(OutputFade::OutPause, 120)) {
                 if (output) {
                     output->pause();
@@ -181,7 +179,7 @@ struct AudioEngine::Worker {
             break;
         case Resume:
             if (deviceReady && output) {
-                if (!queuedOutput) beginFade(OutputFade::In, 120);
+                beginFade(OutputFade::In, 120);
                 output->start();
                 setState(State::Playing);
             }
@@ -191,20 +189,27 @@ struct AudioEngine::Worker {
             emit owner->filesReleased();
             break;
         case Stop:
-            if (queuedOutput) { stopPlayback(); break; }
             if (!beginFade(OutputFade::OutStop, 300)) {
                 stopPlayback();
             }
             break;
         case Seek:
-            if (queuedOutput) { seekCurrent(); break; }
             if (!beginFade(OutputFade::OutSeek, 120)) {
                 seekCurrent();
             }
             break;
         case Volume:
-            if (output) output->setVolume(volumeCurve(volume.load()));
+            if (output) output->setVolume(volumeCurve(volume.load()) * (queuedOutput ? fadeLevel.load() : 1.f));
             break;
+        case Fading: {
+            { QMutexLocker locker(&mutex); fadingEnabled = pendingFading; }
+            if (!fadingEnabled) {
+                fadeDone.store(fadeTotal.load());
+                completeFade(true);
+                cancelFade();
+            }
+            break;
+        }
         case Gain: {
             QMutexLocker locker(&mutex);
             const auto apply = [this](PlaybackItem& item) {
@@ -219,6 +224,11 @@ struct AudioEngine::Worker {
             break;
         }
         case ConfigureOutput:
+            if (const auto fade = static_cast<OutputFade>(fadeKind.load());
+                fade != OutputFade::None && fade != OutputFade::In) {
+                fadeDone.store(fadeTotal.load());
+                completeFade(true);
+            }
             reconfigureOutput();
             break;
         default:
@@ -263,6 +273,7 @@ struct AudioEngine::Worker {
         }
         output->setPull([this](uint8_t* dst, int frames) { return pull(dst, frames); });
         cancelFade();
+        beginFade(OutputFade::In, 120);
         output->start();
         setState(State::Playing);
         emit owner->trackStarted(current.item.token);
@@ -718,6 +729,12 @@ struct AudioEngine::Worker {
 
     void finishTail()
     {
+        const auto fade = static_cast<OutputFade>(fadeKind.load());
+        if (fade != OutputFade::None && fade != OutputFade::In) {
+            fadeDone.store(fadeTotal.load());
+            completeFade(true);
+            return;
+        }
         const AfterTail action = afterTail;
         draining = false;
         afterTail = AfterTail::None;
@@ -779,6 +796,8 @@ struct AudioEngine::Worker {
         const qint64 frame = std::max<qint64>(0, (current.item.startMs + position) * current.format.sampleRate / 1000);
         if (output) output->flush();
         ring.clear();
+        draining = false;
+        afterTail = AfterTail::None;
         if (resampler) {
             swr_init(resampler);
         }
@@ -796,18 +815,31 @@ struct AudioEngine::Worker {
         owner->m_positionMs.store(marker.startMs);
         owner->m_activeToken.store(marker.token);
         emit owner->positionChanged();
+        cancelFade();
         if (wasPlaying && output && deviceReady) {
+            beginFade(OutputFade::In, 120);
             output->start();
         }
     }
 
     bool beginFade(OutputFade kind, int milliseconds)
     {
-        if (!deviceReady || device.sampleRate <= 0 || owner->m_state.load() != static_cast<int>(State::Playing)) {
+        if (!fadingEnabled || !deviceReady || device.sampleRate <= 0
+            || (kind != OutputFade::In && owner->m_state.load() != static_cast<int>(State::Playing))) {
             return false;
         }
+        if (queuedOutput) updateQueuedFade();
+        const float start = kind == OutputFade::In
+            ? (fadeKind.load() == static_cast<int>(OutputFade::None) ? 0.f : fadeLevel.load()) : fadeLevel.load();
         const int frames = std::max(1, device.sampleRate * milliseconds / 1000);
         fadeKind.store(static_cast<int>(OutputFade::None));
+        fadeStart.store(start);
+        fadeLevel.store(start);
+        fadeClock.start();
+        if (queuedOutput) {
+            fadeAudibleStart = std::max<qint64>(0, framesPlayed.load() - output->pendingFrames());
+            output->setVolume(volumeCurve(volume.load()) * start);
+        }
         fadeDone.store(0);
         fadeTotal.store(frames);
         fadeKind.store(static_cast<int>(kind));
@@ -819,22 +851,49 @@ struct AudioEngine::Worker {
         fadeKind.store(static_cast<int>(OutputFade::None));
         fadeDone.store(0);
         fadeTotal.store(0);
+        fadeLevel.store(1.f);
+        if (queuedOutput && output) output->setVolume(volumeCurve(volume.load()));
     }
 
-    void completeFade()
+    void updateQueuedFade()
     {
+        const auto kind = static_cast<OutputFade>(fadeKind.load());
+        if (!queuedOutput || kind == OutputFade::None || fadeTotal.load() <= 0) return;
+        // Fade in against the audible clock: native queued output may need preroll before it starts.
+        const qint64 elapsedFrames = kind == OutputFade::In
+            ? std::max<qint64>(0, framesPlayed.load() - output->pendingFrames() - fadeAudibleStart)
+            : fadeClock.elapsed() * device.sampleRate / 1000;
+        const int done = static_cast<int>(std::min<qint64>(fadeTotal.load(), elapsedFrames));
+        fadeDone.store(done);
+        const float progress = static_cast<float>(done) / fadeTotal.load();
+        const float end = kind == OutputFade::In ? 1.f : 0.f;
+        fadeLevel.store(fadeStart.load() + (end - fadeStart.load()) * progress);
+        output->setVolume(volumeCurve(volume.load()) * fadeLevel.load());
+    }
+
+    void completeFade(bool force = false)
+    {
+        if (!force) updateQueuedFade();
         const auto kind = static_cast<OutputFade>(fadeKind.load());
         const int total = fadeTotal.load();
         if (kind == OutputFade::None || total <= 0 || fadeDone.load() < total) {
             return;
         }
-        fadeKind.store(static_cast<int>(OutputFade::None));
-        if (output && kind != OutputFade::In) output->drain();
+        // Keep an outgoing envelope at silence until the callback has actually stopped.
+        if (kind == OutputFade::In) fadeKind.store(static_cast<int>(OutputFade::None));
+        fadeLevel.store(kind == OutputFade::In ? 1.f : 0.f);
+        if (queuedOutput && output) output->setVolume(volumeCurve(volume.load()) * fadeLevel.load());
+        if (output && !queuedOutput && kind != OutputFade::In) output->drain();
+        if (kind == OutputFade::OutPlay) {
+            startPlayback();
+            return;
+        }
         if (kind == OutputFade::OutPause) {
             if (output) {
                 output->pause();
                 publishPosition();
             }
+            fadeKind.store(static_cast<int>(OutputFade::None));
             setState(State::Paused);
             return;
         }
@@ -844,7 +903,6 @@ struct AudioEngine::Worker {
         }
         if (kind == OutputFade::OutSeek) {
             seekCurrent();
-            beginFade(OutputFade::In, 120);
         }
     }
 
@@ -858,16 +916,19 @@ struct AudioEngine::Worker {
         const int ramp = std::max(1, device.sampleRate / 50);
         const auto kind = static_cast<OutputFade>(fadeKind.load());
         const int total = fadeTotal.load();
-        int done = fadeDone.load();
+        const int done = fadeDone.load();
+        const float start = fadeStart.load();
+        float lastLevel = fadeLevel.load();
         const int sampleBytes = std::max(1, device.containerBytes);
         for (int frame = 0; frame < frames; ++frame) {
             smoothedVolume += (target - smoothedVolume) * std::min(1.f, 1.f / static_cast<float>(ramp));
             if (std::fabs(target - smoothedVolume) < 0.0000001f) smoothedVolume = target;
             float envelope = smoothedVolume;
-            if (kind != OutputFade::None && total > 0) {
+            if (!queuedOutput && kind != OutputFade::None && total > 0) {
                 const double progress = std::clamp(static_cast<double>(done + frame) / static_cast<double>(total), 0.0, 1.0);
-                const auto direction = kind == OutputFade::In ? Fooyin::Engine::FadeDirection::In : Fooyin::Engine::FadeDirection::Out;
-                envelope *= static_cast<float>(Fooyin::Engine::gain01(progress, Fooyin::Engine::FadeCurve::Linear, direction));
+                const float end = kind == OutputFade::In ? 1.f : 0.f;
+                lastLevel = start + (end - start) * static_cast<float>(progress);
+                envelope *= lastLevel;
             }
             if (std::fabs(envelope - 1.f) <= 0.0001f) {
                 continue;
@@ -884,7 +945,8 @@ struct AudioEngine::Worker {
             // Quantize at the actual device depth, including packed 24-bit and aligned containers.
             convertSamples(sample, source, 1, sample, device, envelope, &outputDither);
         }
-        if (kind != OutputFade::None) {
+        if (!queuedOutput && kind != OutputFade::None) {
+            fadeLevel.store(lastLevel);
             fadeDone.store(done + frames);
         }
     }
@@ -1013,6 +1075,12 @@ void AudioEngine::setVolume(float slider)
 {
     m_worker->volume.store(std::clamp(slider, 0.f, 1.f));
     m_worker->post(Worker::Volume);
+}
+
+void AudioEngine::setFadingEnabled(bool enabled)
+{
+    { QMutexLocker locker(&m_worker->mutex); m_worker->pendingFading = enabled; }
+    m_worker->post(Worker::Fading);
 }
 
 void AudioEngine::setExclusive(bool exclusive)

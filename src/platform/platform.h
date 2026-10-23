@@ -17,6 +17,8 @@ enum class MediaCommand { Toggle, Next, Previous, Seek };
 void quitApplication();
 void applyMiniWindowChrome(QWindow* window);
 void applyQuickWindowChrome(QWindow* window);
+// Returns true when ready will run after the native fullscreen transition finishes.
+bool deferHideUntilFullscreenExit(QWindow* window, const std::function<void()>& ready);
 void useDarkAppearance();
 void installTrayIcon(QObject* owner, const std::function<void()>& open, const std::function<void()>& settings,
     const std::function<void(const QPoint&)>& context);

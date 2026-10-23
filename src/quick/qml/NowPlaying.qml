@@ -62,12 +62,17 @@ Item {
         onClicked: page.collapse()
     }
     RowLayout {
-        anchors.fill: parent
-        anchors.margins: 52
+        id: content
+        objectName: "detailContent"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
         anchors.topMargin: 64 + page.topInset
         anchors.bottomMargin: 32
-        spacing: Math.max(48, page.width * 0.07)
+        width: Math.min(1440, page.width - Math.max(104, page.width * 0.18))
+        spacing: Math.max(48, Math.min(168, width * 0.115))
         ColumnLayout {
+            objectName: "detailPlayerColumn"
             Layout.preferredWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
             Layout.minimumWidth: 280
             Layout.maximumWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
@@ -210,31 +215,39 @@ Item {
             }
         }
         Item {
+            objectName: "detailLyricsColumn"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: 20
-                Text {
-                    Layout.fillWidth: true
-                    text: page.playback.track.album
-                    color: "#aaa5b8"
-                    font.pixelSize: 13
-                    elide: Text.ElideRight
-                }
+            Layout.maximumHeight: content.height
+            Layout.alignment: Qt.AlignTop
+            Item {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.topMargin: Math.min(56, Math.max(24, parent.height * 0.06))
+                anchors.bottomMargin: anchors.topMargin
+                width: Math.min(640, parent.width)
                 ListView {
                     id: lyrics
                     objectName: "lyricsView"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    anchors.fill: parent
+                    readonly property real edgeFadeHeight: Math.min(96, height * 0.16)
+                    layer.enabled: true
+                    layer.effect: MultiEffect {
+                        maskEnabled: true
+                        maskSource: lyricFadeMask
+                        maskThresholdMin: 0.5
+                        maskSpreadAtMin: 1.0
+                        autoPaddingEnabled: false
+                    }
                     model: page.playback.lyrics
                     property int activeLyricIndex: page.playback.lyricIndex
                     // Keep ListView's selection separate from the playback row:
                     // changing currentIndex can reposition even without a highlight.
                     currentIndex: -1
                     clip: true
-                    spacing: 20
-                    topMargin: height * 0.3
+                    spacing: page.width >= 1400 ? 22 : 18
+                    topMargin: height * 0.34
                     bottomMargin: height * 0.5
                     property bool manualScrolling: false
                     function followCurrent() {
@@ -246,7 +259,7 @@ Item {
                         positionViewAtIndex(activeLyricIndex, ListView.Beginning);
                         const line = itemAtIndex(activeLyricIndex);
                         const targetY = line ? Math.max(originY - topMargin,
-                            Math.min(line.y - height * 0.3, originY + contentHeight - height + bottomMargin)) : contentY;
+                            Math.min(line.y - height * 0.34, originY + contentHeight - height + bottomMargin)) : contentY;
                         contentY = previous;
                         if (page.reduceMotion)
                             contentY = targetY;
@@ -258,6 +271,7 @@ Item {
                     onActiveLyricIndexChanged: Qt.callLater(followCurrent)
                     onModelChanged: Qt.callLater(followCurrent)
                     onHeightChanged: Qt.callLater(followCurrent)
+                    onWidthChanged: Qt.callLater(followCurrent)
                     onManualScrollingChanged: if (!manualScrolling) Qt.callLater(followCurrent)
                     NumberAnimation {
                         id: followAnimation
@@ -300,10 +314,13 @@ Item {
                         width: lyrics.width
                         text: modelData.text
                         wrapMode: Text.Wrap
-                        font.pixelSize: 25
-                        font.weight: Font.DemiBold
-                        color: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? "#f6f2ff" : "#8b829b"
-                        opacity: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? 1 : Math.max(0.22, 0.6 - Math.abs(index - lyrics.activeLyricIndex) * 0.08)
+                        font.family: Qt.platform.os === "osx" ? "PingFang SC" : Qt.application.font.family
+                        font.pixelSize: page.width >= 1400 ? 28 : 24
+                        font.weight: index === lyrics.activeLyricIndex ? Font.DemiBold : Font.Normal
+                        lineHeightMode: Text.FixedHeight
+                        lineHeight: Math.round(font.pixelSize * 1.35)
+                        color: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? "#faf8ff" : "#ddd6e8"
+                        opacity: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? 1 : Math.max(0.28, 0.62 - Math.abs(index - lyrics.activeLyricIndex) * 0.065)
                         Behavior on opacity {
                             NumberAnimation {
                                 duration: page.reduceMotion ? 0 : 260
@@ -320,6 +337,18 @@ Item {
                         text: "让音乐自己诉说"
                         color: "#777081"
                         font.pixelSize: 23
+                    }
+                }
+                Rectangle {
+                    id: lyricFadeMask
+                    anchors.fill: lyrics
+                    visible: false
+                    layer.enabled: true
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: "transparent" }
+                        GradientStop { position: lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
+                        GradientStop { position: 1 - lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
+                        GradientStop { position: 1; color: "transparent" }
                     }
                 }
             }

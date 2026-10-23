@@ -18,6 +18,8 @@ public:
     Q_INVOKABLE void minimizeWindow() { showMinimized(); }
     Q_INVOKABLE void toggleMaximized();
     Q_INVOKABLE void closeWindow() { close(); }
+    void hideToBackground();
+    void showFromBackground();
 signals:
     void chromeChanged();
     void hiddenToTray();
@@ -28,6 +30,8 @@ protected:
     bool nativeEvent(const QByteArray& type, void* message, qintptr* result) override;
 #endif
 private:
+    bool m_hidePending = false;
+    quint64 m_hideRevision = 0;
     bool m_customChrome = false;
     bool m_maximizeHovered = false;
     bool m_maximizePressed = false;

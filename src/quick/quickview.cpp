@@ -6,6 +6,7 @@
 #include <QCloseEvent>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QPointer>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickImageProvider>
@@ -160,12 +161,36 @@ void QuickView::toggleMaximized()
         return;
     maximized() ? showNormal() : showMaximized();
 }
+void QuickView::hideToBackground()
+{
+    if (m_hidePending) return;
+    m_hidePending = true;
+    const auto revision = ++m_hideRevision;
+    const QPointer<QuickView> guarded(this);
+    const auto finish = [guarded, revision] {
+        if (!guarded || !guarded->m_hidePending || guarded->m_hideRevision != revision) return;
+        guarded->m_hidePending = false;
+        guarded->hide();
+        emit guarded->hiddenToTray();
+    };
+    if (!deferHideUntilFullscreenExit(this, finish)) finish();
+}
+
+void QuickView::showFromBackground()
+{
+    // A tray click during the exit animation cancels its pending hide.
+    m_hidePending = false;
+    ++m_hideRevision;
+    if (visibility() == QWindow::Minimized) showNormal(); else show();
+    raise();
+    requestActivate();
+}
+
 bool QuickView::event(QEvent* event)
 {
     if (event->type() == QEvent::Close && !QCoreApplication::closingDown()) {
-        emit hiddenToTray();
-        hide();
         static_cast<QCloseEvent*>(event)->ignore();
+        hideToBackground();
         return true;
     }
     return QQuickView::event(event);

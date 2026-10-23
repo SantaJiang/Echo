@@ -15,6 +15,13 @@ void quitApplication()
     QCoreApplication::exit(0);
 }
 
+#ifndef Q_OS_MACOS
+bool deferHideUntilFullscreenExit(QWindow*, const std::function<void()>&)
+{
+    return false;
+}
+#endif
+
 void showInFileManager(const QString& path)
 {
     const QFileInfo info(path);

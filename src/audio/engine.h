@@ -27,6 +27,7 @@ public:
     void releaseFiles();
     void seekMs(qint64 positionMs);
     void setVolume(float slider);
+    void setFadingEnabled(bool enabled);
     void setExclusive(bool exclusive);
     void setSpatialEnabled(bool enabled);
     void setTrackGain(qint64 token, float gainDb);
