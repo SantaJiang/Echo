@@ -329,8 +329,9 @@ int main(int argc, char** argv)
             auto* content = detail->findChild<QQuickItem*>("detailContent");
             auto* cover = detail->findChild<QQuickItem*>("detailCover");
             auto* lyrics = detail->findChild<QQuickItem*>("lyricsView");
-            auto* button = detail->findChild<QQuickItem*>("detailToggle");
-            check(content && cover && lyrics && button, "detail layout surfaces exist");
+            auto* button = shell.rootObject()->findChild<QQuickItem*>("barToggle");
+            auto* songInfo = detail->findChild<QQuickItem*>("detailSongInfo");
+            check(content && cover && lyrics && button && songInfo, "detail layout surfaces exist");
             QVariantList lines;
             const QStringList text = {QStringLiteral("数到十 - 曾沛慈"), QStringLiteral("优雅的蝴蝶 自由穿梭在花蕊"),
                 QStringLiteral("沉默的落叶 风来了就要道别"), QStringLiteral("不同的世界 没有错与对"),
@@ -352,12 +353,11 @@ int main(int argc, char** argv)
                 check(std::abs(body.center().x() - shell.width() / 2.) < 1, "two-column body stays centered");
                 check(art.right() < lyricArea.left() && lyricArea.right() < shell.width(), "cover and lyrics remain separated and inside window");
                 check(controls.bottom() < shell.height() && art.top() > 60, "cover and playback controls stay inside window");
-                if (lyricArea.top() < body.top() + 24 || lyricArea.bottom() > body.bottom() - 24)
-                    qInfo() << "Lyric boundary geometry" << body << lyricArea;
-                check(lyricArea.top() >= body.top() + 24 && lyricArea.bottom() <= body.bottom() - 24,
-                    "lyrics retain breathing room at both vertical boundaries");
-                check(std::abs(controls.center().x() - art.center().x()) < 1 && controls.width() == 56,
-                    "primary control retains size and cover centering");
+                const auto info = songInfo->mapRectToScene(songInfo->boundingRect());
+                check(info.bottom() + 12 <= lyricArea.top() && lyricArea.bottom() <= body.bottom(),
+                    "song information sits above the lyric viewport with breathing room");
+                check(std::abs(controls.center().x() - shell.width() / 2.) < 1 && controls.width() == 56,
+                    "shared playback control stays centered in the window");
                 if (shell.width() >= 1920 && shell.height() >= 900) {
                     check(art.left() >= 200 && lyricArea.left() >= 900 && lyricArea.width() <= 641,
                         "fullscreen proportions distribute both columns across canvas");
@@ -368,10 +368,11 @@ int main(int argc, char** argv)
             }
             shell.resize(1920, 1050);
             pump(250);
-            const auto detailItems = detail->findChildren<QObject*>();
-            check(std::none_of(detailItems.cbegin(), detailItems.cend(), [&](QObject* item) {
-                return item->property("text").toString() == playback.track().value("album").toString();
-            }), "album header is absent from playback detail");
+            check(detail->findChild<QQuickItem*>("detailTitle")->property("text").toString() == playback.track().value("title").toString(),
+                "playback title matches the current track");
+            const auto metadata = detail->findChild<QQuickItem*>("detailMetadata")->property("text").toString();
+            check(metadata.contains(playback.track().value("artist").toString()) && metadata.contains(playback.track().value("album").toString()),
+                "artist and album appear above the lyrics");
             // Compare actual composited text to the same frame without its mask.
             // Background subtraction verifies transparent fading over the real gradient.
             QVariantList fadeLines;
@@ -420,7 +421,7 @@ int main(int argc, char** argv)
             check(QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, activeLine), Q_ARG(int, 6))
                     && activeLine, "active lyric is instantiated");
             const auto localLine = activeLine->mapToItem(lyrics, QPointF(0, 0));
-            check(std::abs(localLine.y() - lyrics->height() * .34) < 2, "current lyric follows the reading anchor");
+            check(std::abs(localLine.y() - lyrics->height() * lyrics->property("readingAnchor").toReal()) < 2, "current lyric follows the reading anchor");
             QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
                 activeLine->mapToScene(QPointF(40, activeLine->height() / 2)).toPoint());
             check(waitFor([&] { return playback.position() >= 6000 && playback.position() < 6100; }), "clicking a lyric still seeks playback");
@@ -447,6 +448,116 @@ int main(int argc, char** argv)
             lyrics->setProperty("model", QVariantList{});
             pump(100);
             check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-empty.png"), "empty lyric layout saved");
+            lyrics->setProperty("model", lines);
+            lyrics->setProperty("activeLyricIndex", -1);
+            pump(200);
+            QQuickItem* firstLine = nullptr;
+            QQuickItem* nearbyLine = nullptr;
+            QQuickItem* distantLine = nullptr;
+            QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, firstLine), Q_ARG(int, 0));
+            QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, nearbyLine), Q_ARG(int, 1));
+            QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, distantLine), Q_ARG(int, 6));
+            check(firstLine && nearbyLine && distantLine && firstLine->opacity() == 1
+                    && nearbyLine->opacity() < .6 && distantLine->opacity() < .1,
+                "lyrics before the first timestamp retain strong near-to-far fading");
+            check(std::abs(firstLine->mapToItem(lyrics, QPointF(0, 0)).y()
+                    - lyrics->height() * lyrics->property("readingAnchor").toReal()) < 2,
+                "first lyric uses the reading anchor before playback reaches its timestamp");
+            // Exercise the actual shared control bar, including passive pointer
+            // observation over controls and the real three-second idle timeout.
+            auto* bar = shell.rootObject()->findChild<QQuickItem*>("playerBar");
+            auto* hideTimer = shell.rootObject()->findChild<QObject*>("controlsHideTimer");
+            auto* seek = bar->findChild<QQuickItem*>("barSeek");
+            auto* collapse = detail->findChild<QQuickItem*>("detailCollapse");
+            check(bar && hideTimer && seek && collapse && hideTimer->property("interval").toInt() == 3000,
+                "playback controls use a three-second idle timeout");
+            shell.resize(1180, 800);
+            lyrics->setProperty("model", lines);
+            lyrics->setProperty("activeLyricIndex", 6);
+            shell.rootObject()->setProperty("expanded", false);
+            shell.rootObject()->forceActiveFocus();
+            client.setReduceMotion(false);
+            player.setRepeat(echo::Player::Repeat::One);
+            playback.seek(0);
+            playback.toggle();
+            check(waitFor([&] { return playback.playing(); }), "idle fixture plays");
+            const auto fixedBarPosition = bar->mapToScene(QPointF(0, 0));
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, bar->mapToScene(QPointF(10, 70)).toPoint());
+            pump(80);
+            check(detail->y() > 0 && detail->y() < shell.height() - bar->height()
+                    && bar->isVisible() && bar->isEnabled() && bar->mapToScene(QPointF(0, 0)) == fixedBarPosition,
+                "detail rises from behind the stationary interactive control bar");
+            check(detail->parentItem()->clip() && detail->parentItem()->height() == shell.height() - bar->height(),
+                "entering detail is clipped at the top of the shared bar");
+            check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-entering.png"), "shared bar transition frame saved");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, button->mapToScene(QPointF(28, 28)).toPoint());
+            check(waitFor([&] { return !playback.playing(); }), "shared transport remains usable during page transition");
+            playback.toggle();
+            pump(450);
+            const auto lyricPoint = lyrics->mapToScene(QPointF(100, lyrics->height() / 2)).toPoint();
+            QEnterEvent enter(lyricPoint, lyricPoint, shell.mapToGlobal(lyricPoint));
+            QCoreApplication::sendEvent(&shell, &enter);
+            QTest::mouseMove(&shell, lyricPoint);
+            const auto coverBeforeHide = cover->mapRectToScene(cover->boundingRect());
+            pump(700);
+            check(bar->isVisible() && bar->opacity() == 1, "shared controls remain visible during initial listening period");
+            const bool didHide = waitFor([&] { return !bar->isVisible(); }, 4000);
+            check(didHide, "playing without pointer activity animates controls away");
+            check(!bar->isEnabled() && bar->y() >= shell.height(), "hidden controls have no invisible hit targets");
+            check(!collapse->isVisible() && !collapse->isEnabled(), "collapse arrow hides and disables with the shared controls");
+            check(cover->mapRectToScene(cover->boundingRect()) == coverBeforeHide, "hiding controls never shifts the cover or lyrics");
+            check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-controls-hidden.png"), "immersive listening screenshot saved");
+            QTest::mouseMove(&shell, lyricPoint + QPoint(10, 0));
+            pump(70);
+            check(bar->isVisible() && bar->opacity() > 0 && bar->opacity() < 1 && bar->y() > fixedBarPosition.y(),
+                "pointer movement over lyrics animates the same bar back into view");
+            check(collapse->isVisible() && std::abs(collapse->opacity() - bar->opacity()) < .001,
+                "collapse arrow fades back in with the shared controls");
+            pump(260);
+            check(bar->isEnabled() && bar->mapToScene(QPointF(0, 0)) == fixedBarPosition,
+                "pointer wake restores controls at the original position");
+            // Shorter timeout for interaction permutations after testing the real delay.
+            hideTimer->setProperty("interval", 300);
+            QTest::mouseMove(&shell, bar->mapToScene(QPointF(10, 70)).toPoint());
+            button->forceActiveFocus(Qt::TabFocusReason);
+            check(waitFor([&] { return !bar->isVisible(); }, 1500),
+                "stationary pointer and retained keyboard focus do not block auto-hide");
+            auto* volume = bar->findChild<QQuickItem*>("barVolume");
+            const auto volumePoint = (fixedBarPosition + volume->mapToItem(bar, QPointF(22, 22))).toPoint();
+            QTest::mouseMove(&shell, volumePoint);
+            check(waitFor([&] { return bar->isVisible() && bar->opacity() == 1; }), "pointer over hidden controls wakes the bar");
+            auto* volumePopup = bar->findChild<QObject*>("barVolumePopup");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, volume->mapToScene(QPointF(22, 22)).toPoint());
+            check(waitFor([&] { return volumePopup->property("opened").toBool(); }), "shared volume popup opens from playback page");
+            QTest::mouseMove(&shell, lyricPoint);
+            pump(700);
+            check(bar->isVisible() && bar->opacity() == 1, "open volume popup prevents auto-hide");
+            QMetaObject::invokeMethod(volumePopup, "close");
+            check(waitFor([&] { return !bar->isVisible(); }, 1500), "auto-hide resumes after volume popup closes");
+            QTest::keyClick(&shell, Qt::Key_Space);
+            check(waitFor([&] { return !playback.playing() && bar->opacity() == 1; }), "keyboard pause brings hidden controls back");
+            pump(700);
+            check(!bar->isVisible() && !collapse->isVisible(), "paused playback also hides idle controls and collapse arrow");
+            client.setReduceMotion(true);
+            playback.toggle();
+            check(waitFor([&] { return !bar->isVisible(); }, 1500), "reduced motion still hides idle controls");
+            QTest::mouseMove(&shell, lyricPoint + QPoint(20, 0));
+            check(waitFor([&] { return bar->isVisible() && bar->opacity() == 1; }), "reduced motion wakes controls without intermediate opacity");
+            const auto seekPoint = seek->mapToScene(QPointF(seek->width() * .4, seek->height() / 2)).toPoint();
+            QTest::mousePress(&shell, Qt::LeftButton, Qt::NoModifier, seekPoint);
+            pump(700);
+            check(seek->property("pressed").toBool() && bar->isVisible(), "held seek interaction prevents auto-hide");
+            QTest::mouseMove(&shell, seekPoint + QPoint(80, 0));
+            QTest::mouseRelease(&shell, Qt::LeftButton, Qt::NoModifier, seekPoint + QPoint(80, 0));
+            check(waitFor([&] { return !seek->property("pressed").toBool() && playback.position() > 7000; }),
+                "shared progress slider still seeks after pointer wake");
+            QTest::mouseMove(&shell, lyricPoint);
+            check(waitFor([&] { return !bar->isVisible(); }, 1500), "controls hide again after seeking");
+            QTest::keyClick(&shell, Qt::Key_Escape);
+            check(!detail->isVisible() && bar->isVisible() && bar->isEnabled() && bar->mapToScene(QPointF(0, 0)) == fixedBarPosition,
+                "leaving immersive playback immediately restores library controls");
+            pump(700);
+            check(bar->isVisible(), "main library never auto-hides the shared bar");
             check(qmlIssues.isEmpty(), "detail layout has no QML warnings");
             qInfo() << "PASS" << checks << "detail layout checks";
             return 0;
@@ -465,7 +576,7 @@ int main(int argc, char** argv)
             "active cover refreshes after repair even when metadata hash stays unchanged");
         check(playback.lyrics().size() == 5, "LRC exposed");
         check(waitFor([&] { return playback.lyricIndex() == 1; }), "lyrics follow playback clock");
-        auto* toggle = window.rootObject()->findChild<QQuickItem*>("detailToggle");
+        auto* toggle = window.rootObject()->findChild<QQuickItem*>("barToggle");
         check(toggle, "playback control exists");
         check(QRectF(0, 0, window.width(), window.height())
                   .contains(toggle->mapToScene(QPointF(toggle->width() / 2, toggle->height() / 2))),
@@ -1125,14 +1236,14 @@ int main(int argc, char** argv)
         check(detail->y() > 0 && detail->y() < detail->height() && detail->scale() == 1,
             "detail slides upward without scaling");
         const auto barPosition = bar->mapToScene(QPointF(0, 0));
-        check(bar->isVisible() && detail->z() > bar->z() && !bar->isEnabled(),
-            "sliding detail covers a visible but inactive bottom bar");
+        check(bar->isVisible() && bar->z() > detail->parentItem()->z() && bar->isEnabled(),
+            "shared bottom bar stays above the sliding detail and remains interactive");
         QTest::keyClick(&shell, Qt::Key_Escape);
         check(!shell.rootObject()->property("expanded").toBool(), "Escape reverses an active slide");
         auto checkCollapseHandoff = [&] {
-            check(waitFor([&] { return detail->isVisible() && detail->y() > bar->y() + 30; }),
-                "collapse exposes bottom bar before detail animation finishes");
-            check(bar->isVisible() && !bar->isEnabled(), "bottom bar is present throughout collapse handoff");
+            check(waitFor([&] { return detail->isVisible() && detail->y() > 30; }),
+                "detail slides back behind the shared bar during collapse");
+            check(bar->isVisible() && bar->isEnabled(), "bottom bar remains interactive throughout collapse");
             const auto handoff = shell.grabWindow();
             const auto sample = bar->mapToScene(QPointF(10, 20));
             check(handoff.pixelColor(qRound(sample.x() * shell.devicePixelRatio()),
@@ -1155,15 +1266,15 @@ int main(int argc, char** argv)
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, blank);
         check(shell.rootObject()->property("expanded").toBool(), "player bar expands actual detail");
         pump(500);
-        check(!bar->isVisible() && detail->y() == 0 && detail->height() == shell.height()
-                && detail->property("topInset").toReal() == 48,
-            "expanded detail fills window with bottom bar hidden");
-        auto* detailButton = detail->findChild<QQuickItem*>("detailToggle");
-        check(detailButton && detailButton->isVisible(), "detail has its own visible playback controls");
+        check(bar->isVisible() && bar->isEnabled() && detail->y() == 0 && detail->height() == shell.height()
+                && detail->property("topInset").toReal() == 48 && bar->mapToScene(QPointF(0, 0)) == barPosition,
+            "expanded detail retains the same shared bar at the same position");
+        auto* detailButton = barButton;
+        check(!detail->findChild<QQuickItem*>("detailToggle"), "detail has no duplicate playback controls");
         const bool detailWasPlaying = playback.playing();
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, detailButton->mapToScene(QPointF(28, 28)).toPoint());
         check(waitFor([&] { return playback.playing() != detailWasPlaying; }),
-            "detail playback controls work with bottom bar hidden");
+            "shared playback controls operate inside detail");
         playback.toggle();
         check(shell.grabWindow().save("/tmp/echo-quick-qa/detail.png"), "migrated detail screenshot saved");
         QTest::keyClick(&shell, Qt::Key_Escape);

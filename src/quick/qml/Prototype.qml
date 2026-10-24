@@ -29,5 +29,12 @@ Item {
             }
         }
     }
+    PlayerBar {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        playback: root.playbackObject
+        onExpansionRequested: root.expanded = !root.expanded
+    }
     readonly property var playbackObject: playback
 }

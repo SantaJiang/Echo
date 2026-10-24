@@ -60,7 +60,7 @@ int main(int argc, char** argv)
     echo::useDarkAppearance();
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.2"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.3"));
     QIcon appIcon;
     for (const int size : { 32, 64, 128, 256, 512 }) {
         appIcon.addFile(QStringLiteral(":/icons/echo-%1.png").arg(size));

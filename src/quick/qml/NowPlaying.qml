@@ -9,11 +9,12 @@ Item {
     property bool expanded: true
     signal collapse
     property bool reduceMotion: false
-    property bool transitioning: false
-    property bool persistentBar: false
+    property real controlsReveal: 1
+    property bool controlsShown: true
     property bool dynamicBackground: false
+    property real bottomInset: 104
     property real topInset: 0
-    readonly property real contentHeight: height - topInset
+    readonly property real contentHeight: height - topInset - bottomInset
     property alias coverItem: largeCover
     Rectangle {
         anchors.fill: parent
@@ -55,6 +56,10 @@ Item {
         }
     }
     ActionButton {
+        objectName: "detailCollapse"
+        opacity: page.controlsReveal
+        visible: opacity > 0
+        enabled: page.controlsShown
         x: 28
         y: 16 + page.topInset
         symbol: "collapse"
@@ -67,151 +72,24 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.topMargin: 64 + page.topInset
-        anchors.bottomMargin: 32
+        anchors.topMargin: 28 + page.topInset
+        anchors.bottomMargin: 32 + page.bottomInset
         width: Math.min(1440, page.width - Math.max(104, page.width * 0.18))
         spacing: Math.max(48, Math.min(168, width * 0.115))
-        ColumnLayout {
+        Item {
             objectName: "detailPlayerColumn"
-            Layout.preferredWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
-            Layout.minimumWidth: 280
-            Layout.maximumWidth: Math.min(440, page.width * 0.43, page.contentHeight - (page.persistentBar ? 260 : 380))
+            Layout.preferredWidth: Math.min(520, content.width * 0.43, content.height * 0.88)
+            Layout.minimumWidth: 260
+            Layout.maximumWidth: Layout.preferredWidth
             Layout.fillHeight: true
-            spacing: 16
-            Item {
-                Layout.fillHeight: true
-                Layout.maximumHeight: 56
-            }
             Cover {
                 id: largeCover
                 objectName: "detailCover"
-                Layout.fillWidth: true
-                Layout.preferredHeight: width
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                height: width
                 artwork: page.playback.track.artwork
-                radius: 16
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.playback.track.title
-                        color: "#faf8ff"
-                        font.pixelSize: 23
-                        font.weight: Font.DemiBold
-                        elide: Text.ElideRight
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.playback.track.artist
-                        color: "#aaa5b8"
-                        font.pixelSize: 15
-                        elide: Text.ElideRight
-                    }
-                }
-                ActionButton {
-                    symbol: page.playback.track.favorite ? "heartFilled" : "heart"
-                    active: page.playback.track.favorite
-                    label: page.playback.track.favorite ? "取消喜欢" : "喜欢"
-                    enabled: page.playback.track.id > 0
-                    onClicked: page.playback.toggleFavorite()
-                }
-            }
-            SeekSlider {
-                id: seek
-                visible: !page.persistentBar
-                objectName: "detailSeek"
-                Layout.fillWidth: true
-                from: 0
-                to: Math.max(1, page.playback.duration)
-                property real interpolatedPosition: page.playback.position
-                Behavior on interpolatedPosition {
-                    NumberAnimation {
-                        duration: page.playback.playing && !page.reduceMotion ? 100 : 0
-                    }
-                }
-                Binding {
-                    target: seek
-                    property: "value"
-                    value: seek.interpolatedPosition
-                    when: !seek.pressed
-                }
-                enabled: page.playback.track.id > 0
-                Accessible.name: "播放进度"
-                onPressedChanged: if (!pressed)
-                    page.playback.seek(Math.round(value))
-            }
-            RowLayout {
-                visible: !page.persistentBar
-                Layout.fillWidth: true
-                Text {
-                    text: timeText(page.playback.position)
-                    color: "#aaa5b8"
-                    font.pixelSize: 12
-                }
-                Item {
-                    Layout.fillWidth: true
-                }
-                Text {
-                    text: "−" + timeText(Math.max(0, page.playback.duration - page.playback.position))
-                    color: "#aaa5b8"
-                    font.pixelSize: 12
-                }
-            }
-            RowLayout {
-                visible: !page.persistentBar
-                Layout.alignment: Qt.AlignHCenter
-                spacing: 12
-                ActionButton {
-                    symbol: "shuffle"
-                    active: page.playback.shuffle
-                    label: "随机播放"
-                    onClicked: page.playback.toggleShuffle()
-                }
-                ActionButton {
-                    symbol: "previous"
-                    label: "上一首"
-                    onClicked: page.playback.previous()
-                }
-                ActionButton {
-                    objectName: "detailToggle"
-                    symbol: page.playback.playing ? "pause" : "play"
-                    prominent: true
-                    label: page.playback.playing ? "暂停" : "播放"
-                    onClicked: page.playback.toggle()
-                }
-                ActionButton {
-                    symbol: "next"
-                    label: "下一首"
-                    onClicked: page.playback.next()
-                }
-                ActionButton {
-                    symbol: "repeat"
-                    active: page.playback.repeat > 0
-                    label: page.playback.repeat === 2 ? "单曲循环" : page.playback.repeat === 1 ? "列表循环" : "循环播放"
-                    onClicked: page.playback.cycleRepeat()
-                    Text {
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        text: "1"
-                        visible: page.playback.repeat === 2
-                        color: "#cbb5ff"
-                        font.pixelSize: 10
-                    }
-                }
-            }
-            Text {
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                text: page.playback.format
-                color: "#918a9e"
-                font.pixelSize: 11
-                elide: Text.ElideRight
-            }
-            Item {
-                Layout.fillHeight: true
-                Layout.maximumHeight: 56
+                radius: 10
             }
         }
         Item {
@@ -220,18 +98,44 @@ Item {
             Layout.fillHeight: true
             Layout.maximumHeight: content.height
             Layout.alignment: Qt.AlignTop
-            Item {
-                anchors.horizontalCenter: parent.horizontalCenter
+            ColumnLayout {
+                anchors.left: parent.left
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                anchors.topMargin: Math.min(56, Math.max(24, parent.height * 0.06))
-                anchors.bottomMargin: anchors.topMargin
                 width: Math.min(640, parent.width)
+                anchors.topMargin: 32
+                anchors.bottomMargin: 8
+                spacing: 0
+                ColumnLayout {
+                    objectName: "detailSongInfo"
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 12
+                    spacing: 8
+                    Text {
+                        objectName: "detailTitle"
+                        Layout.fillWidth: true
+                        text: page.playback.track.title
+                        color: "#faf8ff"
+                        font.pixelSize: page.width >= 1400 ? 25 : 22
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        objectName: "detailMetadata"
+                        Layout.fillWidth: true
+                        text: page.playback.track.artist + "  ·  " + page.playback.track.album
+                        color: "#a9a2b6"
+                        font.pixelSize: 13
+                        elide: Text.ElideRight
+                    }
+                }
                 ListView {
                     id: lyrics
                     objectName: "lyricsView"
-                    anchors.fill: parent
-                    readonly property real edgeFadeHeight: Math.min(96, height * 0.16)
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    readonly property real edgeFadeHeight: Math.min(200, height * 0.3)
+                    readonly property real readingAnchor: 0.42
                     layer.enabled: true
                     layer.effect: MultiEffect {
                         maskEnabled: true
@@ -242,24 +146,27 @@ Item {
                     }
                     model: page.playback.lyrics
                     property int activeLyricIndex: page.playback.lyricIndex
+                    // Before the first timestamp, keep the first line as the
+                    // reading focus instead of lighting up the entire lyric list.
+                    readonly property int emphasisIndex: Math.max(0, activeLyricIndex)
                     // Keep ListView's selection separate from the playback row:
                     // changing currentIndex can reposition even without a highlight.
                     currentIndex: -1
                     clip: true
-                    spacing: page.width >= 1400 ? 22 : 18
-                    topMargin: height * 0.34
+                    spacing: page.width >= 1400 ? 20 : 18
+                    topMargin: height * readingAnchor
                     bottomMargin: height * 0.5
                     property bool manualScrolling: false
                     function followCurrent() {
-                        if (manualScrolling || activeLyricIndex < 0 || count === 0)
+                        if (manualScrolling || count === 0)
                             return;
                         followAnimation.stop();
                         cancelFlick();
                         const previous = contentY;
-                        positionViewAtIndex(activeLyricIndex, ListView.Beginning);
-                        const line = itemAtIndex(activeLyricIndex);
+                        positionViewAtIndex(emphasisIndex, ListView.Beginning);
+                        const line = itemAtIndex(emphasisIndex);
                         const targetY = line ? Math.max(originY - topMargin,
-                            Math.min(line.y - height * 0.34, originY + contentHeight - height + bottomMargin)) : contentY;
+                            Math.min(line.y - height * readingAnchor, originY + contentHeight - height + bottomMargin)) : contentY;
                         contentY = previous;
                         if (page.reduceMotion)
                             contentY = targetY;
@@ -315,12 +222,12 @@ Item {
                         text: modelData.text
                         wrapMode: Text.Wrap
                         font.family: Qt.platform.os === "osx" ? "PingFang SC" : Qt.application.font.family
-                        font.pixelSize: page.width >= 1400 ? 28 : 24
-                        font.weight: index === lyrics.activeLyricIndex ? Font.DemiBold : Font.Normal
+                        font.pixelSize: page.width >= 1400 ? 22 : 20
+                        font.weight: index === lyrics.emphasisIndex ? Font.Medium : Font.Normal
                         lineHeightMode: Text.FixedHeight
-                        lineHeight: Math.round(font.pixelSize * 1.35)
-                        color: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? "#faf8ff" : "#ddd6e8"
-                        opacity: index === lyrics.activeLyricIndex || lyrics.activeLyricIndex < 0 ? 1 : Math.max(0.28, 0.62 - Math.abs(index - lyrics.activeLyricIndex) * 0.065)
+                        lineHeight: Math.round(font.pixelSize * 1.45)
+                        color: index === lyrics.emphasisIndex ? "#faf8ff" : "#ddd6e8"
+                        opacity: index === lyrics.emphasisIndex ? 1 : Math.max(0.025, 0.52 * Math.pow(0.7, Math.abs(index - lyrics.emphasisIndex) - 1))
                         Behavior on opacity {
                             NumberAnimation {
                                 duration: page.reduceMotion ? 0 : 260
@@ -339,23 +246,20 @@ Item {
                         font.pixelSize: 23
                     }
                 }
-                Rectangle {
-                    id: lyricFadeMask
-                    anchors.fill: lyrics
-                    visible: false
-                    layer.enabled: true
-                    gradient: Gradient {
-                        GradientStop { position: 0; color: "transparent" }
-                        GradientStop { position: lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
-                        GradientStop { position: 1 - lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
-                        GradientStop { position: 1; color: "transparent" }
-                    }
+            }
+            Rectangle {
+                id: lyricFadeMask
+                width: lyrics.width
+                height: lyrics.height
+                visible: false
+                layer.enabled: true
+                gradient: Gradient {
+                    GradientStop { position: 0; color: "transparent" }
+                    GradientStop { position: lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
+                    GradientStop { position: 1 - lyrics.edgeFadeHeight / Math.max(1, lyrics.height); color: "white" }
+                    GradientStop { position: 1; color: "transparent" }
                 }
             }
         }
-    }
-    function timeText(ms) {
-        let total = Math.max(0, Math.floor(ms / 1000));
-        return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
     }
 }

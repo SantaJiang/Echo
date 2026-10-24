@@ -25,6 +25,54 @@ FocusScope {
     }
     property real reveal: expanded ? 1 : 0
     readonly property bool transitioning: reveal > 0 && reveal < 1
+    property bool controlsIdle: false
+    readonly property bool isPlaying: playback.playing
+    readonly property bool controlsShown: !expanded || transitioning || !controlsIdle || playerBar.interacting || appDialogs.active || appMenu.opened
+    readonly property bool canAutoHideControls: expanded && !transitioning && !playerBar.interacting && !appDialogs.active && !appMenu.opened
+    property real controlsReveal: controlsShown ? 1 : 0
+    onCanAutoHideControlsChanged: restartControlsTimer()
+    function showControls() {
+        controlsIdle = false;
+        restartControlsTimer();
+    }
+    function restartControlsTimer() {
+        controlsHideTimer.stop();
+        if (canAutoHideControls)
+            controlsHideTimer.restart();
+    }
+    onExpandedChanged: showControls()
+    onIsPlayingChanged: showControls()
+    onTransitioningChanged: restartControlsTimer()
+    Timer {
+        id: controlsHideTimer
+        objectName: "controlsHideTimer"
+        interval: 3000
+        onTriggered: if (root.canAutoHideControls) root.controlsIdle = true
+    }
+    HoverHandler {
+        enabled: root.expanded
+        property point lastPosition: Qt.point(-1, -1)
+        onHoveredChanged: if (hovered) root.showControls()
+        onPointChanged: {
+            // Qt can replay hover events while the scene animates. Only real
+            // pointer travel should reset the listening timeout.
+            const position = point.position;
+            if (position.x !== lastPosition.x || position.y !== lastPosition.y) {
+                lastPosition = Qt.point(position.x, position.y);
+                if (hovered) root.showControls();
+            }
+        }
+    }
+    TapHandler {
+        enabled: root.expanded
+        onTapped: root.showControls()
+    }
+    Behavior on controlsReveal {
+        NumberAnimation {
+            duration: client.reduceMotion ? 0 : 260
+            easing.type: Easing.OutCubic
+        }
+    }
     readonly property real sideWidth: 218
     readonly property color accent: "#c9aaff"
     readonly property real trackWidth: Math.max(trackList.width, client.columns.reduce((a, b) => a + Number(b), 0))
@@ -38,6 +86,7 @@ FocusScope {
     }
     Keys.onSpacePressed: event => {
         playback.toggle();
+        root.showControls();
         event.accepted = true;
     }
     Keys.onEscapePressed: event => {
@@ -952,228 +1001,56 @@ FocusScope {
             }
         }
     }
-    Rectangle {
+    PlayerBar {
         id: playerBar
-        objectName: "playerBar"
-        anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 104
-        z: 3
-        // Keep the bar underneath the sliding detail until the detail fully covers it.
-        visible: root.reveal < 1
-        enabled: !root.expanded && root.reveal === 0
-        color: "#24202d"
-        Rectangle {
-            width: parent.width
-            height: 1
-            color: "#12ffffff"
+        y: root.height - height + (1 - root.controlsReveal) * (height + 12)
+        z: 5
+        opacity: root.controlsReveal
+        visible: opacity > 0
+        enabled: root.controlsShown
+        playback: root.playbackObject
+        reduceMotion: client.reduceMotion
+        queueOpen: root.queueOpen
+        onExpansionRequested: {
+            root.expanded = !root.expanded;
+            root.forceActiveFocus();
         }
-        SeekSlider {
-            id: barSeek
-            objectName: "barSeek"
-            z: 2
-            anchors.top: parent.top
-            anchors.topMargin: -12
-            anchors.left: parent.left
-            anchors.right: parent.right
-            from: 0
-            to: Math.max(1, playback.duration)
-            enabled: playback.track.id > 0
-            property real interpolatedPosition: playback.position
-            Behavior on interpolatedPosition {
-                NumberAnimation {
-                    duration: playback.playing && !client.reduceMotion ? 100 : 0
-                }
-            }
-            Binding {
-                target: barSeek
-                property: "value"
-                value: barSeek.interpolatedPosition
-                when: !barSeek.pressed
-            }
-            onPressedChanged: if (!pressed)
-                playback.seek(Math.round(value))
-            Accessible.name: "播放进度"
+        onQueueRequested: {
+            root.expanded = false;
+            root.queueOpen = !root.queueOpen;
         }
-        // Only unhandled presses reach this background; transport/seek controls keep their own input.
-        MouseArea {
-            anchors.fill: parent
-            onClicked: {
-                root.expanded = !root.expanded;
+        onInteractingChanged: root.restartControlsTimer()
+    }
+    // Clip the sliding page above the shared bar during navigation. Once open,
+    // let its background extend behind the bar as the controls slide away.
+    Item {
+        anchors.fill: parent
+        anchors.bottomMargin: root.reveal < 1 ? playerBar.height : 0
+        clip: true
+        z: 4
+        NowPlaying {
+            id: nowPlaying
+            z: 4
+            objectName: "nowPlaying"
+            width: root.width
+            height: root.height
+            y: (1 - root.reveal) * (root.height - playerBar.height)
+            bottomInset: playerBar.height
+            controlsReveal: root.controlsReveal
+            controlsShown: root.controlsShown
+            topInset: windowChrome.height
+            dynamicBackground: Boolean(client.preferences.dynamicPlaybackBackground)
+            playback: root.playbackObject
+            expanded: root.expanded
+            reduceMotion: client.reduceMotion
+            visible: root.reveal > 0
+            enabled: root.expanded
+            onCollapse: {
+                root.expanded = false;
                 root.forceActiveFocus();
             }
-            cursorShape: Qt.PointingHandCursor
-            Accessible.name: "展开或收起播放详情"
-        }
-        RowLayout {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: 24
-            width: Math.min(340, parent.width * 0.31)
-            spacing: 14
-            Cover {
-                id: smallCover
-                objectName: "playerCover"
-                Layout.preferredWidth: 60
-                Layout.preferredHeight: 60
-                artwork: playback.track.artwork
-                radius: 10
-            }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 6
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 5
-                    Text {
-                        Layout.maximumWidth: Math.max(0, smallCover.parent.width - 114)
-                        Layout.preferredWidth: Math.min(implicitWidth, Math.max(0, smallCover.parent.width - 114))
-                        text: playback.track.title
-                        color: "#f3eef9"
-                        font.pixelSize: 14
-                        font.weight: Font.DemiBold
-                        elide: Text.ElideRight
-                    }
-                    ActionButton {
-                        objectName: "barFavorite"
-                        implicitWidth: 30
-                        implicitHeight: 30
-                        iconSize: 18
-                        symbol: playback.track.favorite ? "heartFilled" : "heart"
-                        active: playback.track.favorite
-                        label: playback.track.favorite ? "取消喜欢" : "喜欢"
-                        enabled: playback.track.id > 0
-                        onClicked: playback.toggleFavorite()
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: playback.track.artist
-                    color: "#aaa1b7"
-                    font.pixelSize: 12
-                    elide: Text.ElideRight
-                }
-            }
-        }
-        RowLayout {
-            objectName: "barTransport"
-            anchors.centerIn: parent
-            spacing: 10
-            ActionButton {
-                objectName: "barShuffle"
-                symbol: "shuffle"
-                active: playback.shuffle
-                label: "随机播放"
-                onClicked: playback.toggleShuffle()
-            }
-            ActionButton {
-                objectName: "barPrevious"
-                symbol: "previous"
-                label: "上一首"
-                onClicked: playback.previous()
-            }
-            ActionButton {
-                objectName: "barToggle"
-                symbol: playback.playing ? "pause" : "play"
-                prominent: true
-                label: playback.playing ? "暂停" : "播放"
-                onClicked: playback.toggle()
-            }
-            ActionButton {
-                objectName: "barNext"
-                symbol: "next"
-                label: "下一首"
-                onClicked: playback.next()
-            }
-            ActionButton {
-                objectName: "barRepeat"
-                symbol: "repeat"
-                active: playback.repeat > 0
-                label: playback.repeat === 2 ? "单曲循环" : playback.repeat === 1 ? "列表循环" : "循环播放"
-                onClicked: playback.cycleRepeat()
-                Text {
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    text: "1"
-                    visible: playback.repeat === 2
-                    color: "#cbb5ff"
-                    font.pixelSize: 10
-                }
-            }
-        }
-        RowLayout {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.rightMargin: 24
-            spacing: 8
-            Text {
-                text: nowPlaying.timeText(playback.position) + " / " + nowPlaying.timeText(playback.duration)
-                color: "#aaa1b7"
-                font.pixelSize: 12
-                font.family: "Menlo"
-                Layout.rightMargin: 12
-            }
-            ActionButton {
-                objectName: "queueToggle"
-                symbol: "queue"
-                active: root.queueOpen
-                label: "播放队列"
-                onClicked: {
-                    root.expanded = false;
-                    root.queueOpen = !root.queueOpen;
-                }
-            }
-            ActionButton {
-                objectName: "barVolume"
-                symbol: "volume"
-                label: "音量"
-                onClicked: volumePopup.open()
-            }
-        }
-        Popup {
-            id: volumePopup
-            x: parent.width - width - 22
-            y: -height - 12
-            width: 190
-            height: 54
-            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-            background: Rectangle {
-                color: "#332b40"
-                radius: 12
-                border.color: "#20ffffff"
-            }
-            SeekSlider {
-                anchors.fill: parent
-                anchors.margins: 6
-                from: 0
-                to: 1
-                value: playback.volume
-                onMoved: playback.volume = value
-                Accessible.name: "音量"
-            }
-        }
-    }
-    NowPlaying {
-        id: nowPlaying
-        z: 4
-        objectName: "nowPlaying"
-        width: root.width
-        height: root.height
-        y: (1 - root.reveal) * height
-        topInset: windowChrome.height
-        dynamicBackground: Boolean(client.preferences.dynamicPlaybackBackground)
-        playback: root.playbackObject
-        expanded: root.expanded
-        reduceMotion: client.reduceMotion
-        visible: root.reveal > 0
-        enabled: root.expanded
-        onCollapse: {
-            root.expanded = false;
-            root.forceActiveFocus();
         }
     }
     WindowBar {
