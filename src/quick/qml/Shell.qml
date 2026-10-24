@@ -8,11 +8,13 @@ FocusScope {
     property bool expanded: false
     property bool queueOpen: false
     property var contextMenuPoint: null
-    onQueueOpenChanged: {
+    readonly property bool libraryQueueOpen: queueOpen && !expanded
+    onQueueOpenChanged: showControls()
+    onLibraryQueueOpenChanged: {
         cardGrid.queueAnimationWidth = root.width;
         if (!client.reduceMotion) cardLayoutTimer.restart();
         // Prepare animation before changing any grid geometry, regardless of binding evaluation order.
-        cardGrid.queueLayoutOpen = root.queueOpen;
+        cardGrid.queueLayoutOpen = root.libraryQueueOpen;
     }
     Timer {
         id: cardLayoutTimer
@@ -27,10 +29,15 @@ FocusScope {
     readonly property bool transitioning: reveal > 0 && reveal < 1
     property bool controlsIdle: false
     readonly property bool isPlaying: playback.playing
-    readonly property bool controlsShown: !expanded || transitioning || !controlsIdle || playerBar.interacting || appDialogs.active || appMenu.opened
-    readonly property bool canAutoHideControls: expanded && !transitioning && !playerBar.interacting && !appDialogs.active && !appMenu.opened
+    readonly property bool controlsShown: !expanded || transitioning || !controlsIdle || queueOpen || playbackQueuePanel.openness > 0 || playerBar.interacting || appDialogs.active || appMenu.opened
+    readonly property bool canAutoHideControls: expanded && !transitioning && !queueOpen && playbackQueuePanel.openness === 0 && !playerBar.interacting && !appDialogs.active && !appMenu.opened
     property real controlsReveal: controlsShown ? 1 : 0
     onCanAutoHideControlsChanged: restartControlsTimer()
+    function closeQueue() {
+        queueOpen = false;
+        showControls();
+        root.forceActiveFocus();
+    }
     function showControls() {
         controlsIdle = false;
         restartControlsTimer();
@@ -90,10 +97,10 @@ FocusScope {
         event.accepted = true;
     }
     Keys.onEscapePressed: event => {
-        if (root.expanded)
+        if (root.queueOpen)
+            root.closeQueue();
+        else if (root.expanded)
             root.expanded = false;
-        else if (root.queueOpen)
-            root.queueOpen = false;
         else
             client.clearSelection();
         event.accepted = true;
@@ -848,157 +855,17 @@ FocusScope {
                 }
             }
         }
-        Rectangle {
+        QueuePanel {
             id: queuePanel
-            objectName: "queuePanel"
-            property real openness: root.queueOpen ? 1 : 0
+            controller: client
+            opened: root.libraryQueueOpen
+            reduceMotion: client.reduceMotion
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.bottomMargin: playerBar.height
-            // Resize follows the window immediately; animate only the explicit queue toggle.
+            // Keep the library sidebar's existing reflow and resize behavior.
             x: root.width - width * openness
             width: 300
-            color: "#211c2a"
-            visible: openness > 0
-            Behavior on openness {
-                NumberAnimation {
-                    duration: client.reduceMotion ? 0 : 240
-                    easing.type: Easing.OutCubic
-                }
-            }
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 18
-                spacing: 18
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text {
-                        text: "播放队列"
-                        color: "#eee6f7"
-                        font.pixelSize: 18
-                        font.weight: Font.DemiBold
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                    PillButton {
-                        text: "清空后续"
-                        flat: true
-                        onClicked: client.queueAction("clear")
-                    }
-                }
-                ListView {
-                    id: queueList
-                    objectName: "queueList"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    model: client.queue
-                    boundsBehavior: Flickable.StopAtBounds
-                    clip: true
-                    reuseItems: true
-                    spacing: 5
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: Rectangle {
-                        id: queueRow
-                        required property var item
-                        required property int index
-                        width: queueList.width
-                        height: 58
-                        radius: 8
-                        color: item.current ? "#44344f" : qHover.hovered ? "#15ffffff" : "transparent"
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: 7
-                            spacing: 10
-                            Cover {
-                                Layout.preferredWidth: 38
-                                Layout.preferredHeight: 38
-                                artwork: queueRow.item.artwork
-                                radius: 6
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 4
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: queueRow.item.title
-                                    color: "#e8dfef"
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: queueRow.item.artist
-                                    color: "#8e819d"
-                                    font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                }
-                            }
-                        }
-                        HoverHandler {
-                            id: qHover
-                        }
-                        z: queueMouse.pressed ? 2 : 0
-                        transform: Translate {
-                            y: queueMouse.dragOffset
-                        }
-                        MouseArea {
-                            id: queueMouse
-                            anchors.fill: parent
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            preventStealing: true
-                            property real pressY: 0
-                            property real dragOffset: 0
-                            property int sourceRow: -1
-                            onPressed: mouse => {
-                                pressY = mapToItem(root, mouse.x, mouse.y).y;
-                                sourceRow = queueRow.index;
-                                dragOffset = 0;
-                            }
-                            onPositionChanged: mouse => {
-                                if (pressed && (pressedButtons & Qt.LeftButton))
-                                    dragOffset = mapToItem(root, mouse.x, mouse.y).y - pressY;
-                            }
-                            onReleased: mouse => {
-                                const offset = dragOffset;
-                                dragOffset = 0;
-                                if (mouse.button === Qt.LeftButton && Math.abs(offset) > 20)
-                                    client.queueAction("move", sourceRow, Math.max(0, Math.min(queueList.count - 1, sourceRow + Math.round(offset / 63))));
-                            }
-                            onCanceled: dragOffset = 0
-                            onDoubleClicked: mouse => {
-                                if (mouse.button === Qt.LeftButton)
-                                    client.queueAction("play", queueRow.index);
-                            }
-                            onClicked: mouse => {
-                                if (mouse.button === Qt.RightButton)
-                                    queueMenu.popup();
-                            }
-                        }
-                        Menu {
-                            id: queueMenu
-                            MenuItem {
-                                text: "播放"
-                                onTriggered: client.queueAction("play", queueRow.index)
-                            }
-                            MenuItem {
-                                text: "从队列移除"
-                                onTriggered: client.queueAction("remove", queueRow.index)
-                            }
-                            MenuItem {
-                                text: "上移"
-                                enabled: queueRow.index > 0
-                                onTriggered: client.queueAction("move", queueRow.index, queueRow.index - 1)
-                            }
-                            MenuItem {
-                                text: "下移"
-                                enabled: queueRow.index + 1 < queueList.count
-                                onTriggered: client.queueAction("move", queueRow.index, queueRow.index + 1)
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
     PlayerBar {
@@ -1018,8 +885,8 @@ FocusScope {
             root.forceActiveFocus();
         }
         onQueueRequested: {
-            root.expanded = false;
             root.queueOpen = !root.queueOpen;
+            root.forceActiveFocus();
         }
         onInteractingChanged: root.restartControlsTimer()
     }
@@ -1051,6 +918,43 @@ FocusScope {
                 root.expanded = false;
                 root.forceActiveFocus();
             }
+        }
+    }
+    Item {
+        id: playbackQueueOverlay
+        objectName: "playbackQueueOverlay"
+        anchors.fill: parent
+        anchors.bottomMargin: playerBar.height
+        z: 4.5
+        visible: root.reveal > 0 && playbackQueuePanel.openness > 0
+        enabled: root.expanded
+        Rectangle {
+            anchors.fill: parent
+            color: "#28000000"
+            opacity: playbackQueuePanel.openness
+            MouseArea {
+                objectName: "playbackQueueDismiss"
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onClicked: root.closeQueue()
+                onWheel: wheel => wheel.accepted = true
+            }
+        }
+        QueuePanel {
+            id: playbackQueuePanel
+            objectName: "playbackQueuePanel"
+            listObjectName: "playbackQueueList"
+            controller: client
+            opened: root.expanded && root.queueOpen
+            reduceMotion: client.reduceMotion
+            dismissable: true
+            radius: 14
+            border.color: "#25ffffff"
+            width: 320
+            height: Math.max(0, parent.height - windowChrome.height - 24)
+            x: parent.width - (width + 12) * openness
+            y: windowChrome.height + 12
+            onCloseRequested: root.closeQueue()
         }
     }
     WindowBar {

@@ -1,5 +1,6 @@
 <RCC><qresource prefix="/echo/quick">
 <file alias="Prototype.qml">qml/Prototype.qml</file>
+<file alias="QueuePanel.qml">qml/QueuePanel.qml</file>
 <file alias="PlayerBar.qml">qml/PlayerBar.qml</file>
 <file alias="NowPlaying.qml">qml/NowPlaying.qml</file>
 <file alias="EchoToolTip.qml">qml/EchoToolTip.qml</file>

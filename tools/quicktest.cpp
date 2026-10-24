@@ -558,6 +558,90 @@ int main(int argc, char** argv)
                 "leaving immersive playback immediately restores library controls");
             pump(700);
             check(bar->isVisible(), "main library never auto-hides the shared bar");
+            // The queue floats over playback without navigating or reflowing it.
+            player.playTracks({ids[0], otherIds[0], otherIds[1]}, 0, false);
+            check(waitFor([&] { return playback.playing() && client.queue()->count() == 3; }), "floating queue fixture loads");
+            playback.toggle();
+            check(waitFor([&] { return !playback.playing(); }), "floating queue fixture pauses");
+            client.setReduceMotion(false);
+            shell.rootObject()->setProperty("expanded", true);
+            pump(450);
+            auto* queueToggle = bar->findChild<QQuickItem*>("queueToggle");
+            auto* floatingQueue = shell.rootObject()->findChild<QQuickItem*>("playbackQueuePanel");
+            auto* floatingList = shell.rootObject()->findChild<QQuickItem*>("playbackQueueList");
+            auto* libraryQueue = shell.rootObject()->findChild<QQuickItem*>("queuePanel");
+            const auto coverBeforeQueue = cover->mapRectToScene(cover->boundingRect());
+            const auto lyricsBeforeQueue = lyrics->mapRectToScene(lyrics->boundingRect());
+            const auto clickQueue = [&] {
+                QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                    queueToggle->mapToScene(QPointF(22, 22)).toPoint());
+            };
+            clickQueue();
+            pump(80);
+            check(shell.rootObject()->property("expanded").toBool() && shell.rootObject()->property("queueOpen").toBool(),
+                "queue button opens a floating queue without leaving playback");
+            check(floatingQueue && floatingList && floatingQueue->property("openness").toReal() > 0
+                    && floatingQueue->property("openness").toReal() < 1,
+                "playback queue slides in from the right");
+            check(waitFor([&] { return floatingQueue->property("openness").toReal() == 1; }), "playback queue finishes opening");
+            const auto queueBounds = floatingQueue->mapRectToScene(floatingQueue->boundingRect());
+            check(queueBounds.right() == shell.width() - 12 && queueBounds.top() >= 48
+                    && queueBounds.bottom() <= fixedBarPosition.y() && floatingQueue->width() == 320,
+                "floating queue fits between titlebar and shared controls");
+            check(cover->mapRectToScene(cover->boundingRect()) == coverBeforeQueue
+                    && lyrics->mapRectToScene(lyrics->boundingRect()) == lyricsBeforeQueue && !libraryQueue->isVisible(),
+                "playback cover and lyrics retain their layout while library queue stays hidden");
+            pump(750);
+            check(bar->opacity() == 1 && collapse->opacity() == 1,
+                "open queue keeps playback controls and collapse arrow visible beyond idle timeout");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                floatingList->mapToScene(QPointF(100, floatingList->height() - 15)).toPoint());
+            check(shell.rootObject()->property("queueOpen").toBool(), "empty space inside floating queue never dismisses it");
+            check(shell.grabWindow().save("/tmp/echo-detail-layout/detail-queue.png"), "floating playback queue screenshot saved");
+            QTest::mouseDClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                floatingList->mapToScene(QPointF(100, 92)).toPoint());
+            check(waitFor([&] { return player.currentTrack().id == otherIds[0]; }), "floating queue double-click switches the real track");
+            check(shell.rootObject()->property("expanded").toBool() && shell.rootObject()->property("queueOpen").toBool()
+                    && detail->findChild<QQuickItem*>("detailTitle")->property("text").toString() == playback.track().value("title").toString(),
+                "switching tracks updates playback detail and leaves the queue open");
+            check(waitFor([&] { return playback.playing(); }), "queue selection starts playback after async track loading");
+            playback.toggle();
+            check(waitFor([&] { return !playback.playing(); }), "queue selection pauses for outside-click check");
+            pump(350); // Let the transport pause fade finish before comparing positions.
+            const auto positionBeforeDismiss = playback.position();
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                lyrics->mapToScene(QPointF(40, lyrics->height() * .42)).toPoint());
+            check(waitFor([&] { return floatingQueue->property("openness").toReal() == 0; }), "outside lyric-area click dismisses the queue");
+            qInfo() << "Queue dismiss position" << positionBeforeDismiss << playback.position() << playback.playing();
+            check(shell.rootObject()->property("expanded").toBool() && std::abs(playback.position() - positionBeforeDismiss) < 40,
+                "outside dismissal stays in playback and never seeks the underlying lyric");
+            pump(100);
+            check(bar->isVisible(), "queue dismissal gives controls a fresh idle interval");
+            check(waitFor([&] { return !bar->isVisible() && !collapse->isVisible(); }, 1500), "idle hiding resumes after queue closes");
+            QTest::mouseMove(&shell, lyricPoint + QPoint(30, 0));
+            check(waitFor([&] { return bar->opacity() == 1; }), "controls wake before reopening queue");
+            clickQueue();
+            check(waitFor([&] { return floatingQueue->property("openness").toReal() == 1; }), "floating queue reopens");
+            QTest::keyClick(&shell, Qt::Key_Escape);
+            check(shell.rootObject()->property("expanded").toBool() && !shell.rootObject()->property("queueOpen").toBool(),
+                "first Escape closes the queue and preserves playback page");
+            QTest::keyClick(&shell, Qt::Key_Escape);
+            check(!shell.rootObject()->property("expanded").toBool(), "second Escape exits playback after queue closes");
+            pump(450);
+            client.setReduceMotion(true);
+            shell.rootObject()->setProperty("expanded", true);
+            clickQueue();
+            check(floatingQueue->isVisible() && floatingQueue->property("openness").toReal() == 1,
+                "reduced motion opens floating queue immediately");
+            clickQueue();
+            check(!floatingQueue->isVisible() && shell.rootObject()->property("expanded").toBool(),
+                "same queue button closes the floating panel without leaving playback");
+            clickQueue();
+            auto* closeQueue = floatingQueue->findChild<QQuickItem*>("queueCloseButton");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, closeQueue->mapToScene(QPointF(15, 15)).toPoint());
+            check(!floatingQueue->isVisible() && shell.rootObject()->property("expanded").toBool(),
+                "floating queue close button preserves playback page");
+            shell.rootObject()->setProperty("expanded", false);
             check(qmlIssues.isEmpty(), "detail layout has no QML warnings");
             qInfo() << "PASS" << checks << "detail layout checks";
             return 0;
