@@ -706,9 +706,12 @@ QVector<Artist> Database::artists() const
 {
     QVector<Artist> result;
     QSqlQuery query(m_db);
-    query.exec(QStringLiteral("SELECT artist_key, MAX(artist), COUNT(DISTINCT album_key), COUNT(*) FROM tracks "
-                              "WHERE %1 GROUP BY artist_key ORDER BY MAX(artist) COLLATE NOCASE")
-            .arg(libraryScope()));
+    query.prepare(QStringLiteral("SELECT artist_key, MAX(artist), COUNT(DISTINCT album_key), COUNT(*) FROM tracks "
+                                 "WHERE %1 GROUP BY artist_key "
+                                 "ORDER BY CASE WHEN artist_key=? THEN 1 ELSE 0 END, MAX(artist) COLLATE NOCASE")
+                      .arg(libraryScope()));
+    query.addBindValue(makeArtistKey({}));
+    query.exec();
     while (query.next()) {
         Artist artist;
         artist.key = query.value(0).toString();

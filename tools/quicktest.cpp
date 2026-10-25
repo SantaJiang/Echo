@@ -226,6 +226,73 @@ int main(int argc, char** argv)
             qInfo() << "PASS" << checks << "headless QML startup checks; GPU interaction suite runs separately";
             return 0;
         }
+        if (app.arguments().contains("--artists-test")) {
+            tags.artist = QStringLiteral("曾沛慈");
+            check(library.saveTags(ids[0], tags, &error), "named artist fixture saved");
+            tags.artist.clear();
+            check(library.saveTags(otherIds[1], tags, &error), "unknown artist fixture saved");
+            const auto artists = library.artists();
+            check(artists.size() == 3 && artists.last().key == echo::makeArtistKey({}),
+                "unknown artist sorts after named artists");
+            echo::Client client(&library, &player, &engine);
+            echo::QuickView shell(&playback, &client);
+            client.attach(&shell);
+            client.setReduceMotion(true);
+            shell.resize(1200, 800);
+            shell.show();
+            check(QTest::qWaitForWindowExposed(&shell), "artist window exposed");
+            client.navigate("artists", {}, QStringLiteral("艺术家"));
+            check(waitFor([&] { return !client.page().value("busy").toBool() && client.cards()->count() == 3; }),
+                "artist list loads real library groups");
+            auto* list = shell.rootObject()->findChild<QQuickItem*>("artistList");
+            auto* grid = shell.rootObject()->findChild<QQuickItem*>("cardGrid");
+            check(list && list->isVisible() && !grid->isVisible(), "artists use list instead of cover grid");
+            std::function<QQuickItem*(QQuickItem*, const QString&)> findItem = [&](QQuickItem* parent, const QString& name) -> QQuickItem* {
+                if (parent->objectName() == name) return parent;
+                for (auto* child : parent->childItems())
+                    if (auto* found = findItem(child, name)) return found;
+                return nullptr;
+            };
+            check(waitFor([&] { return findItem(list, "artistRow2") != nullptr; }), "artist rows instantiated");
+            auto* first = findItem(list, "artistRow0");
+            auto* last = findItem(list, "artistRow2");
+            check(first->width() == list->width() && first->height() == 96, "artist rows fill width at compact height");
+            check(last->property("item").toMap().value("title").toString() == QStringLiteral("未知艺术家"),
+                "unknown artist appears in last row");
+            pump(200);
+            QDir().mkpath("/tmp/echo-quick-qa");
+            check(shell.grabWindow().save("/tmp/echo-quick-qa/artists.png"), "artist list screenshot saved");
+            const auto firstKey = client.cards()->get(0).value("key");
+            QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, first->mapToScene(QPointF(120, 45)).toPoint());
+            check(waitFor([&] { return !client.page().value("busy").toBool() && client.page().value("kind") == "artist"; }),
+                "clicking artist row opens detail");
+            check(client.tracks()->count() > 0 && client.tracks()->get(0).value("artist").toString() == artists.first().name,
+                "artist detail contains selected artist tracks");
+            client.back();
+            check(waitFor([&] { return !client.page().value("busy").toBool() && list->isVisible(); }), "back returns to artist list");
+            check(client.cards()->get(0).value("key") == firstKey, "back preserves artist order");
+            shell.resize(980, 680);
+            shell.rootObject()->setProperty("queueOpen", true);
+            pump(350);
+            first = findItem(list, "artistRow0");
+            check(first && first->width() == list->width() && list->width() > 200, "artist list adapts to narrow window and queue");
+            check(shell.grabWindow().save("/tmp/echo-quick-qa/artists-narrow.png"), "narrow artist list screenshot saved");
+            client.search(QStringLiteral("曾沛慈"));
+            check(waitFor([&] { return !client.page().value("busy").toBool() && client.page().value("kind") == "search"; }),
+                "artist search completes");
+            check(!list->isVisible() && grid->isVisible(), "mixed search keeps card layout");
+            bool foundArtist = false;
+            for (int i = 0; i < client.cards()->count(); ++i) {
+                if (client.cards()->get(i).value("kind") != "artist") continue;
+                foundArtist = true;
+                auto* cover = findItem(grid, QString("cardArtwork%1").arg(i));
+                check(cover && !cover->isVisible(), "search artist does not display generic cover");
+            }
+            check(foundArtist, "search includes matching artist");
+            check(qmlIssues.isEmpty(), "artist list and search have no QML warnings");
+            qInfo() << "PASS" << checks << "artist layout and navigation checks";
+            return 0;
+        }
         const auto verifyFading = [&](echo::QuickView& shell, echo::Client& client) {
             const auto object = [&](const char* name) { return shell.rootObject()->findChild<QObject*>(name); };
             auto* fading = qobject_cast<QQuickItem*>(object("fadingSetting"));

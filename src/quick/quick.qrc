@@ -5,6 +5,7 @@
 <file alias="NowPlaying.qml">qml/NowPlaying.qml</file>
 <file alias="EchoToolTip.qml">qml/EchoToolTip.qml</file>
 <file alias="ActionButton.qml">qml/ActionButton.qml</file>
+<file alias="ArtistAvatar.qml">qml/ArtistAvatar.qml</file>
 <file alias="Cover.qml">qml/Cover.qml</file>
 <file alias="SeekSlider.qml">qml/SeekSlider.qml</file>
 <file alias="Shell.qml">qml/Shell.qml</file>

@@ -377,7 +377,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.topMargin: 16
                     Layout.bottomMargin: 4
-                    spacing: headerArtwork.visible ? 18 : 5
+                    spacing: headerArtwork.visible || headerArtist.visible ? 18 : 5
                     Cover {
                         id: headerArtwork
                         Layout.preferredWidth: 96
@@ -385,25 +385,32 @@ FocusScope {
                         Layout.alignment: Qt.AlignVCenter
                         radius: 12
                         artwork: client.page.artwork
-                        visible: ["album", "artist", "playlist"].includes(client.page.kind) && client.tracks.count > 0
+                        visible: ["album", "playlist"].includes(client.page.kind) && client.tracks.count > 0
+                    }
+                    ArtistAvatar {
+                        id: headerArtist
+                        Layout.preferredWidth: 80
+                        Layout.preferredHeight: 80
+                        name: client.page.title
+                        visible: client.page.kind === "artist" && client.tracks.count > 0
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
-                        spacing: headerArtwork.visible ? 10 : 7
+                        spacing: headerArtwork.visible || headerArtist.visible ? 10 : 7
                         Text {
                             Layout.fillWidth: true
                             text: client.page.title
                             color: "#f4f0f8"
-                            font.pixelSize: headerArtwork.visible ? 28 : 30
-                            font.weight: headerArtwork.visible ? Font.DemiBold : Font.Bold
+                            font.pixelSize: headerArtwork.visible || headerArtist.visible ? 28 : 30
+                            font.weight: headerArtwork.visible || headerArtist.visible ? Font.DemiBold : Font.Bold
                             elide: Text.ElideRight
                         }
                         Text {
                             Layout.fillWidth: true
                             text: client.page.busy ? "正在读取资料库…" : client.page.subtitle
                             color: "#8d849b"
-                            font.pixelSize: headerArtwork.visible ? 13 : 12
+                            font.pixelSize: headerArtwork.visible || headerArtist.visible ? 13 : 12
                             elide: Text.ElideMiddle
                         }
                     }
@@ -435,12 +442,97 @@ FocusScope {
                         onClicked: client.action("addSource")
                     }
                 }
+                ListView {
+                    id: artistList
+                    objectName: "artistList"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: client.page.kind === "artists" && client.cards.count > 0
+                    model: visible ? client.cards : null
+                    clip: true
+                    reuseItems: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {}
+                    onMovementEnded: client.setScroll(contentY)
+                    delegate: ItemDelegate {
+                        id: artistRow
+                        required property var item
+                        required property int index
+                        objectName: "artistRow" + index
+                        width: artistList.width
+                        height: 96
+                        padding: 0
+                        hoverEnabled: true
+                        Accessible.name: item.title + "，" + item.subtitle
+                        onClicked: client.openCard(index)
+                        background: Rectangle {
+                            radius: 8
+                            color: artistRow.down ? "#18ffffff" : artistRow.hovered || artistRow.visualFocus ? "#0bffffff" : "transparent"
+                        }
+                        contentItem: Item {
+                            ArtistAvatar {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 64
+                                height: 64
+                                name: artistRow.item.title
+                            }
+                            Column {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 94
+                                anchors.right: chevron.left
+                                anchors.rightMargin: 16
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 7
+                                Text {
+                                    width: parent.width
+                                    text: artistRow.item.title
+                                    color: "#e6dfef"
+                                    font.pixelSize: 16
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: artistRow.item.subtitle
+                                    color: "#8d849b"
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            Text {
+                                id: chevron
+                                anchors.right: parent.right
+                                anchors.rightMargin: 16
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "›"
+                                color: "#8d849b"
+                                font.pixelSize: 28
+                            }
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 94
+                                anchors.right: parent.right
+                                anchors.rightMargin: 16
+                                anchors.bottom: parent.bottom
+                                height: 1
+                                color: "#12ffffff"
+                                visible: artistRow.index < artistList.count - 1
+                            }
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: eventPoint => root.contextAt(artistRow, eventPoint.position, function() { client.cardMenu(artistRow.index); })
+                        }
+                    }
+                }
                 Item {
                     id: cardViewport
                     Layout.fillWidth: true
                     Layout.fillHeight: client.tracks.count === 0
                     Layout.preferredHeight: client.tracks.count > 0 ? Math.min(280, cardGrid.cellHeight + 8) : 0
-                    visible: client.cards.count > 0
+                    visible: client.cards.count > 0 && client.page.kind !== "artists"
                     clip: true
                     GridView {
                         id: cardGrid
@@ -517,6 +609,7 @@ FocusScope {
                                         id: cardArt
                                         objectName: "cardArtwork" + card.index
                                         anchors.fill: parent
+                                        visible: card.item.kind !== "artist"
                                         artwork: card.item.artwork || ""
                                         decodeSize: cardGrid.artworkResolution
                                         renderTextureSize: Qt.size(cardGrid.artworkTextureSide, cardGrid.artworkTextureSide)
@@ -529,6 +622,13 @@ FocusScope {
                                                 easing.type: Easing.OutCubic
                                             }
                                         }
+                                    }
+                                    ArtistAvatar {
+                                        anchors.centerIn: parent
+                                        width: parent.width * 0.78
+                                        height: width
+                                        name: card.item.title
+                                        visible: card.item.kind === "artist"
                                     }
                                     ActionButton {
                                         anchors.right: parent.right
@@ -999,6 +1099,8 @@ FocusScope {
                 Qt.callLater(function () {
                     if (client.tracks.count > 0)
                         trackList.contentY = Math.max(0, Math.min(client.scroll(), trackList.contentHeight - trackList.height));
+                    else if (client.page.kind === "artists")
+                        artistList.contentY = Math.max(0, Math.min(client.scroll(), artistList.contentHeight - artistList.height));
                     else
                         cardGrid.contentY = Math.max(0, Math.min(client.scroll(), cardGrid.contentHeight - cardGrid.height));
                     pageContent.switching = false;
