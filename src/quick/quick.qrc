@@ -3,6 +3,7 @@
 <file alias="QueuePanel.qml">qml/QueuePanel.qml</file>
 <file alias="PlayerBar.qml">qml/PlayerBar.qml</file>
 <file alias="NowPlaying.qml">qml/NowPlaying.qml</file>
+<file alias="PlaybackBackground.qml">qml/PlaybackBackground.qml</file>
 <file alias="EchoToolTip.qml">qml/EchoToolTip.qml</file>
 <file alias="ActionButton.qml">qml/ActionButton.qml</file>
 <file alias="ArtistAvatar.qml">qml/ArtistAvatar.qml</file>

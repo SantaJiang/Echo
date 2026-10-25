@@ -4,7 +4,7 @@
 
 ## 构建
 
-依赖：Qt 6.5+（Quick、QuickControls2、QuickDialogs2、Sql、Concurrent、Network、Test）、FFmpeg、TagLib、libebur128、CMake 3.24+、C++20。macOS 打包需要 Python 3.9+；Linux 额外需要 PipeWire 或 ALSA，以及 Qt DBus。
+依赖：Qt 6.5+（Quick、QuickControls2、QuickDialogs2、ShaderTools、Sql、Concurrent、Network、Test）、FFmpeg、TagLib、libebur128、CMake 3.24+、C++20。ShaderTools 的 `qsb` 在构建时编译跨平台背景着色器，需与 Qt 版本匹配。macOS 打包需要 Python 3.9+；Linux 额外需要 PipeWire 或 ALSA，以及 Qt DBus。
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/Qt/6.x/macos"
@@ -35,6 +35,8 @@ macOS 生成 dmg，Windows 生成 NSIS 安装程序，Linux 生成 deb。
 `echo-quicktest` 使用独立的临时资料库和静音输出，但会实际解码并检查非零 PCM、真实 QML 鼠标/键盘交互、播放/定位/收藏、歌词、搜索竞态、重复歌单条目、队列与关闭常驻行为，以及 10,003 首歌曲的后台读取与列表复用。截图写入 `/tmp/echo-quick-qa`。可用 `QT_SCALE_FACTOR=2 ./build/echo-quicktest` 检查 2× 缩放；`./build/echo-quicktest --preview` 完成测试后保留一个临时资料库窗口供交互预览，五分钟后退出。
 
 macOS 安装构建产物时会扫描 QML 依赖，只部署需要的 Cocoa、SQLite、图像和控件插件，检查 bundle 中的动态依赖并重新做 ad-hoc 签名。此签名用于本地运行，不代表 Developer ID 签名或公证。
+
+播放页默认背景采用直接绘制的深色光晕渐变；动态背景使用封面模糊，两者在最终输出时加入静止的微量抖动以减轻暗部色阶分层。运行 `./build/echo-quicktest --background-test` 可检查背景切换、回退、渲染及静止状态，截图写入 `/tmp/echo-background-qa`。显示器上的最终观感仍需在实际屏幕上确认。
 
 ## 应用图标
 

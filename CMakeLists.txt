@@ -14,7 +14,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui Sql Concurrent Network)
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 QuickDialogs2 Test)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 QuickDialogs2 Test ShaderTools)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
 pkg_check_modules(TAGLIB REQUIRED IMPORTED_TARGET taglib)
@@ -101,6 +101,10 @@ endif()
 add_library(echo_ui_support STATIC ${ECHO_SUPPORT_SOURCES})
 target_link_libraries(echo_ui_support PUBLIC echo_core Qt6::Network)
 add_library(echo_quick STATIC src/quick/playbackview.cpp src/quick/quickview.cpp src/quick/client.cpp src/quick/rowmodel.h src/quick/quick.qrc)
+qt_add_shaders(echo_quick playback_shaders
+  PREFIX "/echo/quick/shaders"
+  BASE "src/quick/shaders"
+  FILES src/quick/shaders/background.frag src/quick/shaders/backgroundblur.frag)
 target_include_directories(echo_quick PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(echo_quick PUBLIC echo_ui_support Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
 add_executable(echo src/main.cpp)

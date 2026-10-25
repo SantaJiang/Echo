@@ -23,6 +23,7 @@
 static void initializeQuickResources()
 {
     Q_INIT_RESOURCE(quick);
+    Q_INIT_RESOURCE(playback_shaders);
     Q_INIT_RESOURCE(echo);
 }
 

@@ -39,44 +39,10 @@ Item {
             easing.type: Easing.OutCubic
         }
     }
-    Rectangle {
+    PlaybackBackground {
         anchors.fill: parent
-        color: "#16141d"
-    }
-    Image {
-        id: backgroundImage
-        objectName: "playbackBackgroundImage"
-        anchors.fill: parent
-        source: page.dynamicBackground && page.playback.track.artwork
-            ? page.playback.track.artwork : "image://echo-icons/cover/background"
-        sourceSize: Qt.size(96, 96)
-        asynchronous: true
-        fillMode: Image.PreserveAspectCrop
-        visible: false
-    }
-    MultiEffect {
-        source: backgroundImage
-        anchors.fill: parent
-        blurEnabled: true
-        blurMax: 64
-        blur: 1
-        saturation: -0.3
-        brightness: -0.35
-        opacity: 0.65
-        visible: backgroundImage.status === Image.Ready
-    }
-    Rectangle {
-        anchors.fill: parent
-        gradient: Gradient {
-            GradientStop {
-                position: 0
-                color: "#15121824"
-            }
-            GradientStop {
-                position: 1
-                color: "#ed111016"
-            }
-        }
+        artwork: page.playback.track.artwork || ""
+        dynamicBackground: page.dynamicBackground
     }
     ActionButton {
         objectName: "detailCollapse"
