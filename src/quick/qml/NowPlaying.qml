@@ -16,29 +16,9 @@ Item {
     property real topInset: 0
     readonly property real contentHeight: height - topInset - bottomInset
     property alias coverItem: largeCover
-    // Cocoa can deliver a fullscreen resize in one step. Interpolate one
-    // shared canvas so the cover, spacing and lyric viewport move together.
-    property real layoutWidth: width
-    property real layoutHeight: height
-    readonly property bool layoutResizing: widthAnimation.running || heightAnimation.running
-    readonly property real typographyProgress: Math.max(0, Math.min(1, (layoutWidth - 1180) / 220))
-    onLayoutResizingChanged: if (!layoutResizing) Qt.callLater(() => lyrics.followCurrent(true))
-    Behavior on layoutWidth {
-        enabled: page.visible && page.expanded && !page.reduceMotion
-        NumberAnimation {
-            id: widthAnimation
-            duration: 320
-            easing.type: Easing.OutCubic
-        }
-    }
-    Behavior on layoutHeight {
-        enabled: page.visible && page.expanded && !page.reduceMotion
-        NumberAnimation {
-            id: heightAnimation
-            duration: 320
-            easing.type: Easing.OutCubic
-        }
-    }
+    // Follow the native window geometry directly. A second layout animation
+    // would run after Cocoa's zoom animation and leave the content behind.
+    readonly property real typographyProgress: Math.max(0, Math.min(1, (width - 1180) / 220))
     PlaybackBackground {
         anchors.fill: parent
         artwork: page.playback.track.artwork || ""
@@ -55,22 +35,39 @@ Item {
         label: "收起播放详情"
         onClicked: page.collapse()
     }
-    RowLayout {
+    Item {
         id: content
         objectName: "detailContent"
-        // Balance the visible artwork and left-aligned lyric text, rather
-        // than the otherwise empty right-hand part of the lyric column.
-        x: (page.layoutWidth - width) / 2 + Math.min(80, page.layoutWidth * 0.045)
+        // Center the reading block itself; unused lyric-column space must
+        // not pull the visible composition toward the left.
+        readonly property real availableWidth: Math.min(1440, page.width - Math.max(104, page.width * 0.18))
+        readonly property real coverWidth: Math.min(520, availableWidth * 0.43, height * 0.88)
+        readonly property real lyricWidth: Math.min(640, availableWidth - coverWidth - spacing,
+                                                   Math.max(280, naturalLyricWidth))
+        readonly property real naturalLyricWidth: {
+            // Re-measure when responsive typography changes.
+            const measuringFont = lyricMetrics.font;
+            let widest = 0;
+            const lines = lyrics.model || [];
+            for (let i = 0; i < lines.length; ++i)
+                widest = Math.max(widest, lyricMetrics.advanceWidth(lines[i].text || ""));
+            return Math.ceil(widest);
+        }
+        x: (page.width - width) / 2
         y: 28 + page.topInset
-        height: Math.max(0, page.layoutHeight - y - 32 - page.bottomInset)
-        width: Math.min(1440, page.layoutWidth - Math.max(104, page.layoutWidth * 0.18))
-        spacing: Math.max(48, Math.min(168, width * 0.115))
+        height: Math.max(0, page.height - y - 32 - page.bottomInset)
+        width: coverWidth + spacing + lyricWidth
+        readonly property real spacing: Math.max(48, Math.min(168, availableWidth * 0.115))
+        FontMetrics {
+            id: lyricMetrics
+            font.family: Qt.platform.os === "osx" ? "PingFang SC" : Qt.application.font.family
+            font.pixelSize: 20 + 2 * page.typographyProgress
+            font.weight: Font.Medium
+        }
         Item {
             objectName: "detailPlayerColumn"
-            Layout.preferredWidth: Math.min(520, content.width * 0.43, content.height * 0.88)
-            Layout.minimumWidth: 260
-            Layout.maximumWidth: Layout.preferredWidth
-            Layout.fillHeight: true
+            width: content.coverWidth
+            height: content.height
             Cover {
                 id: largeCover
                 objectName: "detailCover"
@@ -79,17 +76,15 @@ Item {
                 height: width
                 artwork: page.playback.track.artwork
                 radius: 10
-                // Keep the mask's render target stable while the canvas
-                // animates; reallocating it every frame stalls resizing.
+                // Keep the mask's render target stable throughout resizing.
                 renderTextureSize: Qt.size(Math.ceil(520 * Screen.devicePixelRatio), Math.ceil(520 * Screen.devicePixelRatio))
             }
         }
         Item {
             objectName: "detailLyricsColumn"
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.maximumHeight: content.height
-            Layout.alignment: Qt.AlignTop
+            x: content.coverWidth + content.spacing
+            width: content.lyricWidth
+            height: content.height
             ColumnLayout {
                 anchors.left: parent.left
                 anchors.top: parent.top
@@ -163,7 +158,7 @@ Item {
                         const targetY = line ? Math.max(originY - topMargin,
                             Math.min(line.y - height * readingAnchor, originY + contentHeight - height + bottomMargin)) : contentY;
                         contentY = previous;
-                        if (page.reduceMotion || page.layoutResizing || instant)
+                        if (page.reduceMotion || instant)
                             contentY = targetY;
                         else {
                             followAnimation.to = targetY;
@@ -172,8 +167,14 @@ Item {
                     }
                     onActiveLyricIndexChanged: Qt.callLater(followCurrent)
                     onModelChanged: Qt.callLater(followCurrent)
-                    onHeightChanged: Qt.callLater(followCurrent)
-                    onWidthChanged: Qt.callLater(followCurrent)
+                    function followAfterLayout() {
+                        // Commit wrapping and row positions before reading line.y.
+                        forceLayout();
+                        followCurrent(true);
+                    }
+                    onHeightChanged: Qt.callLater(followAfterLayout)
+                    onWidthChanged: Qt.callLater(followAfterLayout)
+                    onSpacingChanged: Qt.callLater(followAfterLayout)
                     onManualScrollingChanged: if (!manualScrolling) Qt.callLater(followCurrent)
                     NumberAnimation {
                         id: followAnimation

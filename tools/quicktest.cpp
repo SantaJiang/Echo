@@ -13,6 +13,8 @@
 #include <QEnterEvent>
 #include <QFile>
 #include <QPainter>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickImageProvider>
@@ -32,6 +34,10 @@
 #include <atomic>
 #include <cmath>
 #include <thread>
+
+#ifdef Q_OS_MACOS
+void postNativeTitlebarDoubleClick(QWindow* window);
+#endif
 
 namespace {
 int checks = 0;
@@ -562,26 +568,28 @@ int main(int argc, char** argv)
             lyrics->setProperty("activeLyricIndex", 0);
             QDir().mkpath("/tmp/echo-detail-layout");
             for (const QSize size : {QSize(1920, 1050), QSize(1440, 900), QSize(1180, 800), QSize(1040, 680)}) {
+                QMetaObject::invokeMethod(shell.rootObject(), "showControls");
                 shell.resize(size);
                 const bool layoutReady = waitFor([&] {
-                    return std::abs(detail->property("layoutWidth").toReal() - shell.width()) < .1
-                        && std::abs(detail->property("layoutHeight").toReal() - shell.height()) < .1
-                        && std::abs(cover->width() - std::min({520., content->width() * .43, content->height() * .88})) < 1;
+                    return std::abs(content->width() - (cover->width() + content->property("spacing").toReal() + lyrics->width())) < 2
+                        && std::abs(content->height() - (shell.height() - content->y() - 32 - detail->property("bottomInset").toReal())) < 1
+                        && std::abs(cover->width() - std::min({520., std::min(1440., shell.width() * .82) * .43, content->height() * .88})) < 1;
                 });
                 if (!layoutReady) qInfo() << "Unsettled layout" << shell.size()
-                    << detail->property("layoutWidth") << detail->property("layoutHeight")
-                    << content->size() << cover->size() << client.reduceMotion();
+                    << detail->size() << content->size() << cover->size() << lyrics->size() << content->property("spacing") << client.reduceMotion();
                 check(layoutReady, "playback layout reaches the requested size");
                 pump(100);
                 const auto body = content->mapRectToScene(content->boundingRect());
                 const auto art = cover->mapRectToScene(cover->boundingRect());
                 const auto lyricArea = lyrics->mapRectToScene(lyrics->boundingRect());
                 const auto controls = button->mapRectToScene(button->boundingRect());
-                check(std::abs(body.center().x() - shell.width() / 2. - std::min(80., shell.width() * .045)) < 1,
-                    "two-column composition has a proportional optical offset to the right");
-                const auto originalCoverSize = std::min({520., body.width() * .43, body.height() * .88});
+                check(std::abs(body.center().x() - shell.width() / 2.) < 1,
+                    "artwork and lyric reading block are centered together");
+                check(std::abs((art.left() + lyricArea.right()) / 2. - shell.width() / 2.) < 1.5,
+                    "visible cover and lyric bounds have balanced outer margins");
+                const auto originalCoverSize = std::min({520., std::min(1440., shell.width() * .82) * .43, body.height() * .88});
                 check(std::abs(art.width() - originalCoverSize) < 1,
-                    "optical offset preserves the existing cover size");
+                    "centered composition preserves the existing cover size");
                 check(art.right() < lyricArea.left() && lyricArea.right() < shell.width(), "cover and lyrics remain separated and inside window");
                 check(controls.bottom() < shell.height() && art.top() > 60, "cover and playback controls stay inside window");
                 const auto info = songInfo->mapRectToScene(songInfo->boundingRect());
@@ -600,106 +608,190 @@ int main(int argc, char** argv)
             if (app.arguments().contains("--detail-resize-test")) {
                 QTimer::singleShot(0, &app, [&] {
                     const auto coverRect = [&] { return cover->mapRectToScene(cover->boundingRect()); };
-                    const auto settled = [&] {
-                        return !detail->property("layoutResizing").toBool()
-                            && std::abs(detail->property("layoutWidth").toReal() - shell.width()) < .1
-                            && std::abs(detail->property("layoutHeight").toReal() - shell.height()) < .1;
+                    const auto geometryMatchesWindow = [&] {
+                        const qreal width = std::min(1440., shell.width() * .82);
+                        const qreal height = std::max(0., shell.height() - content->y() - 32 - detail->property("bottomInset").toReal());
+                        return std::abs(content->width() - (cover->width() + content->property("spacing").toReal() + lyrics->width())) < 2 && std::abs(content->height() - height) < 1
+                            && std::abs(content->x() - ((shell.width() - content->width()) / 2)) < 1
+                            && std::abs(cover->width() - std::min({520., width * .43, height * .88})) < 1;
+                    };
+                    const auto lyricAnchored = [&] {
+                        QQuickItem* line = nullptr;
+                        const int index = lyrics->property("emphasisIndex").toInt();
+                        QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, line), Q_ARG(int, index));
+                        const qreal offset = line ? line->mapToItem(lyrics, QPointF()).y()
+                            - lyrics->height() * lyrics->property("readingAnchor").toReal() : -1;
+                        return line && std::abs(offset) < 2;
+                    };
+                    const auto verifyNoChase = [&] {
+                        // Allow one layout/render turn, not a second animation.
+                        pump(40);
+                        check(geometryMatchesWindow(), "playback geometry follows the current window within one render turn");
+                        check(lyricAnchored(), "resized lyrics immediately retain the current reading anchor");
+                        const auto art = coverRect();
+                        const auto viewport = lyrics->mapRectToScene(lyrics->boundingRect());
+                        const qreal scroll = lyrics->property("contentY").toReal();
+                        for (int i = 0; i < 10; ++i) {
+                            pump(40);
+                            check(coverRect() == art && lyrics->mapRectToScene(lyrics->boundingRect()) == viewport
+                                    && std::abs(lyrics->property("contentY").toReal() - scroll) < 1,
+                                "cover and lyrics never chase the window after resizing stops");
+                        }
                     };
                     shell.resize(1180, 800);
                     pump(100);
                     client.setReduceMotion(false);
-                    const auto small = coverRect();
+                    lyrics->setProperty("activeLyricIndex", 6);
+                    pump(500);
                     const auto textureSize = cover->property("renderTextureSize").toSize();
-                    QVector<QRectF> resizeFrames;
-                    const auto capture = QObject::connect(cover, &QQuickItem::widthChanged, [&] { resizeFrames << coverRect(); });
                     shell.resize(1440, 900);
-                    check(waitFor(settled), "enlarging reaches the final canvas dimensions");
-                    pump(40);
-                    const auto large = coverRect();
-                    check(std::count_if(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
-                            return frame.width() > small.width() + .1 && frame.width() < large.width() - .1;
-                        }) >= 4, "enlarging the window renders intermediate playback layouts");
-                    check(std::any_of(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
-                            return frame.width() > small.width() && frame.width() < large.width()
-                                && frame.x() > small.x() && frame.x() < large.x();
-                        }),
-                        "cover size and horizontal placement interpolate together");
-                    resizeFrames.clear();
+                    verifyNoChase();
                     shell.resize(1180, 800);
-                    check(waitFor(settled), "shrinking reaches the final canvas dimensions");
-                    check(std::count_if(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
-                            return frame.width() > small.width() + .1 && frame.width() < large.width() - .1;
-                        }) >= 4,
-                        "shrinking the window also renders an intermediate cover size");
-                    // Reverse direction before the first animation finishes.
-                    shell.resize(1440, 900);
-                    pump(50);
-                    shell.resize(1180, 800);
-                    check(waitFor(settled), "a resize in mid-transition reaches the latest target");
-                    QObject::disconnect(capture);
+                    verifyNoChase();
+                    // Feed a live-resize stream, including reversals before any
+                    // old 320 ms layout animation could have caught up.
+                    for (int width : {1200, 1280, 1380, 1440, 1390, 1320, 1240, 1180}) {
+                        shell.resize(width, 800 + (width - 1180) / 3);
+                        pump(40);
+                        check(geometryMatchesWindow(), "live resize and reversals keep playback aligned with the window");
+                        check(lyricAnchored(), "live resize keeps the current lyric anchored");
+                    }
+                    verifyNoChase();
                     check(cover->property("renderTextureSize").toSize() == textureSize,
                         "cover mask texture stays allocated at the same size throughout resizing");
                     client.setReduceMotion(true);
                     shell.resize(1440, 900);
-                    pump(40);
-                    check(settled() && std::abs(coverRect().width() - large.width()) < 1,
-                        "reduced motion applies the final playback geometry immediately");
+                    verifyNoChase();
                     shell.resize(1180, 800);
                     pump(40);
                     client.setReduceMotion(false);
-                    lyrics->setProperty("activeLyricIndex", 6);
+                    // A normal lyric change still scrolls; resizing must not
+                    // globally disable the existing 420 ms follow animation.
+                    const qreal beforeFollow = lyrics->property("contentY").toReal();
+                    lyrics->setProperty("activeLyricIndex", 7);
+                    pump(80);
+                    check(std::abs(lyrics->property("contentY").toReal() - beforeFollow) > 1 && !lyricAnchored(),
+                        "normal playback lyric changes retain intermediate scrolling positions");
+                    pump(450);
+                    check(lyricAnchored(), "normal lyric scrolling finishes at the reading anchor");
+                    // Wrap long lines at both widths before checking the anchor.
+                    auto wrappedLines = lines;
+                    for (auto& value : wrappedLines) {
+                        auto line = value.toMap();
+                        line["text"] = line["text"].toString().repeated(5);
+                        value = line;
+                    }
+                    lyrics->setProperty("model", wrappedLines);
                     pump(500);
-                    const auto verifyNativeTransition = [&](bool entering) {
-                        QVector<QRectF> frames;
-                        QTimer sampler;
-                        sampler.setInterval(16);
-                        QObject::connect(&sampler, &QTimer::timeout, [&] { frames << coverRect(); });
-                        frames << coverRect();
-                        sampler.start();
+                    shell.resize(1040, 680);
+                    verifyNoChase();
+                    QQuickItem* wrappedLine = nullptr;
+                    QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, wrappedLine), Q_ARG(int, 7));
+                    check(wrappedLine && wrappedLine->height() > 64, "long lyric fixture actually wraps across multiple rows");
+                    shell.resize(1440, 900);
+                    verifyNoChase();
+                    lyrics->setProperty("manualScrolling", true);
+                    lyrics->setProperty("contentY", lyrics->property("contentY").toReal() + 100);
+                    const qreal manualY = lyrics->property("contentY").toReal();
+                    shell.resize(1440, 800);
+                    pump(40);
+                    check(lyrics->property("manualScrolling").toBool()
+                            && std::abs(lyrics->property("contentY").toReal() - manualY) < 1,
+                        "viewport resize preserves the user's manual lyric position");
+                    pump(450);
+                    check(std::abs(lyrics->property("contentY").toReal() - manualY) < 1,
+                        "manual lyrics are not pulled back after resizing");
+                    lyrics->setProperty("model", QVariantList{});
+                    shell.resize(1440, 900);
+                    pump(40);
+                    check(geometryMatchesWindow() && lyrics->property("count").toInt() == 0, "empty lyrics resize without invalid positioning");
+                    lyrics->setProperty("model", lines);
+                    lyrics->setProperty("manualScrolling", false);
+                    shell.resize(1180, 800);
+                    pump(500);
+                    const QSize restoredSize = shell.size();
+                    for (int i = 0; i < 2; ++i) {
+                        struct ResizeFrame {
+                            int windowWidth;
+                            QRectF cover;
+                            QRectF lyrics;
+                            bool followsWindow;
+                        };
+                        struct FrameCapture {
+                            QMutex mutex;
+                            QVector<ResizeFrame> frames;
+                            ResizeFrame synchronizedFrame{};
+                            bool synchronized = false;
+                        };
+                        const auto capture = std::make_shared<FrameCapture>();
+                        const int initialWidth = shell.width();
+                        // Cocoa's synchronous zoom pumps resize/expose events,
+                        // but not QTimers. Read geometry while the GUI thread is
+                        // blocked for scene-graph sync, then record completed frames.
+                        const auto sync = QObject::connect(&shell, &QQuickWindow::beforeSynchronizing, &shell, [&, capture] {
+                            capture->synchronizedFrame = {shell.width(), coverRect(), lyrics->mapRectToScene(lyrics->boundingRect()),
+                                geometryMatchesWindow()};
+                            capture->synchronized = true;
+                        }, Qt::DirectConnection);
+                        const auto rendered = QObject::connect(&shell, &QQuickWindow::afterFrameEnd, &shell, [capture] {
+                            if (!capture->synchronized) return;
+                            const QMutexLocker lock(&capture->mutex);
+                            capture->frames << capture->synchronizedFrame;
+                        }, Qt::DirectConnection);
+#ifdef Q_OS_MACOS
+                        // QTest mouse events bypass Cocoa's native event monitor.
+                        postNativeTitlebarDoubleClick(&shell);
+#else
+                        shell.toggleMaximized();
+#endif
+                        check(waitFor([&] { return (shell.size() != restoredSize) == (i == 0); }),
+                            "native titlebar double click enlarges and restores the window");
+                        verifyNoChase();
+                        QObject::disconnect(sync);
+                        QObject::disconnect(rendered);
+                        const QMutexLocker lock(&capture->mutex);
+                        const auto& frames = capture->frames;
+                        check(!frames.isEmpty(), "native zoom presents sampled render frames");
+                        const int minimumWidth = std::min(initialWidth, shell.width());
+                        const int maximumWidth = std::max(initialWidth, shell.width());
+                        int followingFrames = 0, coverChanges = 0, lyricChanges = 0;
+                        QRectF previousCover, previousLyrics;
+                        bool allFollowing = true;
+                        for (const auto& frame : frames) {
+                            if (frame.windowWidth <= minimumWidth || frame.windowWidth >= maximumWidth)
+                                continue;
+                            allFollowing &= frame.followsWindow;
+                            followingFrames += frame.followsWindow;
+                            coverChanges += frame.cover != previousCover;
+                            lyricChanges += frame.lyrics != previousLyrics;
+                            previousCover = frame.cover;
+                            previousLyrics = frame.lyrics;
+                        }
+                        qInfo() << "Native zoom rendered frames" << i << "total" << frames.size()
+                                << "following during zoom" << followingFrames << "cover changes" << coverChanges
+                                << "lyric viewport changes" << lyricChanges;
+#ifdef Q_OS_MACOS
+                        check(allFollowing && followingFrames >= 4 && coverChanges >= 4 && lyricChanges >= 4,
+                            "cover and lyrics follow intermediate native zoom sizes in completed render frames");
+#else
+                        // Some window managers maximize instantly, without resize frames.
+                        check(allFollowing, "any intermediate native zoom frames follow the window");
+#endif
+                    }
+                    for (bool entering : {true, false}) {
                         if (entering) shell.showFullScreen(); else shell.showNormal();
                         check(waitFor([&] {
-                            return shell.fullscreen() == entering && settled()
+                            return shell.fullscreen() == entering
                                 && shell.property("echoFullscreenTransition").toString().isEmpty()
                                 && (QGuiApplication::platformName() != "cocoa"
                                     || shell.property("echoNativeFullscreen").toBool() == entering);
-                        }), "native fullscreen transition finishes with the playback canvas settled");
-                        pump(100);
-                        sampler.stop();
-                        frames << coverRect();
-                        int changes = 0;
-                        double largestStep = 0;
-                        for (int i = 1; i < frames.size(); ++i) {
-                            const double step = std::abs(frames[i].x() - frames[i - 1].x())
-                                + std::abs(frames[i].width() - frames[i - 1].width());
-                            if (step > .01) ++changes;
-                            largestStep = std::max(largestStep, step);
-                        }
-                        const double travel = std::abs(frames.last().x() - frames.first().x())
-                            + std::abs(frames.last().width() - frames.first().width());
-                        qInfo() << "Native playback resize" << entering << "samples" << frames.size()
-                                << "changes" << changes << "largest step" << largestStep << "travel" << travel;
-                        check(changes >= 4 && largestStep < travel * .65,
-                            "native fullscreen renders multiple layout steps without a single large jump");
-                        const bool lyricAnchored = waitFor([&] {
-                            QQuickItem* activeLine = nullptr;
-                            const int currentLyric = lyrics->property("emphasisIndex").toInt();
-                            QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, activeLine), Q_ARG(int, currentLyric));
-                            return activeLine && std::abs(activeLine->mapToItem(lyrics, QPointF()).y()
-                                - lyrics->height() * lyrics->property("readingAnchor").toReal()) < 2;
-                        }, 1500);
-                        if (!lyricAnchored) {
-                            qInfo() << "Unsettled lyric" << lyrics->property("emphasisIndex")
-                                    << "contentY" << lyrics->property("contentY") << "viewport" << lyrics->height()
-                                    << "model" << lyrics->property("model");
-                        }
-                        check(lyricAnchored, "current lyric stays at its reading anchor after fullscreen resizing");
+                        }), "native fullscreen transition finishes");
+                        verifyNoChase();
                         check(shell.grabWindow().save(entering ? "/tmp/echo-detail-layout/fullscreen-entered.png"
                                                              : "/tmp/echo-detail-layout/fullscreen-exited.png"),
                             "native fullscreen layout screenshot saved");
-                    };
-                    verifyNativeTransition(true);
-                    verifyNativeTransition(false);
-                    check(shell.size() == QSize(1180, 800), "fullscreen exit restores the original window size");
+                    }
+                    check(shell.size() == restoredSize, "fullscreen exit restores the original window size");
                     check(qmlIssues.isEmpty(), "playback resize has no QML warnings");
                     qInfo() << "PASS" << checks << "playback resize checks";
                     QCoreApplication::exit(0);
