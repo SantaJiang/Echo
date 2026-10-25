@@ -38,32 +38,17 @@ Item {
     Item {
         id: content
         objectName: "detailContent"
-        // Center the reading block itself; unused lyric-column space must
-        // not pull the visible composition toward the left.
-        readonly property real availableWidth: Math.min(1440, page.width - Math.max(104, page.width * 0.18))
-        readonly property real coverWidth: Math.min(520, availableWidth * 0.43, height * 0.88)
-        readonly property real lyricWidth: Math.min(640, availableWidth - coverWidth - spacing,
-                                                   Math.max(280, naturalLyricWidth))
-        readonly property real naturalLyricWidth: {
-            // Re-measure when responsive typography changes.
-            const measuringFont = lyricMetrics.font;
-            let widest = 0;
-            const lines = lyrics.model || [];
-            for (let i = 0; i < lines.length; ++i)
-                widest = Math.max(widest, lyricMetrics.advanceWidth(lines[i].text || ""));
-            return Math.ceil(widest);
-        }
+        // Equal columns keep both the center gap and outer margins symmetric,
+        // independent of lyric length and responsive line wrapping.
+        readonly property real availableWidth: Math.max(0, Math.min(1440, page.width - Math.max(104, page.width * 0.18)))
+        readonly property real spacing: Math.min(availableWidth, Math.max(48, Math.min(168, availableWidth * 0.115)))
+        readonly property real columnWidth: Math.max(0, Math.min(520, (availableWidth - spacing) / 2, height * 0.88))
+        readonly property real coverWidth: columnWidth
+        readonly property real lyricWidth: columnWidth
         x: (page.width - width) / 2
         y: 28 + page.topInset
         height: Math.max(0, page.height - y - 32 - page.bottomInset)
-        width: coverWidth + spacing + lyricWidth
-        readonly property real spacing: Math.max(48, Math.min(168, availableWidth * 0.115))
-        FontMetrics {
-            id: lyricMetrics
-            font.family: Qt.platform.os === "osx" ? "PingFang SC" : Qt.application.font.family
-            font.pixelSize: 20 + 2 * page.typographyProgress
-            font.weight: Font.Medium
-        }
+        width: 2 * columnWidth + spacing
         Item {
             objectName: "detailPlayerColumn"
             width: content.coverWidth

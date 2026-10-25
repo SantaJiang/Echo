@@ -573,7 +573,7 @@ int main(int argc, char** argv)
                 const bool layoutReady = waitFor([&] {
                     return std::abs(content->width() - (cover->width() + content->property("spacing").toReal() + lyrics->width())) < 2
                         && std::abs(content->height() - (shell.height() - content->y() - 32 - detail->property("bottomInset").toReal())) < 1
-                        && std::abs(cover->width() - std::min({520., std::min(1440., shell.width() * .82) * .43, content->height() * .88})) < 1;
+                        && std::abs(cover->width() - std::min({520., (content->property("availableWidth").toReal() - content->property("spacing").toReal()) / 2., content->height() * .88})) < 1;
                 });
                 if (!layoutReady) qInfo() << "Unsettled layout" << shell.size()
                     << detail->size() << content->size() << cover->size() << lyrics->size() << content->property("spacing") << client.reduceMotion();
@@ -587,9 +587,13 @@ int main(int argc, char** argv)
                     "artwork and lyric reading block are centered together");
                 check(std::abs((art.left() + lyricArea.right()) / 2. - shell.width() / 2.) < 1.5,
                     "visible cover and lyric bounds have balanced outer margins");
-                const auto originalCoverSize = std::min({520., std::min(1440., shell.width() * .82) * .43, body.height() * .88});
-                check(std::abs(art.width() - originalCoverSize) < 1,
-                    "centered composition preserves the existing cover size");
+                const auto expectedColumnSize = std::min({520., (content->property("availableWidth").toReal() - content->property("spacing").toReal()) / 2., body.height() * .88});
+                check(std::abs(art.width() - expectedColumnSize) < 1,
+                    "equal columns fit the available width and height");
+                check(std::abs(art.width() - lyricArea.width()) < 1,
+                    "cover and lyric columns have equal widths");
+                check(std::abs((art.right() + lyricArea.left()) / 2. - shell.width() / 2.) < 1,
+                    "gap between cover and lyrics is symmetric about the window center");
                 check(art.right() < lyricArea.left() && lyricArea.right() < shell.width(), "cover and lyrics remain separated and inside window");
                 check(controls.bottom() < shell.height() && art.top() > 60, "cover and playback controls stay inside window");
                 const auto info = songInfo->mapRectToScene(songInfo->boundingRect());
@@ -609,11 +613,11 @@ int main(int argc, char** argv)
                 QTimer::singleShot(0, &app, [&] {
                     const auto coverRect = [&] { return cover->mapRectToScene(cover->boundingRect()); };
                     const auto geometryMatchesWindow = [&] {
-                        const qreal width = std::min(1440., shell.width() * .82);
+                        const qreal width = content->property("availableWidth").toReal();
                         const qreal height = std::max(0., shell.height() - content->y() - 32 - detail->property("bottomInset").toReal());
                         return std::abs(content->width() - (cover->width() + content->property("spacing").toReal() + lyrics->width())) < 2 && std::abs(content->height() - height) < 1
                             && std::abs(content->x() - ((shell.width() - content->width()) / 2)) < 1
-                            && std::abs(cover->width() - std::min({520., width * .43, height * .88})) < 1;
+                            && std::abs(cover->width() - std::min({520., (width - content->property("spacing").toReal()) / 2., height * .88})) < 1;
                     };
                     const auto lyricAnchored = [&] {
                         QQuickItem* line = nullptr;
