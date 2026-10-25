@@ -16,6 +16,29 @@ Item {
     property real topInset: 0
     readonly property real contentHeight: height - topInset - bottomInset
     property alias coverItem: largeCover
+    // Cocoa can deliver a fullscreen resize in one step. Interpolate one
+    // shared canvas so the cover, spacing and lyric viewport move together.
+    property real layoutWidth: width
+    property real layoutHeight: height
+    readonly property bool layoutResizing: widthAnimation.running || heightAnimation.running
+    readonly property real typographyProgress: Math.max(0, Math.min(1, (layoutWidth - 1180) / 220))
+    onLayoutResizingChanged: if (!layoutResizing) Qt.callLater(() => lyrics.followCurrent(true))
+    Behavior on layoutWidth {
+        enabled: page.visible && page.expanded && !page.reduceMotion
+        NumberAnimation {
+            id: widthAnimation
+            duration: 320
+            easing.type: Easing.OutCubic
+        }
+    }
+    Behavior on layoutHeight {
+        enabled: page.visible && page.expanded && !page.reduceMotion
+        NumberAnimation {
+            id: heightAnimation
+            duration: 320
+            easing.type: Easing.OutCubic
+        }
+    }
     Rectangle {
         anchors.fill: parent
         color: "#16141d"
@@ -69,12 +92,12 @@ Item {
     RowLayout {
         id: content
         objectName: "detailContent"
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.topMargin: 28 + page.topInset
-        anchors.bottomMargin: 32 + page.bottomInset
-        width: Math.min(1440, page.width - Math.max(104, page.width * 0.18))
+        // Balance the visible artwork and left-aligned lyric text, rather
+        // than the otherwise empty right-hand part of the lyric column.
+        x: (page.layoutWidth - width) / 2 + Math.min(80, page.layoutWidth * 0.045)
+        y: 28 + page.topInset
+        height: Math.max(0, page.layoutHeight - y - 32 - page.bottomInset)
+        width: Math.min(1440, page.layoutWidth - Math.max(104, page.layoutWidth * 0.18))
         spacing: Math.max(48, Math.min(168, width * 0.115))
         Item {
             objectName: "detailPlayerColumn"
@@ -90,6 +113,9 @@ Item {
                 height: width
                 artwork: page.playback.track.artwork
                 radius: 10
+                // Keep the mask's render target stable while the canvas
+                // animates; reallocating it every frame stalls resizing.
+                renderTextureSize: Qt.size(Math.ceil(520 * Screen.devicePixelRatio), Math.ceil(520 * Screen.devicePixelRatio))
             }
         }
         Item {
@@ -116,7 +142,7 @@ Item {
                         Layout.fillWidth: true
                         text: page.playback.track.title
                         color: "#faf8ff"
-                        font.pixelSize: page.width >= 1400 ? 25 : 22
+                        font.pixelSize: 22 + 3 * page.typographyProgress
                         font.weight: Font.Medium
                         elide: Text.ElideRight
                     }
@@ -153,22 +179,25 @@ Item {
                     // changing currentIndex can reposition even without a highlight.
                     currentIndex: -1
                     clip: true
-                    spacing: page.width >= 1400 ? 20 : 18
+                    spacing: 18 + 2 * page.typographyProgress
                     topMargin: height * readingAnchor
                     bottomMargin: height * 0.5
                     property bool manualScrolling: false
-                    function followCurrent() {
+                    function followCurrent(instant = false) {
                         if (manualScrolling || count === 0)
                             return;
                         followAnimation.stop();
                         cancelFlick();
                         const previous = contentY;
-                        positionViewAtIndex(emphasisIndex, ListView.Beginning);
-                        const line = itemAtIndex(emphasisIndex);
+                        let line = itemAtIndex(emphasisIndex);
+                        if (!line) {
+                            positionViewAtIndex(emphasisIndex, ListView.Beginning);
+                            line = itemAtIndex(emphasisIndex);
+                        }
                         const targetY = line ? Math.max(originY - topMargin,
                             Math.min(line.y - height * readingAnchor, originY + contentHeight - height + bottomMargin)) : contentY;
                         contentY = previous;
-                        if (page.reduceMotion)
+                        if (page.reduceMotion || page.layoutResizing || instant)
                             contentY = targetY;
                         else {
                             followAnimation.to = targetY;
@@ -222,7 +251,7 @@ Item {
                         text: modelData.text
                         wrapMode: Text.Wrap
                         font.family: Qt.platform.os === "osx" ? "PingFang SC" : Qt.application.font.family
-                        font.pixelSize: page.width >= 1400 ? 22 : 20
+                        font.pixelSize: 20 + 2 * page.typographyProgress
                         font.weight: index === lyrics.emphasisIndex ? Font.Medium : Font.Normal
                         lineHeightMode: Text.FixedHeight
                         lineHeight: Math.round(font.pixelSize * 1.45)

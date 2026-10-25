@@ -28,6 +28,7 @@
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <thread>
@@ -380,7 +381,7 @@ int main(int argc, char** argv)
             });
             return app.exec();
         }
-        if (app.arguments().contains("--detail-layout-test")) {
+        if (app.arguments().contains("--detail-layout-test") || app.arguments().contains("--detail-resize-test")) {
             echo::Client client(&library, &player, &engine);
             echo::QuickView shell(&playback, &client);
             client.attach(&shell);
@@ -412,12 +413,25 @@ int main(int argc, char** argv)
             QDir().mkpath("/tmp/echo-detail-layout");
             for (const QSize size : {QSize(1920, 1050), QSize(1440, 900), QSize(1180, 800), QSize(1040, 680)}) {
                 shell.resize(size);
-                pump(250);
+                const bool layoutReady = waitFor([&] {
+                    return std::abs(detail->property("layoutWidth").toReal() - shell.width()) < .1
+                        && std::abs(detail->property("layoutHeight").toReal() - shell.height()) < .1
+                        && std::abs(cover->width() - std::min({520., content->width() * .43, content->height() * .88})) < 1;
+                });
+                if (!layoutReady) qInfo() << "Unsettled layout" << shell.size()
+                    << detail->property("layoutWidth") << detail->property("layoutHeight")
+                    << content->size() << cover->size() << client.reduceMotion();
+                check(layoutReady, "playback layout reaches the requested size");
+                pump(100);
                 const auto body = content->mapRectToScene(content->boundingRect());
                 const auto art = cover->mapRectToScene(cover->boundingRect());
                 const auto lyricArea = lyrics->mapRectToScene(lyrics->boundingRect());
                 const auto controls = button->mapRectToScene(button->boundingRect());
-                check(std::abs(body.center().x() - shell.width() / 2.) < 1, "two-column body stays centered");
+                check(std::abs(body.center().x() - shell.width() / 2. - std::min(80., shell.width() * .045)) < 1,
+                    "two-column composition has a proportional optical offset to the right");
+                const auto originalCoverSize = std::min({520., body.width() * .43, body.height() * .88});
+                check(std::abs(art.width() - originalCoverSize) < 1,
+                    "optical offset preserves the existing cover size");
                 check(art.right() < lyricArea.left() && lyricArea.right() < shell.width(), "cover and lyrics remain separated and inside window");
                 check(controls.bottom() < shell.height() && art.top() > 60, "cover and playback controls stay inside window");
                 const auto info = songInfo->mapRectToScene(songInfo->boundingRect());
@@ -432,6 +446,115 @@ int main(int argc, char** argv)
                 check(shell.grabWindow().save(QString("/tmp/echo-detail-layout/detail-%1x%2.png").arg(size.width()).arg(size.height())),
                     "detail layout screenshot saved");
                 qInfo() << "Detail layout" << shell.size() << "requested" << size << "DPR" << shell.devicePixelRatio() << "cover" << art << "lyrics" << lyricArea << "play" << controls;
+            }
+            if (app.arguments().contains("--detail-resize-test")) {
+                QTimer::singleShot(0, &app, [&] {
+                    const auto coverRect = [&] { return cover->mapRectToScene(cover->boundingRect()); };
+                    const auto settled = [&] {
+                        return !detail->property("layoutResizing").toBool()
+                            && std::abs(detail->property("layoutWidth").toReal() - shell.width()) < .1
+                            && std::abs(detail->property("layoutHeight").toReal() - shell.height()) < .1;
+                    };
+                    shell.resize(1180, 800);
+                    pump(100);
+                    client.setReduceMotion(false);
+                    const auto small = coverRect();
+                    const auto textureSize = cover->property("renderTextureSize").toSize();
+                    QVector<QRectF> resizeFrames;
+                    const auto capture = QObject::connect(cover, &QQuickItem::widthChanged, [&] { resizeFrames << coverRect(); });
+                    shell.resize(1440, 900);
+                    check(waitFor(settled), "enlarging reaches the final canvas dimensions");
+                    pump(40);
+                    const auto large = coverRect();
+                    check(std::count_if(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
+                            return frame.width() > small.width() + .1 && frame.width() < large.width() - .1;
+                        }) >= 4, "enlarging the window renders intermediate playback layouts");
+                    check(std::any_of(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
+                            return frame.width() > small.width() && frame.width() < large.width()
+                                && frame.x() > small.x() && frame.x() < large.x();
+                        }),
+                        "cover size and horizontal placement interpolate together");
+                    resizeFrames.clear();
+                    shell.resize(1180, 800);
+                    check(waitFor(settled), "shrinking reaches the final canvas dimensions");
+                    check(std::count_if(resizeFrames.begin(), resizeFrames.end(), [&](const auto& frame) {
+                            return frame.width() > small.width() + .1 && frame.width() < large.width() - .1;
+                        }) >= 4,
+                        "shrinking the window also renders an intermediate cover size");
+                    // Reverse direction before the first animation finishes.
+                    shell.resize(1440, 900);
+                    pump(50);
+                    shell.resize(1180, 800);
+                    check(waitFor(settled), "a resize in mid-transition reaches the latest target");
+                    QObject::disconnect(capture);
+                    check(cover->property("renderTextureSize").toSize() == textureSize,
+                        "cover mask texture stays allocated at the same size throughout resizing");
+                    client.setReduceMotion(true);
+                    shell.resize(1440, 900);
+                    pump(40);
+                    check(settled() && std::abs(coverRect().width() - large.width()) < 1,
+                        "reduced motion applies the final playback geometry immediately");
+                    shell.resize(1180, 800);
+                    pump(40);
+                    client.setReduceMotion(false);
+                    lyrics->setProperty("activeLyricIndex", 6);
+                    pump(500);
+                    const auto verifyNativeTransition = [&](bool entering) {
+                        QVector<QRectF> frames;
+                        QTimer sampler;
+                        sampler.setInterval(16);
+                        QObject::connect(&sampler, &QTimer::timeout, [&] { frames << coverRect(); });
+                        frames << coverRect();
+                        sampler.start();
+                        if (entering) shell.showFullScreen(); else shell.showNormal();
+                        check(waitFor([&] {
+                            return shell.fullscreen() == entering && settled()
+                                && shell.property("echoFullscreenTransition").toString().isEmpty()
+                                && (QGuiApplication::platformName() != "cocoa"
+                                    || shell.property("echoNativeFullscreen").toBool() == entering);
+                        }), "native fullscreen transition finishes with the playback canvas settled");
+                        pump(100);
+                        sampler.stop();
+                        frames << coverRect();
+                        int changes = 0;
+                        double largestStep = 0;
+                        for (int i = 1; i < frames.size(); ++i) {
+                            const double step = std::abs(frames[i].x() - frames[i - 1].x())
+                                + std::abs(frames[i].width() - frames[i - 1].width());
+                            if (step > .01) ++changes;
+                            largestStep = std::max(largestStep, step);
+                        }
+                        const double travel = std::abs(frames.last().x() - frames.first().x())
+                            + std::abs(frames.last().width() - frames.first().width());
+                        qInfo() << "Native playback resize" << entering << "samples" << frames.size()
+                                << "changes" << changes << "largest step" << largestStep << "travel" << travel;
+                        check(changes >= 4 && largestStep < travel * .65,
+                            "native fullscreen renders multiple layout steps without a single large jump");
+                        const bool lyricAnchored = waitFor([&] {
+                            QQuickItem* activeLine = nullptr;
+                            const int currentLyric = lyrics->property("emphasisIndex").toInt();
+                            QMetaObject::invokeMethod(lyrics, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, activeLine), Q_ARG(int, currentLyric));
+                            return activeLine && std::abs(activeLine->mapToItem(lyrics, QPointF()).y()
+                                - lyrics->height() * lyrics->property("readingAnchor").toReal()) < 2;
+                        }, 1500);
+                        if (!lyricAnchored) {
+                            qInfo() << "Unsettled lyric" << lyrics->property("emphasisIndex")
+                                    << "contentY" << lyrics->property("contentY") << "viewport" << lyrics->height()
+                                    << "model" << lyrics->property("model");
+                        }
+                        check(lyricAnchored, "current lyric stays at its reading anchor after fullscreen resizing");
+                        check(shell.grabWindow().save(entering ? "/tmp/echo-detail-layout/fullscreen-entered.png"
+                                                             : "/tmp/echo-detail-layout/fullscreen-exited.png"),
+                            "native fullscreen layout screenshot saved");
+                    };
+                    verifyNativeTransition(true);
+                    verifyNativeTransition(false);
+                    check(shell.size() == QSize(1180, 800), "fullscreen exit restores the original window size");
+                    check(qmlIssues.isEmpty(), "playback resize has no QML warnings");
+                    qInfo() << "PASS" << checks << "playback resize checks";
+                    QCoreApplication::exit(0);
+                });
+                return app.exec();
             }
             shell.resize(1920, 1050);
             pump(250);
