@@ -82,6 +82,9 @@ int echo::quicktest::runOptionalScenes(Harness& harness)
         if (app.arguments().contains("--settings-window-test")) {
             client.attach(&window);
             client.setReduceMotion(true);
+            // Synthetic scale factors can make the test screen smaller than
+            // Echo's normal minimum; let native fullscreen fit that screen.
+            window.setMinimumSize(window.minimumSize().boundedTo(window.screen()->availableGeometry().size()));
             window.show();
             check(QTest::qWaitForWindowExposed(&window), "settings test window exposed");
             auto* settings = window.rootObject()->findChild<QObject*>("settingsDialog");
