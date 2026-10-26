@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Effects
+import "qrc:/echo/quick/theme"
 
 Rectangle {
     id: cover
@@ -9,7 +10,7 @@ Rectangle {
     property int decodeSize: Math.min(2048, Math.pow(2, Math.ceil(Math.log2(Math.max(128, cover.width * Screen.devicePixelRatio * 2)))))
     property size renderTextureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio * 2), Math.ceil(height * Screen.devicePixelRatio * 2))
     radius: 12
-    color: "#302c3d"
+    color: Theme.c302c3d
     antialiasing: true
     Item {
         id: artworkContent
@@ -72,6 +73,6 @@ Rectangle {
         anchors.fill: parent
         radius: cover.radius
         color: "transparent"
-        border.color: "#15ffffff"
+        border.color: Theme.c15ffffff
     }
 }

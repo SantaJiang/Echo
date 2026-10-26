@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "qrc:/echo/quick/theme"
 
 ToolTip {
     id: hint
@@ -24,7 +25,7 @@ ToolTip {
     contentItem: Text {
         text: hint.text
         font: hint.font
-        color: "#eee8f5"
+        color: Theme.ceee8f5
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         horizontalAlignment: Text.AlignHCenter
@@ -32,8 +33,8 @@ ToolTip {
     }
     background: Rectangle {
         objectName: "tooltipBackground"
-        color: "#302938"
-        border.color: "#51465f"
+        color: Theme.c302938
+        border.color: Theme.c51465f
         border.width: 1
         radius: 7
         antialiasing: true

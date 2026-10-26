@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "qrc:/echo/quick/theme"
 
 Button {
     id: control
@@ -8,6 +9,7 @@ Button {
     property bool prominent: false
     property bool filled: false
     property string label: ""
+    property bool reduceMotion: false
     property int iconSize: prominent ? 26 : 24
     implicitWidth: prominent ? 56 : 44
     implicitHeight: implicitWidth
@@ -23,17 +25,17 @@ Button {
         antialiasing: true
         radius: width / 2
         border.width: control.visualFocus ? 2 : 0
-        border.color: "#c9aaff"
-        color: control.prominent ? "#f3f1f8" : control.down ? "#30ffffff" : control.hovered ? "#18ffffff" : control.filled ? "#12ffffff" : "transparent"
+        border.color: Theme.cc9aaff
+        color: control.prominent ? Theme.cf3f1f8 : control.down ? Theme.c30ffffff : control.hovered ? Theme.c18ffffff : control.filled ? Theme.c12ffffff : "transparent"
         scale: control.down ? 0.94 : 1
         Behavior on scale {
             NumberAnimation {
-                duration: 100
+                duration: Theme.motion(control.reduceMotion, Theme.motionShort)
             }
         }
         Behavior on color {
             ColorAnimation {
-                duration: 100
+                duration: Theme.motion(control.reduceMotion, Theme.motionShort)
             }
         }
     }

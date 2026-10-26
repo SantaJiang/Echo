@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Rectangle {
     id: sidebar
@@ -10,7 +11,7 @@ Rectangle {
     property real topInset: 48
     signal contextRequested(Item sender, point position, int row)
     signal queueDismissRequested()
-    color: "#201d28"
+    color: Theme.c201d28
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 18
@@ -18,7 +19,7 @@ Rectangle {
         spacing: 8
         Text {
             text: "资料库"
-            color: "#847e90"
+            color: Theme.c847e90
             font.pixelSize: 11
             font.weight: Font.DemiBold
             Layout.leftMargin: 12
@@ -48,7 +49,7 @@ Rectangle {
                 width: navigation.width
                 height: item.kind === "playlistSection" ? 52 : 38
                 radius: 9
-                color: item.kind === "playlistSection" ? "transparent" : selected ? "#42354f" : navHover.hovered ? "#12ffffff" : "transparent"
+                color: item.kind === "playlistSection" ? "transparent" : selected ? Theme.rowSelected : navHover.hovered ? Theme.c12ffffff : "transparent"
                 Accessible.role: Accessible.Button
                 Accessible.name: item.title
                 Accessible.onPressAction: if (item.kind !== "listFolder" && item.kind !== "playlistSection")
@@ -71,7 +72,7 @@ Rectangle {
                         text: item.title
                         font.pixelSize: item.kind === "playlistSection" ? 11 : 13
                         font.weight: navRow.selected ? Font.DemiBold : Font.Normal
-                        color: item.kind === "playlistSection" ? "#847e90" : navRow.selected ? "#eee3ff" : "#bbb4c8"
+                        color: item.kind === "playlistSection" ? Theme.c847e90 : navRow.selected ? Theme.ceee3ff : Theme.cbbb4c8
                         elide: Text.ElideRight
                     }
                 }
@@ -106,7 +107,7 @@ Rectangle {
             text: sidebar.controller.status
             visible: text.length > 0
             wrapMode: Text.Wrap
-            color: "#a49bad"
+            color: Theme.ca49bad
             font.pixelSize: 11
             maximumLineCount: 3
             elide: Text.ElideRight
@@ -114,7 +115,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             height: 1
-            color: "#12ffffff"
+            color: Theme.c12ffffff
             Layout.topMargin: 8
             Layout.bottomMargin: 6
         }
@@ -123,7 +124,7 @@ Rectangle {
             Layout.fillWidth: true
             implicitHeight: 38
             radius: 9
-            color: settingsHover.hovered ? "#12ffffff" : "transparent"
+            color: settingsHover.hovered ? Theme.c12ffffff : "transparent"
             Accessible.role: Accessible.Button
             Accessible.name: "设置"
             Accessible.onPressAction: sidebar.controller.showSettings()
@@ -141,7 +142,7 @@ Rectangle {
                 Text {
                     Layout.fillWidth: true
                     text: "设置"
-                    color: "#bbb4c8"
+                    color: Theme.cbbb4c8
                     font.pixelSize: 13
                 }
             }

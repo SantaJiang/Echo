@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 Window {
     id: mini
     required property var controller
@@ -18,7 +19,9 @@ Window {
     onVisibleChanged: playback.setPresentationActive(visible || mini.mainWindow.visible)
     onClosing: event => { event.accepted = false; mini.hide(); }
     Rectangle {
-        anchors.fill: parent; radius: 16; antialiasing: true; color: "#24202d"; border.color: "#51465f"
+        anchors.fill: parent; radius: 16; antialiasing: true; color: Theme.c24202d; border.color: Theme.c51465f
+        Accessible.role: Accessible.Pane
+        Accessible.name: mini.title
         MouseArea { anchors.fill: parent; onPressed: mini.startSystemMove(); onDoubleClicked: mini.controller.showMainWindow() }
         ColumnLayout {
             anchors.fill: parent
@@ -51,8 +54,8 @@ Window {
                     Layout.preferredWidth: 132
                     Layout.maximumWidth: 132
                     spacing: 7
-                    Text { Layout.fillWidth: true; text: playback.track.title; color: "#f3edf9"; font.pixelSize: 13; elide: Text.ElideRight }
-                    Text { Layout.fillWidth: true; text: playback.track.artist; color: "#aaa1b7"; font.pixelSize: 11; elide: Text.ElideRight }
+                    Text { Layout.fillWidth: true; text: playback.track.title; color: Theme.cf3edf9; font.pixelSize: 13; elide: Text.ElideRight }
+                    Text { Layout.fillWidth: true; text: playback.track.artist; color: Theme.caaa1b7; font.pixelSize: 11; elide: Text.ElideRight }
                 }
                 RowLayout {
                     objectName: "miniTransport"
@@ -64,10 +67,8 @@ Window {
                     Layout.maximumWidth: 182
                     Layout.preferredHeight: 38
                     spacing: 4
-                    ActionButton { objectName: "miniFavorite"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 32; iconSize: 18; symbol: playback.track.favorite ? "heartFilled" : "heart"; active: playback.track.favorite; label: playback.track.favorite ? "取消喜欢" : "喜欢"; enabled: playback.track.id > 0; onClicked: playback.toggleFavorite() }
-                    ActionButton { objectName: "miniPrevious"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 32; iconSize: 18; symbol: "previous"; label: "上一首"; onClicked: playback.previous() }
-                    ActionButton { objectName: "miniToggle"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 38; iconSize: 20; prominent: true; symbol: playback.playing ? "pause" : "play"; label: playback.playing ? "暂停" : "播放"; onClicked: playback.toggle() }
-                    ActionButton { objectName: "miniNext"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 32; iconSize: 18; symbol: "next"; label: "下一首"; onClicked: playback.next() }
+                    FavoriteButton { objectName: "miniFavorite"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 32; iconSize: 18; favorite: playback.track.favorite; trackId: playback.track.id; onClicked: playback.toggleFavorite() }
+                    PlaybackTransport { Layout.alignment: Qt.AlignVCenter; playback: mini.playback; namePrefix: "mini"; spacing: 4; buttonSize: 32; toggleSize: 38; iconSize: 18 }
                     ActionButton { objectName: "miniReturn"; Layout.alignment: Qt.AlignVCenter; implicitWidth: 32; iconSize: 17; symbol: "expand"; label: "返回主窗口"; onClicked: mini.controller.showMainWindow() }
                 }
                 Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
@@ -81,7 +82,8 @@ Window {
                 Layout.maximumHeight: 22
                 from: 0; to: Math.max(1, playback.duration); enabled: playback.track.id > 0 && playback.duration > 0
                 stepSize: 5000
-                Binding { target: miniSeek; property: "value"; value: playback.position; when: !miniSeek.pressed }
+                followEnabled: true
+                followedValue: playback.position
                 onPressedChanged: if (!pressed) playback.seek(Math.round(value))
                 onMoved: if (!pressed) playback.seek(Math.round(value))
                 Accessible.name: "播放进度"

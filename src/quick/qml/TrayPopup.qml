@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 Window {
     id: tray
     required property var controller
@@ -13,7 +14,7 @@ Window {
         show(); requestActivate();
     }
     onActiveChanged: if (!active) hide()
-    Rectangle { anchors.fill: parent; radius: 10; color: "#292330"; border.color: "#51465f" }
+    Rectangle { anchors.fill: parent; radius: 10; color: Theme.c292330; border.color: Theme.c51465f }
     ColumnLayout {
         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
         anchors.margins: 8; spacing: 4

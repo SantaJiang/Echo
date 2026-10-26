@@ -1,31 +1,17 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Item {
     id: cardViewport
     objectName: "cardViewport"
     required property var controller
     required property real fullContentWidth
-    property real queueWidth: 300
     property bool queueOpen: false
-    property bool initialized: false
     property alias view: cardGrid
     signal contextRequested(Item sender, point position, int row)
     signal queueDismissRequested()
-    function updateQueueLayout() {
-        if (!initialized) return;
-        cardGrid.queueAnimationWidth = fullContentWidth;
-        if (!controller.reduceMotion) cardLayoutTimer.restart();
-        cardGrid.queueLayoutOpen = queueOpen;
-    }
-    onQueueOpenChanged: updateQueueLayout()
-    Component.onCompleted: {
-        cardGrid.queueAnimationWidth = fullContentWidth;
-        cardGrid.queueLayoutOpen = queueOpen;
-        initialized = true;
-    }
-    Timer { id: cardLayoutTimer; interval: 280 }
     Layout.fillWidth: true
     Layout.fillHeight: cardViewport.controller.tracks.count === 0
     Layout.preferredHeight: cardViewport.controller.tracks.count > 0 ? Math.min(280, cardGrid.cellHeight + 8) : 0
@@ -34,11 +20,7 @@ Item {
     GridView {
         id: cardGrid
         objectName: "cardGrid"
-        property bool queueLayoutOpen: false
-        property real queueAnimationWidth: -1
-        readonly property bool animateQueueLayout: cardLayoutTimer.running && queueAnimationWidth === cardViewport.fullContentWidth && !cardViewport.controller.reduceMotion
         readonly property real fullWidth: Math.max(1, cardViewport.fullContentWidth)
-        readonly property real queuedWidth: Math.max(1, fullWidth - cardViewport.queueWidth + 30)
         readonly property int minimumColumns: 2
         readonly property real targetCellWidth: 226
         // Keep tiles at a readable, stable size. A wider window adds columns,
@@ -50,9 +32,8 @@ Item {
         readonly property int artworkResolution: Math.min(2048, Math.pow(2, Math.ceil(Math.log2(Math.max(512, largestCover * Screen.devicePixelRatio * 2.04)))))
         readonly property int artworkTextureSide: Math.ceil(largestCover * Screen.devicePixelRatio * 2)
         // Resolve the destination once per toggle. The viewport still follows the panel live.
-        width: queueLayoutOpen ? queuedWidth : fullWidth
+        width: fullWidth
         height: cardViewport.height
-        enabled: !animateQueueLayout
         model: cardViewport.controller.cards
         cellWidth: cellFor(width)
         cellHeight: cellWidth - 18 + 58
@@ -79,8 +60,6 @@ Item {
             required property int index
             width: cardGrid.cellWidth
             height: cardGrid.cellHeight
-            property bool positioned: false
-            Component.onCompleted: Qt.callLater(function() { card.positioned = true; })
             Column {
                 id: cardVisual
                 objectName: "cardVisual" + card.index
@@ -92,18 +71,6 @@ Item {
                 y: visualY - card.y + cardGrid.contentY
                 width: visualWidth - 18
                 spacing: 8
-                Behavior on visualX {
-                    enabled: card.positioned && cardGrid.animateQueueLayout
-                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
-                }
-                Behavior on visualY {
-                    enabled: card.positioned && cardGrid.animateQueueLayout
-                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
-                }
-                Behavior on visualWidth {
-                    enabled: card.positioned && cardGrid.animateQueueLayout
-                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
-                }
                 Item {
                     width: parent.width
                     height: width
@@ -120,7 +87,7 @@ Item {
                         imageScale: cardHover.hovered && !cardViewport.controller.reduceMotion ? 1.02 : 1
                         Behavior on imageScale {
                             NumberAnimation {
-                                duration: 180
+                                duration: Theme.motion(cardViewport.controller.reduceMotion, Theme.motionMedium)
                                 easing.type: Easing.OutCubic
                             }
                         }
@@ -155,7 +122,7 @@ Item {
                 Text {
                     width: parent.width
                     text: card.item.title
-                    color: "#e6dfef"
+                    color: Theme.ce6dfef
                     font.pixelSize: 13
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
@@ -163,7 +130,7 @@ Item {
                 Text {
                     width: parent.width
                     text: card.item.subtitle || ""
-                    color: "#82788f"
+                    color: Theme.c82788f
                     font.pixelSize: 11
                     elide: Text.ElideRight
                 }

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Item {
     id: tableArea
@@ -14,60 +15,17 @@ Item {
     Layout.fillHeight: true
     visible: tableArea.controller.tracks.count > 0
     clip: true
-    Item {
+    TrackTableHeader {
         id: header
-        width: tableArea.trackWidth
-        height: 32
+        controller: tableArea.controller
+        trackWidth: tableArea.trackWidth
         x: -trackList.contentX
-        Row {
-            Repeater {
-                model: ["", "歌曲", "艺术家", "专辑", "时长"]
-                delegate: Item {
-                    id: heading
-                    required property string modelData
-                    required property int index
-                    width: Number(tableArea.controller.columns[index])
-                    height: 32
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 9
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: heading.modelData + (tableArea.controller.page.sort === heading.index ? tableArea.controller.page.descending ? " ↓" : " ↑" : "")
-                        color: "#7f748e"
-                        font.pixelSize: 11
-                    }
-                    TapHandler {
-                        onTapped: tableArea.controller.sortBy(index)
-                    }
-                    MouseArea {
-                        width: 7
-                        height: parent.height
-                        anchors.right: parent.right
-                        cursorShape: Qt.SplitHCursor
-                        property real startX
-                        property real startWidth
-                        onPressed: mouse => {
-                            startX = mapToItem(header, mouse.x, 0).x;
-                            startWidth = heading.width;
-                        }
-                        onPositionChanged: mouse => {
-                            if (pressed)
-                                tableArea.controller.resizeColumn(heading.index, startWidth + mapToItem(header, mouse.x, 0).x - startX);
-                        }
-                    }
-                }
-            }
-        }
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: "#17ffffff"
-        }
     }
     ListView {
         id: trackList
         objectName: "trackList"
+        Accessible.role: Accessible.List
+        Accessible.name: "曲目"
         anchors.fill: parent
         anchors.topMargin: 34
         anchors.bottomMargin: 8
@@ -137,7 +95,7 @@ Item {
             width: tableArea.trackWidth
             height: 48
             radius: 7
-            color: selected ? "#42344e" : rowHover.hovered ? "#16ffffff" : index % 2 ? "#06ffffff" : "transparent"
+            color: selected ? Theme.rowSelected : rowHover.hovered ? Theme.c16ffffff : index % 2 ? Theme.c06ffffff : "transparent"
             opacity: item.missing ? 0.45 : 1
             Accessible.role: Accessible.ListItem
             Accessible.name: item.title + "，" + item.artist
@@ -169,7 +127,7 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         text: trackRow.item.title
-                        color: trackRow.item.playing ? "#cfb3f7" : "#e4ddeb"
+                        color: trackRow.item.playing ? Theme.ccfb3f7 : Theme.ce4ddeb
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -184,7 +142,7 @@ Item {
                     leftPadding: 9
                     rightPadding: 12
                     text: trackRow.item.artist
-                    color: "#9c92aa"
+                    color: Theme.c9c92aa
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -195,7 +153,7 @@ Item {
                     leftPadding: 9
                     rightPadding: 12
                     text: trackRow.item.album
-                    color: "#9c92aa"
+                    color: Theme.c9c92aa
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -205,7 +163,7 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     leftPadding: 9
                     text: trackRow.item.duration
-                    color: "#80758f"
+                    color: Theme.c80758f
                     font.pixelSize: 11
                 }
             }

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 ListView {
     id: artistList
@@ -25,11 +26,12 @@ ListView {
         height: 96
         padding: 0
         hoverEnabled: true
+        Accessible.role: Accessible.ListItem
         Accessible.name: item.title + "，" + item.subtitle
         onClicked: artistList.controller.openCard(index)
         background: Rectangle {
             radius: 8
-            color: artistRow.down ? "#18ffffff" : artistRow.hovered || artistRow.visualFocus ? "#0bffffff" : "transparent"
+            color: artistRow.down ? Theme.c18ffffff : artistRow.hovered || artistRow.visualFocus ? Theme.c0bffffff : "transparent"
         }
         contentItem: Item {
             ArtistAvatar {
@@ -50,7 +52,7 @@ ListView {
                 Text {
                     width: parent.width
                     text: artistRow.item.title
-                    color: "#e6dfef"
+                    color: Theme.ce6dfef
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
@@ -58,7 +60,7 @@ ListView {
                 Text {
                     width: parent.width
                     text: artistRow.item.subtitle
-                    color: "#8d849b"
+                    color: Theme.c8d849b
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -69,7 +71,7 @@ ListView {
                 anchors.rightMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 text: "›"
-                color: "#8d849b"
+                color: Theme.c8d849b
                 font.pixelSize: 28
             }
             Rectangle {
@@ -79,7 +81,7 @@ ListView {
                 anchors.rightMargin: 16
                 anchors.bottom: parent.bottom
                 height: 1
-                color: "#12ffffff"
+                color: Theme.c12ffffff
                 visible: artistRow.index < artistList.count - 1
             }
         }

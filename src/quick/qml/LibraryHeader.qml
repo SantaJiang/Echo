@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 RowLayout {
     id: pageHeader
@@ -33,7 +34,7 @@ RowLayout {
         Text {
             Layout.fillWidth: true
             text: pageHeader.controller.page.title
-            color: "#f4f0f8"
+            color: Theme.cf4f0f8
             font.pixelSize: headerArtwork.visible || headerArtist.visible ? 28 : 30
             font.weight: headerArtwork.visible || headerArtist.visible ? Font.DemiBold : Font.Bold
             elide: Text.ElideRight
@@ -41,7 +42,7 @@ RowLayout {
         Text {
             Layout.fillWidth: true
             text: pageHeader.controller.page.busy ? "正在读取资料库…" : pageHeader.controller.page.subtitle
-            color: "#8d849b"
+            color: Theme.c8d849b
             font.pixelSize: headerArtwork.visible || headerArtist.visible ? 13 : 12
             elide: Text.ElideMiddle
         }

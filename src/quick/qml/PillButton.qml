@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "qrc:/echo/quick/theme"
 
 Button {
     id: control
@@ -14,7 +15,7 @@ Button {
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.primary ? "#22172d" : "#d5c9e2"
+        color: control.primary ? Theme.c22172d : Theme.cd5c9e2
         opacity: control.enabled ? 1 : 0.4
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
@@ -22,8 +23,8 @@ Button {
     background: Rectangle {
         antialiasing: true
         radius: height / 2
-        color: control.primary ? (control.down ? "#ac8bce" : "#d0b1f1") : control.down ? "#44354f" : control.hovered ? "#362b42" : control.flat ? "transparent" : "#292231"
-        border.color: control.visualFocus ? "#d0b1f1" : control.flat || control.primary ? "transparent" : "#20ffffff"
+        color: control.primary ? (control.down ? Theme.cac8bce : Theme.cd0b1f1) : control.down ? Theme.c44354f : control.hovered ? Theme.c362b42 : control.flat ? "transparent" : Theme.c292231
+        border.color: control.visualFocus ? Theme.cd0b1f1 : control.flat || control.primary ? "transparent" : Theme.c20ffffff
         opacity: control.enabled ? 1 : 0.4
         Behavior on color {
             ColorAnimation {

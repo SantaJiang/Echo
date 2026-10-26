@@ -1,11 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Item {
     id: page
     required property var playback
-    property bool expanded: true
     signal collapse
     property bool reduceMotion: false
     property real controlsReveal: 1
@@ -14,7 +14,6 @@ Item {
     property real bottomInset: 104
     property real topInset: 0
     readonly property real contentHeight: height - topInset - bottomInset
-    property alias coverItem: largeCover
     // Follow the native window geometry directly. A second layout animation
     // would run after Cocoa's zoom animation and leave the content behind.
     readonly property real typographyProgress: Math.max(0, Math.min(1, (width - 1180) / 220))
@@ -98,7 +97,7 @@ Item {
                             scale: (22 + 3 * page.typographyProgress) / 25
                             transformOrigin: Item.TopLeft
                             text: page.playback.track.title
-                            color: "#faf8ff"
+                            color: Theme.cfaf8ff
                             font.pixelSize: 25
                             renderType: Text.QtRendering
                             font.weight: Font.Medium
@@ -109,7 +108,7 @@ Item {
                         objectName: "detailMetadata"
                         Layout.fillWidth: true
                         text: page.playback.track.artist + "  ·  " + page.playback.track.album
-                        color: "#a9a2b6"
+                        color: Theme.ca9a2b6
                         font.pixelSize: 13
                         elide: Text.ElideRight
                     }

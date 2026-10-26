@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Effects
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Rectangle {
     id: panel
@@ -18,9 +19,9 @@ Rectangle {
     Rectangle {
         id: surface
         anchors.fill: parent
-        color: "#211c2a"
+        color: Theme.c211c2a
         radius: panel.radius
-        border.color: "#25ffffff"
+        border.color: Theme.c25ffffff
         layer.enabled: true
         visible: false
     }
@@ -40,7 +41,7 @@ Rectangle {
     enabled: opened
     Behavior on openness {
         NumberAnimation {
-            duration: panel.reduceMotion ? 0 : 240
+            duration: Theme.motion(panel.reduceMotion, 240)
             easing.type: Easing.OutCubic
         }
     }
@@ -59,7 +60,7 @@ Rectangle {
             Layout.fillWidth: true
             Text {
                 text: "播放队列"
-                color: "#eee6f7"
+                color: Theme.ceee6f7
                 font.pixelSize: 18
                 font.weight: Font.DemiBold
             }
@@ -99,7 +100,7 @@ Rectangle {
                 visible: queueList.count === 0
                 text: "播放队列为空"
                 horizontalAlignment: Text.AlignHCenter
-                color: "#91869f"
+                color: Theme.c91869f
                 font.pixelSize: 13
             }
             delegate: Rectangle {
@@ -109,7 +110,7 @@ Rectangle {
                 width: queueList.width
                 height: 58
                 radius: 8
-                color: item.current ? "#44344f" : qHover.hovered ? "#15ffffff" : "transparent"
+                color: item.current ? Theme.rowSelected : qHover.hovered ? Theme.c15ffffff : "transparent"
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: 7
@@ -126,14 +127,14 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: queueRow.item.title
-                            color: "#e8dfef"
+                            color: Theme.ce8dfef
                             font.pixelSize: 12
                             elide: Text.ElideRight
                         }
                         Text {
                             Layout.fillWidth: true
                             text: queueRow.item.artist
-                            color: "#8e819d"
+                            color: Theme.c8e819d
                             font.pixelSize: 11
                             elide: Text.ElideRight
                         }

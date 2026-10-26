@@ -1,18 +1,34 @@
 import QtQuick
 import QtQuick.Controls
+import "qrc:/echo/quick/theme"
 
 Slider {
     id: control
     implicitHeight: 24
     padding: 4
-    property color accent: "#eee9f5"
+    property color accent: Theme.ceee9f5
+    property bool followEnabled: false
+    property real followedValue: 0
+    property bool smoothFollow: false
+    property bool reduceMotion: false
+    property real shownValue: followedValue
+    Behavior on shownValue {
+        enabled: smoothFollow
+        NumberAnimation { duration: Theme.motion(control.reduceMotion, Theme.motionShort) }
+    }
+    Binding {
+        target: control
+        property: "value"
+        value: control.smoothFollow ? control.shownValue : control.followedValue
+        when: control.followEnabled && !control.pressed
+    }
     background: Rectangle {
         x: control.leftPadding
         y: control.topPadding + control.availableHeight / 2 - height / 2
         width: control.availableWidth
         height: control.hovered || control.pressed ? 5 : 3
         radius: 3
-        color: "#30ffffff"
+        color: Theme.c30ffffff
         Rectangle {
             width: control.visualPosition * parent.width
             height: parent.height

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 ColumnLayout {
     id: browser
@@ -8,7 +9,6 @@ ColumnLayout {
     required property real windowWidth
     required property real fullContentWidth
     property real horizontalMargin: 30
-    property real queueWidth: 300
     property bool queueOpen: false
     readonly property bool searchActive: searchBox.activeFocus
     signal cardContextRequested(Item sender, point position, int row)
@@ -65,15 +65,15 @@ ColumnLayout {
             Layout.preferredHeight: 32
             Layout.alignment: Qt.AlignVCenter
             placeholderText: "搜索歌曲、专辑、艺术家"
-            color: "#f3edf9"
-            placeholderTextColor: "#81798e"
+            color: Theme.cf3edf9
+            placeholderTextColor: Theme.c81798e
             font.pixelSize: 12
             leftPadding: 14
             rightPadding: 32
             background: Rectangle {
-                color: "#26222f"
+                color: Theme.c26222f
                 radius: 9
-                border.color: searchBox.activeFocus ? "#826499" : "#10ffffff"
+                border.color: searchBox.activeFocus ? Theme.c826499 : Theme.c10ffffff
             }
             onTextEdited: browser.controller.search(text)
             Keys.onEscapePressed: {
@@ -111,7 +111,7 @@ ColumnLayout {
         opacity: 1
         Behavior on opacity {
             NumberAnimation {
-                duration: browser.controller.reduceMotion ? 0 : (pageContent.switching ? 100 : 170)
+                duration: Theme.motion(browser.controller.reduceMotion, pageContent.switching ? Theme.motionShort : 170)
                 easing.type: Easing.OutCubic
             }
         }
@@ -125,7 +125,6 @@ ColumnLayout {
             id: cardViewport
             controller: browser.controller
             fullContentWidth: browser.fullContentWidth
-            queueWidth: browser.queueWidth
             queueOpen: browser.queueOpen
             onContextRequested: (sender, position, row) => browser.cardContextRequested(sender, position, row)
             onQueueDismissRequested: browser.queueDismissRequested()

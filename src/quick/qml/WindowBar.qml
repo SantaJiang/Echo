@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "qrc:/echo/quick/theme"
 
 Item {
     id: bar
@@ -22,7 +23,7 @@ Item {
         height: 24
     }
     DragSurface {
-        x: 650
+        x: bar.sidebarWidth + 432
         y: 24
         width: Math.max(0, bar.width - x - (bar.mac ? 6 : controls.width + 8))
         height: 24
@@ -88,13 +89,13 @@ Item {
                 height: bar.windows ? parent.height : 30
                 radius: bar.windows ? 4 : 15
                 antialiasing: true
-                color: control.windowAction === "close" && control.hovered ? "#c83b4b" : control.down ? "#36ffffff" : control.hovered || (control.windowAction === "maximize" && chrome.maximizeHovered) ? "#20ffffff" : "transparent"
+                color: control.windowAction === "close" && control.hovered ? Theme.cc83b4b : control.down ? Theme.c36ffffff : control.hovered || (control.windowAction === "maximize" && chrome.maximizeHovered) ? Theme.c20ffffff : "transparent"
                 border.width: control.visualFocus ? 1 : 0
-                border.color: "#c9aaff"
+                border.color: Theme.cc9aaff
             }
         }
         contentItem: Item {
-            readonly property color ink: chrome.active || control.hovered ? "#e7e2ed" : "#88818e"
+            readonly property color ink: chrome.active || control.hovered ? Theme.ce7e2ed : Theme.c88818e
             Rectangle {
                 anchors.centerIn: parent
                 width: 11
@@ -143,7 +144,7 @@ Item {
                     y: chrome.maximized ? 3 : 1
                     width: chrome.maximized ? 9 : 10
                     height: width
-                    color: chrome.maximized ? "#211c28" : "transparent"
+                    color: chrome.maximized ? Theme.c211c28 : "transparent"
                     border.color: control.contentItem.ink
                 }
             }

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Rectangle {
     id: bar
@@ -10,7 +11,7 @@ Rectangle {
     // A parked pointer or retained keyboard focus is not ongoing activity.
     // Hold the controls only while a gesture or popup is actually in use.
     readonly property bool interacting: barSeek.pressed || volumePopup.opened || volumeSlider.pressed
-        || barToggle.down || barShuffle.down || barPrevious.down || barNext.down || barRepeat.down
+        || barTransportButtons.busy || barShuffle.down || barRepeat.down
         || barVolume.down || queueToggle.down || barFavorite.down
     signal expansionRequested()
     signal queueRequested()
@@ -20,11 +21,11 @@ Rectangle {
     }
     objectName: "playerBar"
     height: 104
-    color: "#24202d"
+    color: Theme.c24202d
     Rectangle {
         width: parent.width
         height: 1
-        color: "#12ffffff"
+        color: Theme.c12ffffff
     }
     SeekSlider {
         id: barSeek
@@ -37,18 +38,10 @@ Rectangle {
         from: 0
         to: Math.max(1, playback.duration)
         enabled: playback.track.id > 0
-        property real interpolatedPosition: playback.position
-        Behavior on interpolatedPosition {
-            NumberAnimation {
-                duration: playback.playing && !bar.reduceMotion ? 100 : 0
-            }
-        }
-        Binding {
-            target: barSeek
-            property: "value"
-            value: barSeek.interpolatedPosition
-            when: !barSeek.pressed
-        }
+        followEnabled: true
+        followedValue: playback.position
+        smoothFollow: playback.playing
+        reduceMotion: bar.reduceMotion
         onPressedChanged: if (!pressed)
             playback.seek(Math.round(value))
         Accessible.name: "播放进度"
@@ -97,21 +90,20 @@ Rectangle {
                             Layout.maximumWidth: Math.max(0, smallCover.parent.width - 114)
                             Layout.preferredWidth: Math.min(implicitWidth, Math.max(0, smallCover.parent.width - 114))
                             text: playback.track.title
-                            color: "#f3eef9"
+                            color: Theme.cf3eef9
                             font.pixelSize: 14
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
                         }
-                        ActionButton {
+                        FavoriteButton {
                             id: barFavorite
                             objectName: "barFavorite"
                             implicitWidth: 30
                             implicitHeight: 30
                             iconSize: 18
-                            symbol: playback.track.favorite ? "heartFilled" : "heart"
-                            active: playback.track.favorite
-                            label: playback.track.favorite ? "取消喜欢" : "喜欢"
-                            enabled: playback.track.id > 0
+                            reduceMotion: bar.reduceMotion
+                            favorite: playback.track.favorite
+                            trackId: playback.track.id
                             onClicked: playback.toggleFavorite()
                         }
                         Item {
@@ -121,7 +113,7 @@ Rectangle {
                     Text {
                         Layout.fillWidth: true
                         text: playback.track.artist
-                        color: "#aaa1b7"
+                        color: Theme.caaa1b7
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -143,27 +135,11 @@ Rectangle {
                 label: "随机播放"
                 onClicked: playback.toggleShuffle()
             }
-            ActionButton {
-                id: barPrevious
-                objectName: "barPrevious"
-                symbol: "previous"
-                label: "上一首"
-                onClicked: playback.previous()
-            }
-            ActionButton {
-                id: barToggle
-                objectName: "barToggle"
-                symbol: playback.playing ? "pause" : "play"
-                prominent: true
-                label: playback.playing ? "暂停" : "播放"
-                onClicked: playback.toggle()
-            }
-            ActionButton {
-                id: barNext
-                objectName: "barNext"
-                symbol: "next"
-                label: "下一首"
-                onClicked: playback.next()
+            PlaybackTransport {
+                id: barTransportButtons
+                playback: bar.playback
+                namePrefix: "bar"
+                reduceMotion: bar.reduceMotion
             }
             ActionButton {
                 id: barRepeat
@@ -177,7 +153,7 @@ Rectangle {
                     anchors.top: parent.top
                     text: "1"
                     visible: playback.repeat === 2
-                    color: "#cbb5ff"
+                    color: Theme.ccbb5ff
                     font.pixelSize: 10
                 }
             }
@@ -194,7 +170,7 @@ Rectangle {
                 spacing: 8
                 Text {
                     text: bar.timeText(playback.position) + " / " + bar.timeText(playback.duration)
-                    color: "#aaa1b7"
+                    color: Theme.caaa1b7
                     font.pixelSize: 12
                     font.family: "Menlo"
                     Layout.rightMargin: 12
@@ -228,9 +204,9 @@ Rectangle {
         height: 54
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
-            color: "#332b40"
+            color: Theme.c332b40
             radius: 12
-            border.color: "#20ffffff"
+            border.color: Theme.c20ffffff
         }
         SeekSlider {
             id: volumeSlider

@@ -1,5 +1,4 @@
 <RCC><qresource prefix="/echo/quick">
-<file alias="Prototype.qml">qml/Prototype.qml</file>
 <file alias="QueuePanel.qml">qml/QueuePanel.qml</file>
 <file alias="PlayerBar.qml">qml/PlayerBar.qml</file>
 <file alias="NowPlaying.qml">qml/NowPlaying.qml</file>
@@ -11,6 +10,12 @@
 <file alias="Cover.qml">qml/Cover.qml</file>
 <file alias="SeekSlider.qml">qml/SeekSlider.qml</file>
 <file alias="Shell.qml">qml/Shell.qml</file>
+<file alias="FavoriteButton.qml">qml/FavoriteButton.qml</file>
+<file alias="PlaybackTransport.qml">qml/PlaybackTransport.qml</file>
+<file alias="TrackTableHeader.qml">qml/TrackTableHeader.qml</file>
+<file alias="ControlsIdle.qml">qml/ControlsIdle.qml</file>
+<file alias="theme/Theme.qml">qml/theme/Theme.qml</file>
+<file alias="theme/qmldir">qml/theme/qmldir</file>
 <file alias="NavigationSidebar.qml">qml/NavigationSidebar.qml</file>
 <file alias="LibraryHeader.qml">qml/LibraryHeader.qml</file>
 <file alias="ArtistListView.qml">qml/ArtistListView.qml</file>

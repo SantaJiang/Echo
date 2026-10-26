@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Effects
+import "qrc:/echo/quick/theme"
 
 Flickable {
     id: lyrics
@@ -139,7 +140,7 @@ Flickable {
                 width: lineColumn.width
                 height: line.height * lyrics.textScale
                 opacity: index === lyrics.emphasisIndex ? 1 : Math.max(0.025, 0.52 * Math.pow(0.7, Math.abs(index - lyrics.emphasisIndex) - 1))
-                Behavior on opacity { NumberAnimation { duration: lyrics.reduceMotion ? 0 : 260 } }
+                Behavior on opacity { NumberAnimation { duration: Theme.motion(lyrics.reduceMotion, Theme.motionReveal) } }
                 Text {
                     id: line
                     width: row.width / lyrics.textScale
@@ -157,7 +158,7 @@ Flickable {
                     font.weight: row.index === lyrics.emphasisIndex ? Font.Medium : Font.Normal
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 32
-                    color: row.index === lyrics.emphasisIndex ? "#faf8ff" : "#ddd6e8"
+                    color: row.index === lyrics.emphasisIndex ? Theme.cfaf8ff : Theme.cddd6e8
                 }
                 TapHandler {
                     enabled: modelData.time >= 0
@@ -171,7 +172,7 @@ Flickable {
         anchors.centerIn: parent
         visible: lyrics.count === 0
         text: "让音乐自己诉说"
-        color: "#777081"
+        color: Theme.c777081
         font.pixelSize: 23
     }
     layer.enabled: true

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "qrc:/echo/quick/theme"
 
 Item {
     id: emptyState
@@ -22,14 +23,14 @@ Item {
         Text {
             width: parent.width
             text: emptyState.controller.page.kind === "search" ? "没有找到匹配的音乐" : "把喜欢的音乐，留在这里"
-            color: "#e8e0f1"
+            color: Theme.ce8e0f1
             font.pixelSize: 22
             horizontalAlignment: Text.AlignHCenter
         }
         Text {
             width: parent.width
             text: emptyState.controller.page.kind === "search" ? "试试其他歌名、专辑或艺术家" : "添加音乐文件夹，或把音乐文件拖到窗口。"
-            color: "#8e829e"
+            color: Theme.c8e829e
             font.pixelSize: 12
             horizontalAlignment: Text.AlignHCenter
         }
