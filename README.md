@@ -2,6 +2,12 @@
 
 纯本地、跨平台的高品质音乐播放器。界面按 Apple Music 的资料库布局，只包含歌曲、专辑、艺术家、文件夹和歌单。
 
+## 结构
+
+依赖方向是 `echo_core`（音频、资料库、播放）← `echo_ui_support` ← `echo_quick` ← `echo`。音频代码不包含资料库、播放或界面头文件。主题和图标在 `src/presentation`，QML 展示在 `src/quick`。
+
+每个音乐来源只扫描该目录的当前一层，使用 `directory_iterator`，不进入子目录。子目录需要单独添加。
+
 ## 构建
 
 依赖：Qt 6.5+（Quick、QuickControls2、QuickDialogs2、ShaderTools、Sql、Concurrent、Network、Test）、FFmpeg、TagLib、libebur128、CMake 3.24+、C++20。ShaderTools 的 `qsb` 在构建时编译跨平台背景着色器，需与 Qt 版本匹配。macOS 打包需要 Python 3.9+；Linux 额外需要 PipeWire 或 ALSA，以及 Qt DBus。

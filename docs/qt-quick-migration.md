@@ -2,6 +2,8 @@
 
 应用使用 QGuiApplication，全部应用界面由 QML 渲染，不链接 Qt Widgets。已删除旧 QWidget 页面、弹窗、迷你播放器与 `--widgets` 回退入口。C++ 保留资料库、音频、展示模型与系统集成，没有数据库迁移。
 
+分层是 `echo_core`（音频、资料库、播放）← `echo_ui_support`（`src/presentation` 里的主题与图标）← `echo_quick` ← 可执行文件。每个音乐来源只扫描当前这一层目录，不递归进入子目录；子目录要作为单独来源添加。
+
 主界面、设置、命名/确认弹窗、歌曲信息、右键菜单、文件/文件夹选择和独立迷你播放器都使用 Qt Quick。文件选择强制使用 Qt Quick Dialogs 实现，避免落回 Widgets。macOS 应用菜单、托盘与红绿灯保留 AppKit 系统集成；Windows 托盘使用 Shell_NotifyIcon，Linux 使用 DBus StatusNotifierItem。
 
 弹窗通过带 token 的异步请求与 C++ 交互，连续请求排队，过期回复不会影响后续弹窗。路径选择后的操作捕获原始歌曲/歌单身份，避免在对话框期间改变页面后操作错误对象。
