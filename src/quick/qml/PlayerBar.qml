@@ -63,138 +63,160 @@ Rectangle {
         Accessible.name: "展开或收起播放详情"
     }
     RowLayout {
-        anchors.left: parent.left
-        anchors.verticalCenter: parent.verticalCenter
+        objectName: "playerBarZones"
+        anchors.fill: parent
         anchors.leftMargin: 24
-        width: Math.min(340, parent.width * 0.31)
-        spacing: 14
-        Cover {
-            id: smallCover
-            objectName: "playerCover"
-            Layout.preferredWidth: 60
-            Layout.preferredHeight: 60
-            artwork: playback.track.artwork
-            radius: 10
-        }
-        ColumnLayout {
+        anchors.rightMargin: 24
+        spacing: 0
+        Item {
             Layout.fillWidth: true
-            spacing: 6
+            Layout.fillHeight: true
+            Layout.preferredWidth: 1
+            Layout.minimumWidth: 0
             RowLayout {
-                Layout.fillWidth: true
-                spacing: 5
+                objectName: "barTrackInfo"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(340, bar.width * 0.31, parent.width)
+                spacing: 14
+                Cover {
+                    id: smallCover
+                    objectName: "playerCover"
+                    Layout.preferredWidth: 60
+                    Layout.preferredHeight: 60
+                    artwork: playback.track.artwork
+                    radius: 10
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text {
+                            Layout.maximumWidth: Math.max(0, smallCover.parent.width - 114)
+                            Layout.preferredWidth: Math.min(implicitWidth, Math.max(0, smallCover.parent.width - 114))
+                            text: playback.track.title
+                            color: "#f3eef9"
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+                        ActionButton {
+                            id: barFavorite
+                            objectName: "barFavorite"
+                            implicitWidth: 30
+                            implicitHeight: 30
+                            iconSize: 18
+                            symbol: playback.track.favorite ? "heartFilled" : "heart"
+                            active: playback.track.favorite
+                            label: playback.track.favorite ? "取消喜欢" : "喜欢"
+                            enabled: playback.track.id > 0
+                            onClicked: playback.toggleFavorite()
+                        }
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: playback.track.artist
+                        color: "#aaa1b7"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+        }
+        RowLayout {
+            objectName: "barTransport"
+            Layout.alignment: Qt.AlignVCenter
+            Layout.preferredWidth: implicitWidth
+            Layout.minimumWidth: implicitWidth
+            Layout.maximumWidth: implicitWidth
+            spacing: 10
+            ActionButton {
+                id: barShuffle
+                objectName: "barShuffle"
+                symbol: "shuffle"
+                active: playback.shuffle
+                label: "随机播放"
+                onClicked: playback.toggleShuffle()
+            }
+            ActionButton {
+                id: barPrevious
+                objectName: "barPrevious"
+                symbol: "previous"
+                label: "上一首"
+                onClicked: playback.previous()
+            }
+            ActionButton {
+                id: barToggle
+                objectName: "barToggle"
+                symbol: playback.playing ? "pause" : "play"
+                prominent: true
+                label: playback.playing ? "暂停" : "播放"
+                onClicked: playback.toggle()
+            }
+            ActionButton {
+                id: barNext
+                objectName: "barNext"
+                symbol: "next"
+                label: "下一首"
+                onClicked: playback.next()
+            }
+            ActionButton {
+                id: barRepeat
+                objectName: "barRepeat"
+                symbol: "repeat"
+                active: playback.repeat > 0
+                label: playback.repeat === 2 ? "单曲循环" : playback.repeat === 1 ? "列表循环" : "循环播放"
+                onClicked: playback.cycleRepeat()
                 Text {
-                    Layout.maximumWidth: Math.max(0, smallCover.parent.width - 114)
-                    Layout.preferredWidth: Math.min(implicitWidth, Math.max(0, smallCover.parent.width - 114))
-                    text: playback.track.title
-                    color: "#f3eef9"
-                    font.pixelSize: 14
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    text: "1"
+                    visible: playback.repeat === 2
+                    color: "#cbb5ff"
+                    font.pixelSize: 10
+                }
+            }
+        }
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.preferredWidth: 1
+            Layout.minimumWidth: 0
+            RowLayout {
+                objectName: "barActions"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                Text {
+                    text: bar.timeText(playback.position) + " / " + bar.timeText(playback.duration)
+                    color: "#aaa1b7"
+                    font.pixelSize: 12
+                    font.family: "Menlo"
+                    Layout.rightMargin: 12
                 }
                 ActionButton {
-                    id: barFavorite
-                    objectName: "barFavorite"
-                    implicitWidth: 30
-                    implicitHeight: 30
-                    iconSize: 18
-                    symbol: playback.track.favorite ? "heartFilled" : "heart"
-                    active: playback.track.favorite
-                    label: playback.track.favorite ? "取消喜欢" : "喜欢"
-                    enabled: playback.track.id > 0
-                    onClicked: playback.toggleFavorite()
+                    id: queueToggle
+                    objectName: "queueToggle"
+                    symbol: "queue"
+                    active: bar.queueOpen
+                    label: "播放队列"
+                    onClicked: {
+                        bar.queueRequested();
+                    }
                 }
-                Item {
-                    Layout.fillWidth: true
+                ActionButton {
+                    id: barVolume
+                    objectName: "barVolume"
+                    symbol: "volume"
+                    label: "音量"
+                    onClicked: volumePopup.open()
                 }
             }
-            Text {
-                Layout.fillWidth: true
-                text: playback.track.artist
-                color: "#aaa1b7"
-                font.pixelSize: 12
-                elide: Text.ElideRight
-            }
-        }
-    }
-    RowLayout {
-        objectName: "barTransport"
-        anchors.centerIn: parent
-        spacing: 10
-        ActionButton {
-            id: barShuffle
-            objectName: "barShuffle"
-            symbol: "shuffle"
-            active: playback.shuffle
-            label: "随机播放"
-            onClicked: playback.toggleShuffle()
-        }
-        ActionButton {
-            id: barPrevious
-            objectName: "barPrevious"
-            symbol: "previous"
-            label: "上一首"
-            onClicked: playback.previous()
-        }
-        ActionButton {
-            id: barToggle
-            objectName: "barToggle"
-            symbol: playback.playing ? "pause" : "play"
-            prominent: true
-            label: playback.playing ? "暂停" : "播放"
-            onClicked: playback.toggle()
-        }
-        ActionButton {
-            id: barNext
-            objectName: "barNext"
-            symbol: "next"
-            label: "下一首"
-            onClicked: playback.next()
-        }
-        ActionButton {
-            id: barRepeat
-            objectName: "barRepeat"
-            symbol: "repeat"
-            active: playback.repeat > 0
-            label: playback.repeat === 2 ? "单曲循环" : playback.repeat === 1 ? "列表循环" : "循环播放"
-            onClicked: playback.cycleRepeat()
-            Text {
-                anchors.right: parent.right
-                anchors.top: parent.top
-                text: "1"
-                visible: playback.repeat === 2
-                color: "#cbb5ff"
-                font.pixelSize: 10
-            }
-        }
-    }
-    RowLayout {
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin: 24
-        spacing: 8
-        Text {
-            text: bar.timeText(playback.position) + " / " + bar.timeText(playback.duration)
-            color: "#aaa1b7"
-            font.pixelSize: 12
-            font.family: "Menlo"
-            Layout.rightMargin: 12
-        }
-        ActionButton {
-            id: queueToggle
-            objectName: "queueToggle"
-            symbol: "queue"
-            active: bar.queueOpen
-            label: "播放队列"
-            onClicked: {
-                bar.queueRequested();
-            }
-        }
-        ActionButton {
-            id: barVolume
-            objectName: "barVolume"
-            symbol: "volume"
-            label: "音量"
-            onClicked: volumePopup.open()
         }
     }
     Popup {

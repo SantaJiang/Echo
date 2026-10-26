@@ -1,8 +1,10 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
+import QtQuick.Layouts
 Window {
     id: tray
+    required property var controller
     width: 190; height: 180; color: "transparent"
     flags: Qt.Popup | Qt.FramelessWindowHint
     function present(point) {
@@ -12,14 +14,15 @@ Window {
     }
     onActiveChanged: if (!active) hide()
     Rectangle { anchors.fill: parent; radius: 10; color: "#292330"; border.color: "#51465f" }
-    Column {
-        anchors.fill: parent; anchors.margins: 8; spacing: 4
+    ColumnLayout {
+        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+        anchors.margins: 8; spacing: 4
         Repeater {
             model: [{text:"打开 Echo", action:"open"}, {text:"迷你播放器", action:"mini"}, {text:"设置", action:"settings"}, {text:"退出 Echo", action:"quit"}]
             PillButton {
                 required property var modelData
-                width: 174; text: modelData.text; flat: true
-                onClicked: { tray.hide(); if (modelData.action === "open") client.showMainWindow(); else client.action(modelData.action); }
+                Layout.fillWidth: true; text: modelData.text; flat: true
+                onClicked: { tray.hide(); if (modelData.action === "open") tray.controller.showMainWindow(); else tray.controller.action(modelData.action); }
             }
         }
     }

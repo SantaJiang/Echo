@@ -5,6 +5,8 @@ import QtQuick.Dialogs as Files
 
 Item {
     id: dialogs
+    objectName: "appDialogs"
+    required property var controller
     property var request: ({})
     property int token: 0
     property bool syncing: false
@@ -13,14 +15,14 @@ Item {
         if (!syncing && token > 0) {
             const current = token;
             token = 0;
-            client.answerDialog(current, values);
+            dialogs.controller.answerDialog(current, values);
         }
     }
     function sync() {
         syncing = true;
         nameDialog.close(); messageDialog.close(); trackDialog.close();
         filePicker.close(); folderPicker.close(); artPicker.close();
-        request = client.dialog;
+        request = dialogs.controller.dialog;
         token = Number(request.token || 0);
         if (token > 0) {
             settings.close();
@@ -45,7 +47,7 @@ Item {
         syncing = false;
     }
     Connections {
-        target: client
+        target: dialogs.controller
         function onDialogChanged() { dialogs.sync(); }
         function onSettingsRequested() { if (!dialogs.token) settings.open(); }
     }
@@ -54,7 +56,8 @@ Item {
         objectName: "nameDialog"
         title: dialogs.request.title || ""
         onRejected: dialogs.answer({accepted:false})
-        contentItem: ColumnLayout {
+        ColumnLayout {
+            Layout.fillWidth: true
             spacing: 20
             FormField {
                 id: nameField
@@ -64,12 +67,11 @@ Item {
                 maximumLength: 200
                 onAccepted: if (text.trim().length) dialogs.answer({accepted:true, name:text})
             }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
-                spacing: 10
-                PillButton { text: "取消"; onClicked: dialogs.answer({accepted:false}) }
-                PillButton { text: dialogs.request.accept || "完成"; primary: true; enabled: nameField.text.trim().length > 0; onClicked: dialogs.answer({accepted:true, name:nameField.text}) }
-            }
+        }
+        footer: DialogActions {
+            spacing: 10
+            PillButton { text: "取消"; onClicked: dialogs.answer({accepted:false}) }
+            PillButton { text: dialogs.request.accept || "完成"; primary: true; enabled: nameField.text.trim().length > 0; onClicked: dialogs.answer({accepted:true, name:nameField.text}) }
         }
     }
     AppDialog {
@@ -77,7 +79,8 @@ Item {
         objectName: "messageDialog"
         title: dialogs.request.title || ""
         onRejected: dialogs.answer({accepted:false})
-        contentItem: ColumnLayout {
+        ColumnLayout {
+            Layout.fillWidth: true
             spacing: 18
             Label {
                 Layout.fillWidth: true
@@ -103,24 +106,23 @@ Item {
                     background: Rectangle { color: "#17151d"; radius: 8 }
                 }
             }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
-                spacing: 10
-                PillButton {
-                    text: "取消"
-                    visible: dialogs.request.kind !== "message"
-                    onClicked: dialogs.answer({accepted:false})
-                }
-                PillButton {
-                    visible: dialogs.request.kind === "unavailable"
-                    text: "重新检查"
-                    onClicked: dialogs.answer({choice:"check"})
-                }
-                PillButton {
-                    primary: true
-                    text: dialogs.request.kind === "unavailable" ? "重新定位…" : (dialogs.request.accept || "完成")
-                    onClicked: dialogs.answer(dialogs.request.kind === "unavailable" ? {choice:"locate"} : {accepted:true})
-                }
+        }
+        footer: DialogActions {
+            spacing: 10
+            PillButton {
+                text: "取消"
+                visible: dialogs.request.kind !== "message"
+                onClicked: dialogs.answer({accepted:false})
+            }
+            PillButton {
+                visible: dialogs.request.kind === "unavailable"
+                text: "重新检查"
+                onClicked: dialogs.answer({choice:"check"})
+            }
+            PillButton {
+                primary: true
+                text: dialogs.request.kind === "unavailable" ? "重新定位…" : (dialogs.request.accept || "完成")
+                onClicked: dialogs.answer(dialogs.request.kind === "unavailable" ? {choice:"locate"} : {accepted:true})
             }
         }
     }
@@ -152,7 +154,8 @@ Item {
         property string artFile: ""
         title: "歌曲信息"
         onRejected: dialogs.answer({accepted:false})
-        contentItem: ColumnLayout {
+        ColumnLayout {
+            Layout.fillWidth: true
             spacing: 12
             RowLayout {
                 spacing: 16
@@ -180,15 +183,15 @@ Item {
                 FormField { id: year; Layout.fillWidth: true; validator: IntValidator { bottom: 0; top: 9999 } Accessible.name: "年份" }
             }
             Label { Layout.fillWidth: true; text: dialogs.request.path || ""; textFormat: Text.PlainText; color: "#847e90"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight; spacing: 10
-                PillButton { text: "取消"; onClicked: dialogs.answer({accepted:false}) }
-                PillButton {
-                    text: "保存"; primary: true
-                    enabled: trackNumber.acceptableInput && year.acceptableInput
-                    onClicked: dialogs.answer({accepted:true, title:trackTitle.text, artist:artist.text, album:album.text,
-                        albumArtist:albumArtist.text, trackNumber:Number(trackNumber.text), year:Number(year.text), artFile:trackDialog.artFile})
-                }
+        }
+        footer: DialogActions {
+            spacing: 10
+            PillButton { text: "取消"; onClicked: dialogs.answer({accepted:false}) }
+            PillButton {
+                text: "保存"; primary: true
+                enabled: trackNumber.acceptableInput && year.acceptableInput
+                onClicked: dialogs.answer({accepted:true, title:trackTitle.text, artist:artist.text, album:album.text,
+                    albumArtist:albumArtist.text, trackNumber:Number(trackNumber.text), year:Number(year.text), artFile:trackDialog.artFile})
             }
         }
     }
@@ -196,26 +199,27 @@ Item {
         id: settings
         objectName: "settingsDialog"
         title: "设置"
-        contentItem: ColumnLayout {
+        ColumnLayout {
+            Layout.fillWidth: true
             spacing: 12
-            AppCheck { Layout.fillWidth: true; text: "从页面播放时替换当前队列"; preference: "replaceQueue" }
-            AppCheck { objectName: "fadingSetting"; Layout.fillWidth: true; text: "淡入淡出"; preference: "fading" }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "从页面播放时替换当前队列"; preference: "replaceQueue" }
+            AppCheck { controller: dialogs.controller; objectName: "fadingSetting"; Layout.fillWidth: true; text: "淡入淡出"; preference: "fading" }
             Label { Layout.fillWidth: true; text: "柔和地播放、暂停和切歌。"; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
-            AppCheck { Layout.fillWidth: true; text: "响度均衡"; preference: "normalize" }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "响度均衡"; preference: "normalize" }
             Label { Layout.fillWidth: true; text: "让不同歌曲的音量更接近，分析结果会自动缓存。"; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
-            AppCheck { Layout.fillWidth: true; text: "使用 ReplayGain 标签"; preference: "replayGain" }
-            AppCheck { Layout.fillWidth: true; text: "独占音频设备"; preference: "exclusive" }
-            AppCheck { Layout.fillWidth: true; text: "空间音频"; preference: "spatial"; visible: Qt.platform.os === "osx" }
-            Label { Layout.fillWidth: true; text: client.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
-            AppCheck { Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
-            AppCheck { objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "使用 ReplayGain 标签"; preference: "replayGain" }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "独占音频设备"; preference: "exclusive" }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "空间音频"; preference: "spatial"; visible: Qt.platform.os === "osx" }
+            Label { Layout.fillWidth: true; text: dialogs.controller.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: "#aaa1b7"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
+            AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
+            AppCheck { controller: dialogs.controller; objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#20ffffff"; Layout.topMargin: 8; Layout.bottomMargin: 8 }
-            RowLayout {
-                Layout.fillWidth: true
-                PillButton { text: "迷你播放器"; onClicked: { settings.close(); client.showMini(); } }
-                Item { Layout.fillWidth: true }
-                PillButton { text: "完成"; primary: true; onClicked: settings.close() }
-            }
+        }
+        footer: DialogActions {
+            spread: true
+            PillButton { text: "迷你播放器"; onClicked: { settings.close(); dialogs.controller.showMini(); } }
+            Item { Layout.fillWidth: true }
+            PillButton { text: "完成"; primary: true; onClicked: settings.close() }
         }
     }
 }

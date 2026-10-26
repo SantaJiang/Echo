@@ -27,6 +27,7 @@ Rectangle {
         }
         Image {
             id: image
+            objectName: "coverImage"
             anchors.fill: parent
             source: cover.artwork.length ? cover.artwork : "image://echo-icons/cover/light"
             asynchronous: true
@@ -59,6 +60,7 @@ Rectangle {
         visible: false
     }
     MultiEffect {
+        objectName: "coverEffect"
         anchors.fill: parent
         source: cover.zoomable ? zoomSource : image.status === Image.Ready ? image : fallback
         maskEnabled: true

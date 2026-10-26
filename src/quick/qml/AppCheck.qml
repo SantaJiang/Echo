@@ -2,9 +2,10 @@ import QtQuick
 import QtQuick.Controls
 CheckBox {
     id: control
+    required property var controller
     property string preference: ""
-    checked: Boolean(client.preferences[preference])
-    onToggled: client.setPreference(preference, checked)
+    checked: Boolean(control.controller.preferences[preference])
+    onToggled: control.controller.setPreference(preference, checked)
     spacing: 12
     padding: 4
     indicator: Rectangle {
