@@ -5,10 +5,11 @@
 #include <QImage>
 #include <QtConcurrent>
 #include "library/library.h"
+#include "test_support/support.h"
 #include "library/scanner.h"
 #include "library/database.h"
 #include "playback/player.h"
-#include "ui/theme.h"
+#include "presentation/theme.h"
 #include <QGuiApplication>
 #include <QDataStream>
 #include <QDebug>
@@ -30,104 +31,17 @@
 #include <thread>
 
 namespace {
-int checks = 0;
-void check(bool ok, const char* message)
-{
-    if (!ok)
-        qFatal("FAIL %s", message);
-    ++checks;
-}
-bool waitFor(const std::function<bool()>& predicate, int timeout = 8000)
-{
-    QElapsedTimer timer;
-    timer.start();
-    do {
-        QGuiApplication::processEvents();
-        if (predicate())
-            return true;
-        QThread::msleep(5);
-    } while (timer.elapsed() < timeout);
-    return false;
-}
+using echo::test::SilentOutput;
+using echo::test::check;
+using echo::test::waitFor;
 void settled(echo::Library& library)
 {
     check(waitFor([&] { return !library.scanBusy(); }), "scan settles");
 }
 void wave(const QString& path, int milliseconds = 350)
 {
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QFile file(path);
-    check(file.open(QIODevice::WriteOnly), "fixture open");
-    const int frames = 48000 * milliseconds / 1000;
-    QDataStream out(&file);
-    out.setByteOrder(QDataStream::LittleEndian);
-    out.writeRawData("RIFF", 4);
-    out << quint32(36 + frames * 2);
-    out.writeRawData("WAVEfmt ", 8);
-    out << quint32(16) << quint16(1) << quint16(1) << quint32(48000) << quint32(96000) << quint16(2) << quint16(16);
-    out.writeRawData("data", 4);
-    out << quint32(frames * 2);
-    for (int i = 0; i < frames; ++i)
-        out << qint16(std::sin(i * 2 * 3.141592653589793 * 440 / 48000) * 5000);
+    echo::test::writePcm16Wave(path, milliseconds);
 }
-class SilentOutput final : public echo::AudioOutput {
-public:
-    ~SilentOutput() override
-    {
-        close();
-    }
-    bool open(const echo::SampleFormat& source, bool, echo::DeviceFormat* opened, QString*) override
-    {
-        rate = source.sampleRate;
-        channels = source.channels;
-        *opened = { rate, channels, 32, 4, true };
-        openedFlag = true;
-        return true;
-    }
-    void close() override
-    {
-        pause();
-        openedFlag = false;
-    }
-    void setPull(Pull value) override
-    {
-        pull = std::move(value);
-    }
-    void start() override
-    {
-        pause();
-        running = true;
-        worker = std::thread([this] {
-            std::vector<float> block(rate / 200 * channels);
-            while (running) {
-                const int got = pull(reinterpret_cast<uint8_t*>(block.data()), rate / 200);
-                for (int i = 0; i < got * channels; ++i)
-                    if (std::abs(block[i]) > .01f)
-                        ++nonzero;
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-        });
-    }
-    void pause() override
-    {
-        running = false;
-        if (worker.joinable())
-            worker.join();
-    }
-    bool isOpen() const override
-    {
-        return openedFlag;
-    }
-    std::atomic<int> nonzero { 0 };
-
-private:
-    Pull pull;
-    int rate = 48000, channels = 1;
-    bool openedFlag = false;
-    std::atomic<bool> running { false };
-    std::thread worker;
-};
-
 }
 int main(int argc, char** argv)
 {
@@ -550,5 +464,5 @@ int main(int argc, char** argv)
                 << "percent";
     }
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
-    qInfo() << checks << "folder, queue, availability, trash, navigation and PCM integration checks passed";
+    qInfo() << echo::test::passedChecks() << "folder, queue, availability, trash, navigation and PCM integration checks passed";
 }

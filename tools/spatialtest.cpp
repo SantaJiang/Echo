@@ -1,4 +1,5 @@
 #include "audio/engine.h"
+#include "test_support/support.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QProcess>
@@ -9,18 +10,8 @@
 #include <cmath>
 
 namespace {
-void check(bool ok, const char* message) { if (!ok) qFatal("%s", message); }
-bool waitFor(const std::function<bool()>& condition, int timeout = 7000)
-{
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < timeout) {
-        QCoreApplication::processEvents();
-        if (condition()) return true;
-        QThread::msleep(5);
-    }
-    return false;
-}
+using echo::test::check;
+using echo::test::waitFor;
 }
 int main(int argc, char** argv)
 {

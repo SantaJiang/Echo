@@ -17,6 +17,7 @@ public:
     bool open(const QString& filePath, const QString& connectionName, QString* error = nullptr, bool readOnly = false);
     [[nodiscard]] bool isOpen() const;
     [[nodiscard]] QString filePath() const { return m_path; }
+    [[nodiscard]] QSqlDatabase connection() const { return m_db; }
 
     qint64 addRoot(const QString& path);
     void removeRoot(qint64 id);
@@ -33,8 +34,10 @@ public:
     void markPathMissing(const QString& path);
     qint64 createPlaylistWithItems(const QString& name, const QVector<qint64>& ids);
 
+    // Used by echo-selftest. The application marks roots missing through relocate and refresh.
     void markRootMissing(qint64 rootId);
     qint64 upsertTrack(const Track& track);
+    // Used by echo-selftest. The application drops tracks by rewriting a scanned root.
     void removeTracks(const QVector<qint64>& ids);
 
     [[nodiscard]] Track track(qint64 id) const;
@@ -48,6 +51,7 @@ public:
 
     [[nodiscard]] qint64 favoritesPlaylistId() const;
     bool setFavorites(const QVector<qint64>& ids, bool liked, QString* error = nullptr);
+    bool restoreFavorites(const QVector<qint64>& ids, QString* error = nullptr);
     [[nodiscard]] QVector<Playlist> playlists() const;
     [[nodiscard]] QVector<PlaylistFolder> playlistFolders() const;
     qint64 createPlaylist(const QString& name, qint64 folderId);
@@ -59,6 +63,8 @@ public:
     void reorderPlaylist(qint64 id, int from, int to);
     void movePlaylist(qint64 id, qint64 folderId);
     [[nodiscard]] QVector<qint64> playlistItems(qint64 playlistId) const;
+    struct PlaylistEntry { qint64 entryId = 0; qint64 trackId = 0; };
+    [[nodiscard]] QVector<PlaylistEntry> playlistEntries(qint64 playlistId) const;
     void setPlaylistItems(qint64 playlistId, const QVector<qint64>& trackIds);
     void insertPlaylistItems(qint64 playlistId, int index, const QVector<qint64>& trackIds);
     void removePlaylistItems(qint64 playlistId, const QVector<int>& positions);
@@ -67,9 +73,7 @@ public:
     void setSetting(const QString& key, const QString& value);
 
 private:
-    friend class Library;
     qint64 upsertTrackUnlocked(const Track& track);
-    bool restoreFavorites(const QVector<qint64>& ids, QString* error);
     bool writeFavorites(const QVector<qint64>& ids, QString* error); // Caller holds writeLock.
     [[nodiscard]] Track trackFromQuery(const QSqlQuery& query) const;
     QSqlDatabase m_db;

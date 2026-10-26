@@ -190,26 +190,7 @@ public:
 private:
     static DeviceFormat deviceFormatFor(const SampleFormat& source, bool exclusive)
     {
-        DeviceFormat format;
-        format.sampleRate = source.sampleRate;
-        format.channels = source.channels;
-        format.exclusive = exclusive;
-        if (source.isFloat) {
-            format.isFloat = true;
-            format.bitsPerSample = 32;
-            format.containerBytes = 4;
-        } else if (source.bitsPerSample <= 16) {
-            format.bitsPerSample = 16;
-            format.containerBytes = 2;
-        } else if (source.bitsPerSample <= 24) {
-            format.bitsPerSample = 24;
-            format.containerBytes = 4;
-            format.highAligned = true;
-        } else {
-            format.bitsPerSample = 32;
-            format.containerBytes = 4;
-        }
-        return format;
+        return deviceFormatFromSource(source, exclusive, true);
     }
 
     static WAVEFORMATEXTENSIBLE toWave(const DeviceFormat& format)
@@ -250,14 +231,7 @@ private:
                 continue;
             }
             const int frameBytes = m_opened.bytesPerFrame();
-            int received = 0;
-            if (m_pull) {
-                received = m_pull(data, static_cast<int>(frames));
-            }
-            if (received < static_cast<int>(frames)) {
-                std::memset(data + std::max(received, 0) * frameBytes, 0,
-                            static_cast<size_t>(frames - std::max(received, 0)) * static_cast<size_t>(frameBytes));
-            }
+            const int received = pullOrSilence(m_pull, data, static_cast<int>(frames), frameBytes);
             m_render->ReleaseBuffer(frames, received == 0 ? AUDCLNT_BUFFERFLAGS_SILENT : 0);
         }
     }

@@ -62,13 +62,6 @@ public:
             emit countChanged();
         }
     }
-    void setValue(int row, const QString& key, const QVariant& value)
-    {
-        if (row < 0 || row >= m_rows.size() || m_rows[row].value(key) == value)
-            return;
-        m_rows[row][key] = value;
-        emit dataChanged(index(row), index(row), { Qt::UserRole });
-    }
 signals:
     void countChanged();
 

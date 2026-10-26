@@ -9,8 +9,9 @@ dynamically where those licenses require it:
 - libebur128 is used under the MIT License: https://github.com/jiixyj/libebur128 .
 - TagLib is used under the Mozilla Public License version 1.1 or the GNU Lesser
   General Public License version 2.1.
-- The PCM format model and sample converter under src/vendor/fooyin are
-  adapted from fooyin and used under the GNU General Public License version 3.
+- The PCM sample-type mapping under src/vendor/fooyin is adapted from fooyin
+  and used under the GNU General Public License version 3. The license text is
+  src/vendor/fooyin/COPYING.
 
 Corresponding source for the LGPL libraries is available from their upstream
 projects: https://qt.io , https://ffmpeg.org and https://taglib.org .

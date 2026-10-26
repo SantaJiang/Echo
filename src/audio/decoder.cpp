@@ -211,8 +211,7 @@ Decoder::~Decoder()
 
 void Decoder::close()
 {
-    delete m_impl;
-    m_impl = nullptr;
+    m_impl.reset();
     m_format = {};
     m_gain = {};
     m_delay = 0;
@@ -229,7 +228,7 @@ bool Decoder::isOpen() const
 bool Decoder::open(const QString& path, QString* error)
 {
     close();
-    m_impl = new Impl();
+    m_impl = std::make_unique<Impl>();
     const QByteArray encoded = path.toUtf8();
     if (const int result = avformat_open_input(&m_impl->format, encoded.constData(), nullptr, nullptr); result < 0) {
         const QString message = ffmpegError(result);
@@ -321,9 +320,8 @@ bool Decoder::open(const QString& path, QString* error)
     if (m_format.pcm == Fooyin::SampleFormat::Unknown) {
         m_format.pcm = Fooyin::SampleFormat::F32;
     }
-    const Fooyin::AudioFormat described {m_format.pcm, std::max(m_format.sampleRate, 1), std::max(m_format.channels, 1)};
-    m_format.bitsPerSample = described.bitdepth();
-    m_format.bytesPerSample = described.bytesPerSample();
+    m_format.bitsPerSample = Fooyin::Utils::pcmBitDepth(m_format.pcm);
+    m_format.bytesPerSample = Fooyin::Utils::pcmBytesPerSample(m_format.pcm);
     m_format.isFloat = m_format.pcm == Fooyin::SampleFormat::F32 || m_format.pcm == Fooyin::SampleFormat::F64;
     m_format.highAligned = m_format.pcm == Fooyin::SampleFormat::S24In32;
     if (!m_format.valid()) {
@@ -428,56 +426,45 @@ bool Decoder::seekAudibleFrame(qint64 frame)
     return true;
 }
 
-int Decoder::read(uint8_t* dst, int maxFrames)
+int Decoder::copyAudible(uint8_t* dst, int maxFrames)
 {
-    if (!m_impl || maxFrames <= 0) {
-        return 0;
-    }
     const int frameBytes = m_format.bytesPerFrame();
-    auto pullPending = [&] {
-        const qint64 withhold = m_impl->totalRaw > 0 ? 0 : m_padding;
-        const auto withheldBytes = static_cast<size_t>(withhold * frameBytes);
-        if (m_impl->pending.size() <= withheldBytes) {
-            return 0;
-        }
-        const int available = static_cast<int>((m_impl->pending.size() - withheldBytes) / static_cast<size_t>(frameBytes));
-        const int take = std::min(maxFrames, available);
-        if (take <= 0) {
-            return 0;
-        }
-        const auto bytes = static_cast<size_t>(take) * static_cast<size_t>(frameBytes);
-        std::memcpy(dst, m_impl->pending.data(), bytes);
-        m_impl->pending.erase(m_impl->pending.begin(), m_impl->pending.begin() + static_cast<std::ptrdiff_t>(bytes));
-        return take;
-    };
+    const qint64 withhold = m_impl->totalRaw > 0 ? 0 : m_padding;
+    const auto withheldBytes = static_cast<size_t>(withhold * frameBytes);
+    if (m_impl->pending.size() <= withheldBytes)
+        return 0;
+    const int available = static_cast<int>((m_impl->pending.size() - withheldBytes) / static_cast<size_t>(frameBytes));
+    const int take = std::min(maxFrames, available);
+    if (take <= 0)
+        return 0;
+    const auto bytes = static_cast<size_t>(take) * static_cast<size_t>(frameBytes);
+    std::memcpy(dst, m_impl->pending.data(), bytes);
+    m_impl->pending.erase(m_impl->pending.begin(), m_impl->pending.begin() + static_cast<std::ptrdiff_t>(bytes));
+    return take;
+}
 
-    while (true) {
-        if (const int ready = pullPending(); ready > 0) {
-            return ready;
-        }
-        if (m_impl->codecEof) {
-            return 0;
-        }
-
-        int result = av_read_frame(m_impl->format, m_impl->packet);
+int Decoder::decodeAhead()
+{
+    const int frameBytes = m_format.bytesPerFrame();
+    int result = av_read_frame(m_impl->format, m_impl->packet);
         if (result == AVERROR_EOF) {
             avcodec_send_packet(m_impl->codec, nullptr);
         } else if (result < 0) {
             if (result == AVERROR_INVALIDDATA && m_impl->decodeErrors < 8) {
                 ++m_impl->decodeErrors;
-                continue;
+                return 0;
             }
             return -1;
         } else if (m_impl->packet->stream_index != m_impl->streamIndex) {
             av_packet_unref(m_impl->packet);
-            continue;
+            return 0;
         } else {
             result = avcodec_send_packet(m_impl->codec, m_impl->packet);
             av_packet_unref(m_impl->packet);
             if (result < 0 && result != AVERROR(EAGAIN)) {
                 if (result == AVERROR_INVALIDDATA && m_impl->decodeErrors < 8) {
                     ++m_impl->decodeErrors;
-                    continue;
+                    return 0;
                 }
                 return -1;
             }
@@ -581,6 +568,20 @@ int Decoder::read(uint8_t* dst, int maxFrames)
                 break;
             }
         }
+    return 0;
+}
+
+int Decoder::read(uint8_t* dst, int maxFrames)
+{
+    if (!m_impl || maxFrames <= 0)
+        return 0;
+    while (true) {
+        if (const int ready = copyAudible(dst, maxFrames); ready > 0)
+            return ready;
+        if (m_impl->codecEof)
+            return 0;
+        if (const int decoded = decodeAhead(); decoded < 0)
+            return decoded;
     }
 }
 

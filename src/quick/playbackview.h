@@ -23,7 +23,6 @@ class PlaybackView : public QObject {
     Q_PROPERTY(int repeat READ repeat NOTIFY playbackChanged)
     Q_PROPERTY(QVariantList lyrics READ lyrics NOTIFY lyricsChanged)
     Q_PROPERTY(int lyricIndex READ lyricIndex NOTIFY positionChanged)
-    Q_PROPERTY(QString format READ format NOTIFY formatChanged)
 public:
     PlaybackView(Library* library, Player* player, AudioEngine* engine, QObject* parent = nullptr);
     QVariantMap track() const;
@@ -35,7 +34,6 @@ public:
     int repeat() const;
     QVariantList lyrics() const { return m_lyrics; }
     int lyricIndex() const;
-    QString format() const { return m_format; }
     Q_INVOKABLE void toggle();
     Q_INVOKABLE void next();
     Q_INVOKABLE void previous();
@@ -50,19 +48,14 @@ signals:
     void lyricsChanged();
     void playbackChanged();
     void positionChanged();
-    void formatChanged();
 
 private:
     void refresh(bool reloadMetadata = false);
-    void updateFormat();
     Library* m_library;
     Player* m_player;
     AudioEngine* m_engine;
     Track m_track;
     QVariantList m_lyrics;
-    QString m_format;
-    int m_deviceRate = 0;
-    bool m_deviceExclusive = false;
     bool m_presentationActive = true;
     QTimer m_clock;
 };

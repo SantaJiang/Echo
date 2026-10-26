@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QHash>
 #include <atomic>
+#include <memory>
 
 namespace echo {
 
@@ -51,7 +52,7 @@ signals:
 
 private:
     struct Worker;
-    Worker* m_worker = nullptr;
+    std::unique_ptr<Worker> m_worker;
     std::atomic<int> m_state {static_cast<int>(State::Stopped)};
     std::atomic<qint64> m_positionMs {0};
     std::atomic<qint64> m_activeToken {0};

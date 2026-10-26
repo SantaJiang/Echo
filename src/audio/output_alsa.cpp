@@ -108,12 +108,8 @@ private:
         const int frames = std::max(256, m_opened.latencyFrames);
         std::vector<uint8_t> buffer(static_cast<size_t>(frames) * static_cast<size_t>(m_opened.bytesPerFrame()));
         while (m_running) {
-            int received = 0;
-            if (m_pull) {
-                received = m_pull(buffer.data(), frames);
-            }
+            int received = pullOrSilence(m_pull, buffer.data(), frames, m_opened.bytesPerFrame());
             if (received <= 0) {
-                std::memset(buffer.data(), 0, buffer.size());
                 received = frames;
             }
             int offset = 0;
@@ -133,25 +129,7 @@ private:
 
     static DeviceFormat describe(const SampleFormat& source)
     {
-        DeviceFormat format;
-        format.sampleRate = source.sampleRate;
-        format.channels = source.channels;
-        if (source.isFloat) {
-            format.isFloat = true;
-            format.bitsPerSample = 32;
-            format.containerBytes = 4;
-        } else if (source.bitsPerSample <= 16) {
-            format.bitsPerSample = 16;
-            format.containerBytes = 2;
-        } else if (source.bitsPerSample <= 24) {
-            format.bitsPerSample = 24;
-            format.containerBytes = 4;
-            format.highAligned = true;
-        } else {
-            format.bitsPerSample = 32;
-            format.containerBytes = 4;
-        }
-        return format;
+        return deviceFormatFromSource(source, false, true);
     }
 
     static bool configure(snd_pcm_t* pcm, DeviceFormat* format, bool exclusive)

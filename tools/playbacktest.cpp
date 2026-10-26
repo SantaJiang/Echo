@@ -1,5 +1,6 @@
 #include "audio/engine.h"
 #include "audio/convert.h"
+#include "test_support/support.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QProcess>
@@ -77,18 +78,8 @@ private:
     std::atomic<bool> running {false};
     std::thread thread;
 };
-void check(bool ok, const char* text) { if (!ok) qFatal("%s", text); }
-bool waitFor(const std::function<bool()>& condition, int timeout = 3000)
-{
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < timeout) {
-        QCoreApplication::processEvents();
-        if (condition()) return true;
-        QThread::msleep(5);
-    }
-    return false;
-}
+using echo::test::check;
+using echo::test::waitFor;
 double tailRms(Capture& capture)
 {
     std::lock_guard lock(capture.mutex);

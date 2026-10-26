@@ -5,7 +5,7 @@
 #include "quick/client.h"
 #include "quick/playbackview.h"
 #include "quick/quickview.h"
-#include "ui/theme.h"
+#include "presentation/theme.h"
 
 #include <QGuiApplication>
 #include <QCommandLineParser>
@@ -53,14 +53,13 @@ int main(int argc, char** argv)
     }
 #endif
     QGuiApplication application(argc, argv);
-    Q_INIT_RESOURCE(quick);
-    Q_INIT_RESOURCE(echo);
+    echo::initializeEchoResources();
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     echo::useDarkTheme();
     echo::useDarkAppearance();
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.0.5"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(ECHO_VERSION));
     QIcon appIcon;
     for (const int size : { 32, 64, 128, 256, 512 }) {
         appIcon.addFile(QStringLiteral(":/icons/echo-%1.png").arg(size));

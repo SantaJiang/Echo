@@ -2,9 +2,9 @@
 
 #include "audio/engine.h"
 #include "audio/loudness.h"
+#include "playback/loudnessservice.h"
 #include <QFutureWatcher>
 #include <QHash>
-#include <QSet>
 #include <atomic>
 #include <optional>
 #include "library/library.h"
@@ -20,7 +20,7 @@ class Player : public QObject {
 public:
     enum class Repeat { Off, All, One };
 
-    Player(Library* library, AudioEngine* engine, QObject* parent = nullptr);
+    Player(TrackSource* library, AudioEngine* engine, QObject* parent = nullptr);
 
     ~Player() override;
     void setNormalizationEnabled(bool enabled);
@@ -95,7 +95,8 @@ private:
     [[nodiscard]] QString loudnessKey(const Track& track) const;
     [[nodiscard]] LoudnessResult cachedLoudness(const Track& track) const;
 
-    Library* m_library = nullptr;
+    TrackSource* m_library = nullptr;
+    LoudnessService m_loudnessService;
     AudioEngine* m_engine = nullptr;
     QVector<Entry> m_queue;
     QVector<qint64> m_history;
@@ -118,10 +119,6 @@ private:
     int m_analysisCursor = 0;
     mutable QHash<qint64, Track> m_queueTracks;
     std::atomic<bool> m_cancelAnalysis {false};
-    mutable QHash<QString, LoudnessResult> m_loudness;
-    mutable QHash<qint64, QString> m_loudnessKeys;
-    QSet<QString> m_analysisFailed;
-    bool m_advancing = false;
     bool m_trashing = false;
     qint64 m_requestRevision = 0;
     qint64 m_playRevision = 0;

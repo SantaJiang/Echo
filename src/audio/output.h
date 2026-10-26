@@ -43,6 +43,11 @@ public:
     [[nodiscard]] virtual bool isOpen() const = 0;
 };
 
+// Shared device negotiation for backends that can open the source's own PCM layout.
+[[nodiscard]] DeviceFormat deviceFormatFromSource(const SampleFormat& source, bool exclusive, bool align24In32 = true);
+// Pulls up to `frames` and zeros any shortfall. Returns the number of frames actually supplied.
+int pullOrSilence(const AudioOutput::Pull& pull, uint8_t* destination, int frames, int frameBytes);
+
 std::unique_ptr<AudioOutput> createAudioOutput();
 std::unique_ptr<AudioOutput> createCoreAudioOutput();
 std::unique_ptr<AudioOutput> createMacAudioOutput();

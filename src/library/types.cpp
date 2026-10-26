@@ -31,14 +31,6 @@ QString Track::displayAlbum() const
     return album.trimmed().isEmpty() ? QStringLiteral("未知专辑") : album;
 }
 
-QString Track::displayAlbumArtist() const
-{
-    if (!albumArtist.trimmed().isEmpty()) {
-        return albumArtist;
-    }
-    return displayArtist();
-}
-
 QString primaryArtistName(const QString& artist)
 {
     static const QRegularExpression separator(

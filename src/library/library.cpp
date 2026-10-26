@@ -4,6 +4,7 @@
 #include "library/scanner.h"
 
 #include <algorithm>
+#include <memory>
 
 #include <QDir>
 #include <QFile>
@@ -44,10 +45,8 @@ QString ftsQuery(const QString& text)
 } // namespace
 
 Library::Library(QObject* parent)
-    : QObject(parent)
+    : TrackSource(parent)
 {
-    connect(this, &Library::changed, this, [this] { ++m_revision; });
-    connect(this, &Library::sourceChanged, this, [this](qint64) { ++m_revision; });
     connect(this, &Library::changed, this, &Library::refreshFavorites);
     m_rescanTimer.setSingleShot(true);
     m_rescanTimer.setInterval(800);
@@ -346,34 +345,26 @@ void Library::markMissingPath(const QString& path)
     emit changed();
 }
 
-bool Library::trashFile(const QString& path, QString* error)
-{
-    QFile file(path);
-    if (!file.moveToTrash()) {
-        if (error)
-            *error = file.errorString();
-        return false;
-    }
-    m_database->markPathMissing(normalizedMusicPath(path));
-    for (const auto& source : roots())
-        if (source.path == QFileInfo(path).absolutePath())
-            refreshRoot(source.id);
-    emit changed();
-    return true;
-}
-
 qint64 Library::createPlaylistFromFolder(qint64 rootId, const QString& name, const QVector<qint64>& ids)
 {
     if (!root(rootId).id || name.trimmed().isEmpty() || ids.isEmpty())
         return 0;
     const qint64 id = m_database->createPlaylistWithItems(name.trimmed(), ids);
     if (id) {
-        UndoStep step { };
-        step.kind = UndoStep::SnapshotPlaylist;
-        step.playlistId = id;
-        step.name = name.trimmed();
-        step.trackIds = ids;
-        remember(step);
+        const auto created = std::make_shared<qint64>(id);
+        const auto title = name.trimmed();
+        remember({ [this, created, title, ids] {
+                      *created = m_database->createPlaylistWithItems(title, ids);
+                      if (!*created)
+                          return false;
+                      emit changed();
+                      return true;
+                  },
+            [this, created] {
+                m_database->deletePlaylist(*created);
+                emit changed();
+                return true;
+            } });
         emit changed();
     }
     return id;
@@ -532,39 +523,6 @@ QVector<Track> Library::searchTracks(const QString& text) const
     return m_database->searchTracksContaining(text.trimmed(), 200);
 }
 
-QVector<Album> Library::searchAlbums(const QString& text) const
-{
-    QVector<Album> result;
-    for (const Album& album : albums()) {
-        if (matches(album.title, text) || matches(album.artist, text)) {
-            result.push_back(album);
-        }
-    }
-    return result;
-}
-
-QVector<Artist> Library::searchArtists(const QString& text) const
-{
-    QVector<Artist> result;
-    for (const Artist& artist : artists()) {
-        if (matches(artist.name, text)) {
-            result.push_back(artist);
-        }
-    }
-    return result;
-}
-
-QVector<Playlist> Library::searchPlaylists(const QString& text) const
-{
-    QVector<Playlist> result;
-    for (const Playlist& playlist : playlists()) {
-        if (matches(playlist.name, text)) {
-            result.push_back(playlist);
-        }
-    }
-    return result;
-}
-
 qint64 Library::favoritesPlaylistId() const
 {
     return m_database ? m_database->favoritesPlaylistId() : 0;
@@ -594,11 +552,17 @@ bool Library::setFavorites(const QVector<qint64>& ids, bool liked)
         return false;
     }
     if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::Favorites;
-        step.beforeFavorites = before;
-        step.afterFavorites = playlistTrackIds(favoritesPlaylistId());
-        remember(step);
+        const auto after = playlistTrackIds(favoritesPlaylistId());
+        auto restore = [this](const QVector<qint64>& ids) {
+            QString error;
+            if (!m_database->restoreFavorites(ids, &error)) {
+                emit favoritesFailed(QStringLiteral("无法更新我喜欢的：%1").arg(error));
+                return false;
+            }
+            refreshFavorites();
+            return true;
+        };
+        remember({ [restore, after] { return restore(after); }, [restore, before] { return restore(before); } });
     }
     refreshFavorites();
     return true;
@@ -620,14 +584,8 @@ qint64 Library::createPlaylist(const QString& name, qint64 folderId)
         return 0;
     }
     const qint64 id = m_database->createPlaylist(name, folderId);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::CreatePlaylist;
-        step.playlistId = id;
-        step.name = name;
-        step.folderId = folderId;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [] { return true; }, [this, id] { deletePlaylist(id); return true; } });
     emit changed();
     return id;
 }
@@ -638,13 +596,8 @@ qint64 Library::createPlaylistFolder(const QString& name, qint64 parentId)
         return 0;
     }
     const qint64 id = m_database->createPlaylistFolder(name, parentId);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::CreateFolder;
-        step.folderId = id;
-        step.name = name;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [] { return true; }, [this, id] { deletePlaylistFolder(id); return true; } });
     emit changed();
     return id;
 }
@@ -662,14 +615,9 @@ void Library::renamePlaylist(qint64 id, const QString& name)
         }
     }
     m_database->renamePlaylist(id, name);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::RenamePlaylist;
-        step.playlistId = id;
-        step.name = name;
-        step.previousName = previous;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [this, id, name] { renamePlaylist(id, name); return true; },
+            [this, id, previous] { renamePlaylist(id, previous); return true; } });
     emit changed();
 }
 
@@ -685,14 +633,9 @@ void Library::renamePlaylistFolder(qint64 id, const QString& name)
         }
     }
     m_database->renamePlaylistFolder(id, name);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::RenameFolder;
-        step.folderId = id;
-        step.name = name;
-        step.previousName = previous;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [this, id, name] { renamePlaylistFolder(id, name); return true; },
+            [this, id, previous] { renamePlaylistFolder(id, previous); return true; } });
     emit changed();
 }
 
@@ -712,15 +655,14 @@ void Library::deletePlaylist(qint64 id)
     }
     const auto items = m_database->playlistItems(id);
     m_database->deletePlaylist(id);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::DeletePlaylist;
-        step.playlistId = id;
-        step.folderId = folderId;
-        step.name = name;
-        step.trackIds = items;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [this, id] { if (id > 0) deletePlaylist(id); return true; },
+            [this, name, folderId, items] {
+                const qint64 created = createPlaylist(name, folderId);
+                m_database->setPlaylistItems(created, items);
+                emit changed();
+                return true;
+            } });
     emit changed();
 }
 
@@ -743,14 +685,11 @@ void Library::movePlaylistToFolder(qint64 id, qint64 folderId)
 
 QVector<Track> Library::playlistTracks(qint64 id) const
 {
-    QSqlQuery query(m_database->m_db);
-    query.prepare(QStringLiteral("SELECT id,track_id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id"));
-    query.addBindValue(id);
-    query.exec();
+    const auto rows = m_database ? m_database->playlistEntries(id) : QVector<Database::PlaylistEntry> {};
     QVector<qint64> ids, entries;
-    while (query.next()) {
-        entries << query.value(0).toLongLong();
-        ids << query.value(1).toLongLong();
+    for (const auto& row : rows) {
+        entries << row.entryId;
+        ids << row.trackId;
     }
     auto result = tracks(ids);
     for (int i = 0; i < result.size(); ++i) {
@@ -774,12 +713,19 @@ void Library::addToPlaylist(qint64 playlistId, const QVector<qint64>& trackIds)
     const int index = m_database->playlistItems(playlistId).size();
     m_database->insertPlaylistItems(playlistId, index, trackIds);
     if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::Add;
-        step.playlistId = playlistId;
-        step.trackIds = trackIds;
-        step.from = index;
-        remember(step);
+        const int count = trackIds.size();
+        remember({ [this, playlistId, index, trackIds] {
+                      m_database->insertPlaylistItems(playlistId, index, trackIds);
+                      emit changed();
+                      return true;
+                  },
+            [this, playlistId, index, count] {
+                QVector<int> positions;
+                for (int i = 0; i < count; ++i)
+                    positions.push_back(index + i);
+                removePlaylistPositions(playlistId, positions);
+                return true;
+            } });
     }
     emit changed();
 }
@@ -800,14 +746,16 @@ void Library::removePlaylistPositions(qint64 playlistId, const QVector<int>& pos
         removed.push_back(items[position]);
     if (playlistId == favoritesPlaylistId()) { setFavorites(removed, false); return; }
     m_database->removePlaylistItems(playlistId, ordered);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::Remove;
-        step.playlistId = playlistId;
-        step.trackIds = removed;
-        step.positions = ordered;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [this, playlistId, ordered] { removePlaylistPositions(playlistId, ordered); return true; },
+            [this, playlistId, ordered, removed] {
+                auto positions = ordered;
+                std::sort(positions.begin(), positions.end());
+                for (int i = 0; i < positions.size() && i < removed.size(); ++i)
+                    m_database->insertPlaylistItems(playlistId, positions[i], { removed[i] });
+                emit changed();
+                return true;
+            } });
     emit changed();
 }
 
@@ -824,128 +772,46 @@ void Library::movePlaylistItem(qint64 playlistId, int from, int to)
     const qint64 id = items.takeAt(from);
     items.insert(to, id);
     m_database->reorderPlaylist(playlistId, from, to);
-    if (!m_applyingUndo) {
-        UndoStep step;
-        step.kind = UndoStep::Move;
-        step.playlistId = playlistId;
-        step.from = from;
-        step.to = to;
-        remember(step);
-    }
+    if (!m_applyingUndo)
+        remember({ [this, playlistId, from, to] { movePlaylistItem(playlistId, from, to); return true; },
+            [this, playlistId, from, to] { movePlaylistItem(playlistId, to, from); return true; } });
     emit changed();
 }
 
-void Library::remember(const UndoStep& step)
+void Library::remember(UndoCommand command)
 {
-    m_undo.push_back(step);
-    if (m_undo.size() > 50) {
+    m_undo.push_back(std::move(command));
+    if (m_undo.size() > 50)
         m_undo.removeFirst();
-    }
     m_redo.clear();
 }
 
 void Library::undo()
 {
-    if (m_undo.isEmpty()) {
+    if (m_undo.isEmpty())
         return;
-    }
-    UndoStep step = m_undo.last();
-    if (!apply(step, true)) return;
+    UndoCommand command = m_undo.last();
+    m_applyingUndo = true;
+    const bool ok = command.revert && command.revert();
+    m_applyingUndo = false;
+    if (!ok)
+        return;
     m_undo.removeLast();
-    m_redo.push_back(step);
+    m_redo.push_back(std::move(command));
 }
 
 void Library::redo()
 {
-    if (m_redo.isEmpty()) {
+    if (m_redo.isEmpty())
         return;
-    }
-    UndoStep step = m_redo.last();
-    if (!apply(step, false)) return;
-    m_redo.removeLast();
-    m_undo.push_back(step);
-}
-
-bool Library::apply(UndoStep& step, bool inverse)
-{
+    UndoCommand command = m_redo.last();
     m_applyingUndo = true;
-    switch (step.kind) {
-    case UndoStep::SnapshotPlaylist:
-        if (inverse)
-            m_database->deletePlaylist(step.playlistId);
-        else {
-            step.playlistId = m_database->createPlaylistWithItems(step.name, step.trackIds);
-            if (!step.playlistId) {
-                m_applyingUndo = false;
-                return false;
-            }
-        }
-        emit changed();
-        break;
-    case UndoStep::Favorites: {
-        QString error;
-        if (!m_database->restoreFavorites(inverse ? step.beforeFavorites : step.afterFavorites, &error)) {
-            m_applyingUndo = false;
-            emit favoritesFailed(QStringLiteral("无法更新我喜欢的：%1").arg(error));
-            return false;
-        }
-        refreshFavorites();
-        break;
-    }
-    case UndoStep::Add:
-        if (inverse) {
-            QVector<int> positions;
-            for (int index = 0; index < step.trackIds.size(); ++index) {
-                positions.push_back(step.from + index);
-            }
-            removePlaylistPositions(step.playlistId, positions);
-        } else {
-            m_database->insertPlaylistItems(step.playlistId, step.from, step.trackIds);
-            emit changed();
-        }
-        break;
-    case UndoStep::Remove:
-        if (inverse) {
-            auto positions = step.positions;
-            std::sort(positions.begin(), positions.end());
-            for (int i = 0; i < positions.size() && i < step.trackIds.size(); ++i)
-                m_database->insertPlaylistItems(step.playlistId, positions[i], { step.trackIds[i] });
-            emit changed();
-        } else {
-            removePlaylistPositions(step.playlistId, step.positions);
-        }
-        break;
-    case UndoStep::Move:
-        movePlaylistItem(step.playlistId, inverse ? step.to : step.from, inverse ? step.from : step.to);
-        break;
-    case UndoStep::RenamePlaylist:
-        renamePlaylist(step.playlistId, inverse ? step.previousName : step.name);
-        break;
-    case UndoStep::RenameFolder:
-        renamePlaylistFolder(step.folderId, inverse ? step.previousName : step.name);
-        break;
-    case UndoStep::DeletePlaylist:
-        if (inverse) {
-            const qint64 id = createPlaylist(step.name, step.folderId);
-            m_database->setPlaylistItems(id, step.trackIds);
-            emit changed();
-        } else if (step.playlistId > 0) {
-            deletePlaylist(step.playlistId);
-        }
-        break;
-    case UndoStep::CreatePlaylist:
-        if (inverse) {
-            deletePlaylist(step.playlistId);
-        }
-        break;
-    case UndoStep::CreateFolder:
-        if (inverse) {
-            deletePlaylistFolder(step.folderId);
-        }
-        break;
-    }
+    const bool ok = command.apply && command.apply();
     m_applyingUndo = false;
-    return true;
+    if (!ok)
+        return;
+    m_redo.removeLast();
+    m_undo.push_back(std::move(command));
 }
 
 bool Library::importM3u(qint64 playlistId, const QString& path, QString* error)
@@ -977,24 +843,7 @@ bool Library::importM3u(qint64 playlistId, const QString& path, QString* error)
             resolved = QDir(directory).filePath(resolved);
         }
         resolved = normalizedMusicPath(resolved);
-        qint64 matched = 0;
-        for (const Track& candidate : m_database->queryTracks(QStringLiteral("WHERE path=? AND cue_start_ms<0"), {resolved}, {})) {
-            matched = candidate.id;
-            break;
-        }
-        if (matched == 0 && isAudioFile(resolved)) {
-            auto scanned = readTags(resolved);
-            scanned.track.cueStartMs = -1;
-            if (m_artwork) {
-                scanned.track.artworkHash = m_artwork->store(scanned.artwork);
-            }
-            scanned.track.missing = !QFileInfo::exists(resolved);
-            // Existing direct children can join their explicitly registered source; other files stay standalone.
-            for (const auto& source : roots())
-                if (source.path == scanned.track.folder)
-                    scanned.track.rootId = source.id;
-            matched = m_database->upsertTrack(scanned.track);
-        }
+        const qint64 matched = importResolvedFile(resolved);
         if (matched > 0) {
             ids.push_back(matched);
         }
@@ -1018,25 +867,7 @@ QVector<qint64> Library::importFiles(const QStringList& paths)
         if (!info.exists() || !isAudioFile(info.absoluteFilePath())) {
             continue;
         }
-        const QString resolved = normalizedMusicPath(path);
-        qint64 matched = 0;
-        for (const Track& candidate : m_database->queryTracks(QStringLiteral("WHERE path=? AND cue_start_ms<0"), {resolved}, {})) {
-            matched = candidate.id;
-            break;
-        }
-        if (matched == 0) {
-            auto scanned = readTags(resolved);
-            scanned.track.cueStartMs = -1;
-            if (m_artwork) {
-                scanned.track.artworkHash = m_artwork->store(scanned.artwork);
-            }
-            scanned.track.missing = !QFileInfo::exists(resolved);
-            // Existing direct children can join their explicitly registered source; other files stay standalone.
-            for (const auto& source : roots())
-                if (source.path == scanned.track.folder)
-                    scanned.track.rootId = source.id;
-            matched = m_database->upsertTrack(scanned.track);
-        }
+        const qint64 matched = importResolvedFile(normalizedMusicPath(path));
         if (matched > 0) {
             ids.push_back(matched);
         }
@@ -1067,6 +898,32 @@ bool Library::exportM3u(qint64 playlistId, const QString& path, QString* error) 
     return file.commit();
 }
 
+qint64 Library::importResolvedFile(const QString& normalizedPath)
+{
+    if (!m_database || normalizedPath.isEmpty()) {
+        return 0;
+    }
+    for (const Track& candidate : m_database->queryTracks(QStringLiteral("WHERE path=? AND cue_start_ms<0"), { normalizedPath }, {})) {
+        return candidate.id;
+    }
+    if (!isAudioFile(normalizedPath)) {
+        return 0;
+    }
+    auto scanned = readTags(normalizedPath);
+    scanned.track.cueStartMs = -1;
+    if (m_artwork) {
+        scanned.track.artworkHash = m_artwork->store(scanned.artwork);
+    }
+    scanned.track.missing = !QFileInfo::exists(normalizedPath);
+    // Existing direct children can join their explicitly registered source; other files stay standalone.
+    for (const auto& source : roots()) {
+        if (source.path == scanned.track.folder) {
+            scanned.track.rootId = source.id;
+        }
+    }
+    return m_database->upsertTrack(scanned.track);
+}
+
 QString Library::setting(const QString& key, const QString& fallback) const
 {
     return m_database ? m_database->setting(key, fallback) : fallback;
@@ -1086,7 +943,6 @@ void Library::scanRoot(qint64 id, const QString& path)
     }
     m_scanning = true;
     m_activeRoot = id;
-    emit scanStarted(id);
     QMetaObject::invokeMethod(m_scanner, "scanRoot", Qt::QueuedConnection, Q_ARG(qint64, id), Q_ARG(QString, path));
 }
 

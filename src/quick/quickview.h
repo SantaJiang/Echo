@@ -1,6 +1,7 @@
 #pragma once
 #include <QQuickView>
 namespace echo {
+void initializeEchoResources();
 class PlaybackView;
 class Client;
 class QuickView : public QQuickView {
@@ -9,7 +10,7 @@ class QuickView : public QQuickView {
     Q_PROPERTY(bool fullscreen READ fullscreen NOTIFY chromeChanged)
     Q_PROPERTY(bool maximizeHovered READ maximizeHovered NOTIFY chromeChanged)
 public:
-    explicit QuickView(PlaybackView* playback, Client* client = nullptr);
+    explicit QuickView(PlaybackView* playback, Client* client);
     bool maximized() const { return windowState() == Qt::WindowMaximized; }
     bool fullscreen() const { return windowState() == Qt::WindowFullScreen; }
     bool maximizeHovered() const { return m_maximizeHovered; }

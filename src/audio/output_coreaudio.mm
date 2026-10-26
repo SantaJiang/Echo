@@ -401,14 +401,7 @@ private:
         const int requested = static_cast<int>(frames);
         if (data->mNumberBuffers <= 1 && data->mBuffers[0].mData) {
             auto* buffer = static_cast<uint8_t*>(data->mBuffers[0].mData);
-            int received = 0;
-            if (m_pull) {
-                received = m_pull(buffer, requested);
-            }
-            if (received < requested) {
-                std::memset(buffer + std::max(received, 0) * frameBytes, 0,
-                            static_cast<size_t>(requested - std::max(received, 0)) * static_cast<size_t>(frameBytes));
-            }
+            pullOrSilence(m_pull, buffer, requested, frameBytes);
             data->mBuffers[0].mDataByteSize = frames * static_cast<UInt32>(frameBytes);
             return;
         }

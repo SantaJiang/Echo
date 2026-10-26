@@ -1,4 +1,4 @@
-#include "ui/icons.h"
+#include "presentation/icons.h"
 
 #include <algorithm>
 
@@ -132,28 +132,6 @@ QIcon icon(Icon kind, const QColor& color, int size)
     const qreal y = (side - bounds.height()) / 2.0 - bounds.y();
     painter.drawText(QPointF(x, y), glyph);
     return QIcon(pixmap);
-}
-
-QPixmap placeholderCover(int side)
-{
-    QPixmap pixmap(side * 2, side * 2);
-    pixmap.setDevicePixelRatio(2);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::TextAntialiasing);
-    const qreal radius = std::max(6.0, side * 0.08);
-    QPainterPath path;
-    path.addRoundedRect(QRectF(0.5, 0.5, side - 1, side - 1), radius, radius);
-    painter.fillPath(path, QColor(QStringLiteral("#3A3A3C")));
-    painter.setPen(Qt::NoPen);
-    const qreal disc = side * 0.34;
-    const QPointF center(side / 2.0, side / 2.0);
-    painter.setBrush(QColor(QStringLiteral("#636366")));
-    painter.drawEllipse(center, disc, disc);
-    painter.setBrush(QColor(QStringLiteral("#3A3A3C")));
-    painter.drawEllipse(center, disc * 0.22, disc * 0.22);
-    return pixmap;
 }
 
 } // namespace echo

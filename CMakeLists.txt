@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -27,11 +26,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 set(ECHO_CORE_SOURCES
-  src/vendor/fooyin/src/audioformat.cpp
-  src/vendor/fooyin/src/audiobuffer.cpp
-  src/vendor/fooyin/src/audioconverter.cpp
   src/vendor/fooyin/src/ffmpegpcm.cpp
-  src/vendor/fooyin/src/fadingdefs.cpp
   src/audio/decoder.cpp
   src/audio/cue.cpp
   src/audio/convert.cpp
@@ -40,11 +35,18 @@ set(ECHO_CORE_SOURCES
   src/audio/output.cpp
   src/library/types.cpp
   src/library/database.cpp
+  src/library/schema.cpp
+  src/library/searchindex.cpp
+  src/library/trackrepository.cpp
+  src/library/playlistrepository.cpp
   src/library/metadata.cpp
   src/library/artwork.cpp
   src/library/scanner.cpp
   src/library/library.cpp
+  src/library/pagequery.cpp
+  src/playback/tracksource.h
   src/playback/player.cpp
+  src/playback/loudnessservice.cpp
 )
 
 if(APPLE)
@@ -90,7 +92,7 @@ else()
   target_compile_options(echo_core PRIVATE -Wall -Wextra)
 endif()
 
-set(ECHO_SUPPORT_SOURCES src/ui/theme.cpp src/ui/icons.cpp src/platform/platform.cpp resources/echo.qrc)
+set(ECHO_SUPPORT_SOURCES src/presentation/theme.cpp src/presentation/icons.cpp src/platform/platform.cpp resources/echo.qrc)
 if(APPLE)
   list(APPEND ECHO_SUPPORT_SOURCES src/platform/platform_mac.mm)
 elseif(WIN32)
@@ -100,7 +102,12 @@ else()
 endif()
 add_library(echo_ui_support STATIC ${ECHO_SUPPORT_SOURCES})
 target_link_libraries(echo_ui_support PUBLIC echo_core Qt6::Network)
-add_library(echo_quick STATIC src/quick/playbackview.cpp src/quick/quickview.cpp src/quick/client.cpp src/quick/rowmodel.h src/quick/quick.qrc)
+add_library(echo_quick STATIC
+  src/quick/playbackview.cpp src/quick/quickview.cpp src/quick/client.cpp
+  src/quick/dialogservice.cpp src/quick/librarypresenter.cpp src/quick/menuservice.cpp
+  src/quick/selectionmodel.cpp src/quick/systemintegration.cpp
+  src/quick/rowmodel.h src/quick/dialogservice.h src/quick/librarypresenter.h src/quick/systemintegration.h
+  src/quick/quick.qrc)
 qt_add_shaders(echo_quick playback_shaders
   PREFIX "/echo/quick/shaders"
   BASE "src/quick/shaders"
@@ -108,6 +115,7 @@ qt_add_shaders(echo_quick playback_shaders
 target_include_directories(echo_quick PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(echo_quick PUBLIC echo_ui_support Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
 add_executable(echo src/main.cpp)
+target_compile_definitions(echo PRIVATE "ECHO_VERSION=\"${PROJECT_VERSION}\"")
 target_link_libraries(echo PRIVATE echo_quick)
 if(APPLE)
   target_link_libraries(echo_ui_support PUBLIC "-framework AppKit" "-framework MediaPlayer")
@@ -137,24 +145,38 @@ if(NOT MSVC)
   target_compile_options(echo_quick PRIVATE -Wall -Wextra)
   target_compile_options(echo_ui_support PRIVATE -Wall -Wextra)
 endif()
-add_executable(echo-quicktest tools/quicktest.cpp)
-target_link_libraries(echo-quicktest PRIVATE echo_quick Qt6::Test)
+add_library(echo_test_support STATIC tools/test_support/support.cpp)
+target_include_directories(echo_test_support PUBLIC ${CMAKE_SOURCE_DIR}/tools ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(echo_test_support PUBLIC echo_core)
+if(NOT MSVC)
+  target_compile_options(echo_test_support PRIVATE -Wall -Wextra)
+endif()
+
+add_executable(echo-quicktest tools/quicktest.cpp tools/quicktest_harness.cpp tools/quicktest_layout.cpp tools/quicktest_background.cpp tools/quicktest_scenes.cpp tools/quicktest_suite.cpp)
+target_link_libraries(echo-quicktest PRIVATE echo_quick echo_test_support Qt6::Test)
 if(APPLE)
   target_sources(echo-quicktest PRIVATE tools/quicktest_mac.mm)
   set_source_files_properties(tools/quicktest_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 add_executable(echo-foldertest tools/foldertest.cpp)
-target_link_libraries(echo-foldertest PRIVATE echo_ui_support)
+target_link_libraries(echo-foldertest PRIVATE echo_ui_support echo_test_support)
 add_executable(echo-probe tools/probe.cpp)
 target_link_libraries(echo-probe PRIVATE echo_core)
 add_executable(echo-selftest tools/selftest.cpp)
 target_link_libraries(echo-selftest PRIVATE echo_core)
 add_executable(echo-playbacktest tools/playbacktest.cpp)
-target_link_libraries(echo-playbacktest PRIVATE echo_core)
+target_link_libraries(echo-playbacktest PRIVATE echo_core echo_test_support)
 if(APPLE)
   add_executable(echo-spatialtest tools/spatialtest.cpp)
-  target_link_libraries(echo-spatialtest PRIVATE echo_core)
+  target_link_libraries(echo-spatialtest PRIVATE echo_core echo_test_support)
 endif()
+
+enable_testing()
+add_test(NAME selftest COMMAND echo-selftest)
+add_test(NAME playbacktest COMMAND echo-playbacktest)
+add_test(NAME foldertest COMMAND echo-foldertest)
+add_test(NAME quick-smoke COMMAND echo-quicktest --qml-smoke)
+set_tests_properties(quick-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 if(APPLE)
   get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
@@ -174,7 +196,10 @@ endif()
 if(ECHO_WINDEPLOYQT)
   install(CODE "execute_process(COMMAND \"${ECHO_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe\" --qmldir \"${CMAKE_SOURCE_DIR}/src/quick/qml\" COMMAND_ERROR_IS_FATAL ANY)")
 endif()
-install(TARGETS echo-probe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+option(ECHO_INSTALL_PROBE "Install the echo-probe diagnostic tool" OFF)
+if(ECHO_INSTALL_PROBE)
+  install(TARGETS echo-probe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 if(UNIX AND NOT APPLE)
   install(FILES data/echo.desktop DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
   install(FILES data/echo.svg DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps)

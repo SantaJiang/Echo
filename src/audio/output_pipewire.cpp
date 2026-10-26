@@ -48,24 +48,9 @@ public:
     bool open(const SampleFormat& source, bool exclusive, DeviceFormat* opened, QString* error) override
     {
         close();
-        m_opened.sampleRate = source.sampleRate;
+        m_opened = deviceFormatFromSource(source, false, false);
         m_opened.channels = std::clamp(source.channels, 1, 8);
         m_opened.exclusive = false;
-        if (!source.isFloat && source.bitsPerSample <= 16) {
-            m_opened.bitsPerSample = 16;
-            m_opened.containerBytes = 2;
-        } else if (!source.isFloat && source.bitsPerSample <= 24) {
-            m_opened.bitsPerSample = 24;
-            m_opened.containerBytes = 4;
-            m_opened.highAligned = false;
-        } else if (!source.isFloat) {
-            m_opened.bitsPerSample = 32;
-            m_opened.containerBytes = 4;
-        } else {
-            m_opened.isFloat = true;
-            m_opened.bitsPerSample = 32;
-            m_opened.containerBytes = 4;
-        }
         char latency[32];
         std::snprintf(latency, sizeof(latency), "%d/%d", 1024, std::max(m_opened.sampleRate, 1));
         pw_properties* properties = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
@@ -166,14 +151,7 @@ private:
         spa_data& data = buffer->buffer->datas[0];
         const int stride = self->m_opened.bytesPerFrame();
         const int frames = stride > 0 ? static_cast<int>(data.maxsize) / stride : 0;
-        int received = 0;
-        if (self->m_pull && data.data && frames > 0) {
-            received = self->m_pull(static_cast<uint8_t*>(data.data), frames);
-        }
-        if (received < frames && data.data) {
-            std::memset(static_cast<uint8_t*>(data.data) + received * stride, 0,
-                        static_cast<size_t>(frames - received) * static_cast<size_t>(stride));
-        }
+        const int received = data.data ? pullOrSilence(self->m_pull, static_cast<uint8_t*>(data.data), frames, stride) : 0;
         if (data.chunk) {
             data.chunk->offset = 0;
             data.chunk->stride = stride;

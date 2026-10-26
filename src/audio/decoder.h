@@ -3,6 +3,7 @@
 #include "audio/format.h"
 
 #include <QString>
+#include <memory>
 
 namespace echo {
 
@@ -35,7 +36,9 @@ public:
 
 private:
     struct Impl;
-    Impl* m_impl = nullptr;
+    std::unique_ptr<Impl> m_impl;
+    int copyAudible(uint8_t* dst, int maxFrames);
+    int decodeAhead();
     SampleFormat m_format;
     ReplayGain m_gain;
     qint64 m_delay = 0;

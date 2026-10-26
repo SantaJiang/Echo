@@ -3,6 +3,7 @@
 #include "library/artwork.h"
 #include "library/database.h"
 #include "library/types.h"
+#include "playback/tracksource.h"
 
 #include <QFileSystemWatcher>
 #include <QStringList>
@@ -10,6 +11,7 @@
 #include <QTimer>
 #include <QVector>
 #include <QSet>
+#include <functional>
 #include <memory>
 
 namespace echo {
@@ -22,7 +24,7 @@ struct SearchResults {
     QVector<Playlist> playlists;
 };
 
-class Library : public QObject {
+class Library : public TrackSource {
     Q_OBJECT
 
 public:
@@ -30,7 +32,6 @@ public:
     ~Library() override;
 
     bool open(QString* error = nullptr);
-    [[nodiscard]] quint64 revision() const { return m_revision; }
     [[nodiscard]] ArtworkCache* artwork() const { return m_artwork.get(); }
     [[nodiscard]] QString databasePath() const { return m_database ? m_database->filePath() : QString(); }
 
@@ -41,8 +42,7 @@ public:
     bool relocateTrack(qint64 id, const QString& path, QString* error);
     void recheckTrack(qint64 id);
     [[nodiscard]] QVector<Track> tracksAtPath(const QString& path) const;
-    void markMissingPath(const QString& path);
-    bool trashFile(const QString& path, QString* error);
+    void markMissingPath(const QString& path) override;
     qint64 createPlaylistFromFolder(qint64 rootId, const QString& name, const QVector<qint64>& ids);
     void removeRoot(qint64 id);
     [[nodiscard]] QVector<LibraryRoot> roots() const;
@@ -51,26 +51,20 @@ public:
     {
         return m_scanning || !m_pendingRoots.isEmpty() || m_checkingLoose;
     }
-    [[nodiscard]] qint64 scanningRoot() const
-    {
-        return m_activeRoot;
-    }
 
+    [[nodiscard]] static QString orderSql(const QString& column, bool descending);
     [[nodiscard]] QVector<Track> allTracks(const QString& sortColumn, bool descending) const;
     [[nodiscard]] QVector<Track> albumTracks(const QString& albumKey) const;
     [[nodiscard]] QVector<Track> artistTracks(const QString& artistKey) const;
     [[nodiscard]] QVector<Track> folderTracks(qint64 rootId) const;
     [[nodiscard]] QVector<Album> albums(const QString& artistKey = {}) const;
     [[nodiscard]] QVector<Artist> artists() const;
-    [[nodiscard]] Track track(qint64 id) const;
-    [[nodiscard]] QVector<Track> tracks(const QVector<qint64>& ids) const;
+    [[nodiscard]] Track track(qint64 id) const override;
+    [[nodiscard]] QVector<Track> tracks(const QVector<qint64>& ids) const override;
     bool saveTags(qint64 id, const TagEdit& edit, QString* error);
 
     [[nodiscard]] static SearchResults searchDatabase(const QString& path, const QString& text);
     [[nodiscard]] QVector<Track> searchTracks(const QString& text) const;
-    [[nodiscard]] QVector<Album> searchAlbums(const QString& text) const;
-    [[nodiscard]] QVector<Artist> searchArtists(const QString& text) const;
-    [[nodiscard]] QVector<Playlist> searchPlaylists(const QString& text) const;
 
     [[nodiscard]] qint64 favoritesPlaylistId() const;
     [[nodiscard]] bool isFavorite(qint64 id) const { return m_favorites.contains(id); }
@@ -92,22 +86,17 @@ public:
     void movePlaylistItem(qint64 playlistId, int from, int to);
     void undo();
     void redo();
-    [[nodiscard]] bool canUndo() const { return !m_undo.isEmpty(); }
-    [[nodiscard]] bool canRedo() const { return !m_redo.isEmpty(); }
 
     bool importM3u(qint64 playlistId, const QString& path, QString* error);
     [[nodiscard]] QVector<qint64> importFiles(const QStringList& paths);
     bool exportM3u(qint64 playlistId, const QString& path, QString* error) const;
 
-    [[nodiscard]] QString setting(const QString& key, const QString& fallback = {}) const;
-    void setSetting(const QString& key, const QString& value);
+    [[nodiscard]] QString setting(const QString& key, const QString& fallback = {}) const override;
+    void setSetting(const QString& key, const QString& value) override;
 
 signals:
-    void changed();
     void favoritesChanged();
     void favoritesFailed(const QString& message);
-    void sourceChanged(qint64 id);
-    void scanStarted(qint64 id);
     void scanStatistics(qint64 id, int parsedFiles);
     void scanWarning(const QString& message);
     void scanProgress(int done, int total);
@@ -115,41 +104,19 @@ signals:
     void scanFailed(const QString& message);
 
 private:
-    quint64 m_revision = 0;
-    struct UndoStep {
-        enum Kind {
-            SnapshotPlaylist,
-            Add,
-            Remove,
-            Move,
-            RenamePlaylist,
-            RenameFolder,
-            DeletePlaylist,
-            CreatePlaylist,
-            CreateFolder,
-            Favorites
-        } kind;
-        qint64 playlistId = 0;
-        qint64 folderId = 0;
-        QString name;
-        QString previousName;
-        QVector<qint64> trackIds;
-        QVector<int> positions;
-        QVector<qint64> beforeFavorites;
-        QVector<qint64> afterFavorites;
-        int from = 0;
-        int to = 0;
+    struct UndoCommand {
+        std::function<bool()> apply;
+        std::function<bool()> revert;
     };
 
-    void remember(const UndoStep& step);
-    bool apply(UndoStep& step, bool inverse);
+    void remember(UndoCommand command);
     void refreshFavorites();
     void scanRoot(qint64 id, const QString& path);
     void startNextScan();
     void refreshLooseFiles();
     void finishScan(bool changed = true);
     void watchRoots();
-    [[nodiscard]] static QString orderSql(const QString& column, bool descending);
+    [[nodiscard]] qint64 importResolvedFile(const QString& normalizedPath);
 
     std::unique_ptr<Database> m_database;
     std::unique_ptr<ArtworkCache> m_artwork;
@@ -164,8 +131,8 @@ private:
     qint64 m_lastServedRoot = 0;
     bool m_scanning = false;
     bool m_checkingLoose = false;
-    QVector<UndoStep> m_undo;
-    QVector<UndoStep> m_redo;
+    QVector<UndoCommand> m_undo;
+    QVector<UndoCommand> m_redo;
     bool m_applyingUndo = false;
     QSet<qint64> m_favorites;
 };

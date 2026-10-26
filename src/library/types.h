@@ -47,7 +47,6 @@ struct Track {
     [[nodiscard]] QString displayTitle() const;
     [[nodiscard]] QString displayArtist() const;
     [[nodiscard]] QString displayAlbum() const;
-    [[nodiscard]] QString displayAlbumArtist() const;
 };
 
 struct Album {

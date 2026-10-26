@@ -1,26 +1,23 @@
 #pragma once
 #include "library/types.h"
 #include "playback/player.h"
+#include "quick/dialogservice.h"
+#include "quick/librarypresenter.h"
+#include "quick/menuservice.h"
 #include "quick/rowmodel.h"
-#include <QFutureWatcher>
-#include <QImage>
+#include "quick/selectionmodel.h"
+#include "quick/systemintegration.h"
 #include <QPointer>
 #include <QSet>
-#include <QThreadPool>
 #include <QTimer>
-#include <memory>
+#include <functional>
+
+class QWindow;
 
 class QQuickView;
 namespace echo {
 struct UiMenu;
 class QuickView;
-struct QuickPage {
-    QVector<Track> tracks;
-    QVector<QVariantMap> trackRows;
-    QVector<QVariantMap> cards;
-    qint64 duration = 0;
-    QString error;
-};
 class Client : public QObject {
     Q_OBJECT
     Q_PROPERTY(echo::RowModel* tracks READ tracks CONSTANT)
@@ -39,7 +36,7 @@ public:
     Client(Library* library, Player* player, AudioEngine* engine, QObject* parent = nullptr);
     ~Client() override;
     void attach(QuickView* window);
-    QVariantMap dialog() const { return m_dialog; }
+    QVariantMap dialog() const { return m_dialogs.current(); }
     QVariantMap preferences() const;
     Q_INVOKABLE void setPreference(const QString& key, bool value);
     Q_INVOKABLE void answerDialog(int token, const QVariantMap& answer);
@@ -53,11 +50,11 @@ public:
     RowModel* queue() { return &m_queue; }
     QVariantMap page() const;
     QString status() const { return m_status; }
-    int selectionRevision() const { return m_selectionRevision; }
-    int selectedCount() const { return m_selection.size(); }
+    int selectionRevision() const { return m_selection.revision(); }
+    int selectedCount() const { return m_selection.count(); }
     bool reduceMotion() const { return m_reduceMotion; }
     void setReduceMotion(bool value);
-    QVariantList columns() const { return m_columns; }
+    QVariantList columns() const { return m_pages.columns(); }
     Q_INVOKABLE void resizeColumn(int column, double width);
     Q_INVOKABLE void navigate(const QString& kind, const QString& key = {}, const QString& title = {});
     Q_INVOKABLE void back();
@@ -93,8 +90,6 @@ signals:
     void settingsRequested();
     void menuRequested(const QVariantList& entries);
     void trayMenuRequested(const QPoint& position);
-    void miniRequested();
-    void mainRequested();
     void pageChanged();
     void navigationStarted();
     void statusChanged();
@@ -104,16 +99,10 @@ signals:
     void focusSearch();
 
 private:
-    struct Route {
-        QString kind = "songs", key, title = QStringLiteral("歌曲");
-        int sort = 0;
-        bool descending = false;
-    };
     void requestPage();
     void rebuildNavigation();
     void syncQueue(bool force = false);
     void syncTrackState();
-    void syncSystem(bool force = false);
     void report(const QString& message);
     void setupMenus();
     void addMusicFolder();
@@ -130,52 +119,30 @@ private:
     void playlistMenu(qint64 id);
     void folderMenu(qint64 id);
     void popup(UiMenu& menu);
-    QVariantList menuData(const UiMenu& menu, bool application = false);
-    using Reply = std::function<void(const QVariantMap&)>;
-    void requestDialog(QVariantMap data, Reply reply = {});
     void askName(const QString& title, const QString& initial, const QString& accept, std::function<void(QString)> reply);
     void choosePath(const QString& title, const QString& mode, const QStringList& filters, std::function<void(QString)> reply);
+    void requestDialog(QVariantMap data, DialogService::Reply reply = {});
     QVector<qint64> selectedIds() const;
     QString rowKey(int row) const;
     QString routeKey() const;
+    [[nodiscard]] const LibraryPresenter::Route& route() const { return m_pages.route(); }
+    [[nodiscard]] const QVector<Track>& pageTracks() const { return m_pages.pageTracks(); }
     Library* m_library;
     Player* m_player;
     AudioEngine* m_engine;
-    QPointer<QuickView> m_window;
-    QPointer<QWindow> m_mini;
-    std::unique_ptr<UiMenu> m_menuBar;
-    QVariantMap m_dialog;
-    struct PendingDialog { QVariantMap data; Reply reply; };
-    QList<PendingDialog> m_pendingDialogs;
-    Reply m_reply;
-    int m_dialogToken = 0, m_menuToken = 0;
-    QHash<int, std::function<void()>> m_menuCallbacks, m_appCallbacks;
+    LibraryPresenter m_pages;
+    SelectionModel m_selection;
+    DialogService m_dialogs;
+    MenuService m_menus;
+    SystemIntegration m_system;
     RowModel m_tracks, m_cards, m_navigation, m_queue;
-    Route m_route, m_beforeSearch;
-    QVector<Route> m_history;
-    QHash<QString, double> m_scrolls;
-    QHash<QString, QSet<QString>> m_selections;
-    QSet<QString> m_selection;
-    int m_selectionRevision = 0, m_anchor = -1;
-    QVector<Track> m_pageTracks;
     QVector<Player::Entry> m_lastQueue;
     int m_lastQueueIndex = -2;
     qint64 m_lastPlayingId = -1;
-    qint64 m_totalDuration = 0;
     QSet<qint64> m_lastFavorites;
-    QString m_sourcePath;
-    QString m_systemArtworkHash;
-    QImage m_systemArtwork;
     bool m_lastPlaying = false;
-    bool m_busy = false, m_reduceMotion = false, m_dirty = false;
-    QString m_search, m_status;
-    QString m_pendingPlay;
-    bool m_pendingShuffle = false;
-    quint64 m_generation = 0, m_runningGeneration = 0;
-    QThreadPool m_pool;
-    QFutureWatcher<QuickPage> m_query;
-    QTimer m_navigationTimer;
-    QTimer m_searchTimer, m_refreshTimer, m_columnTimer;
-    QVariantList m_columns { 46., 390., 240., 240., 76. };
+    bool m_reduceMotion = false;
+    QString m_status;
+    QTimer m_refreshTimer;
 };
 }

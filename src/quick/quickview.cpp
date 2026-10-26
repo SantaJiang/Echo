@@ -2,7 +2,7 @@
 #include "platform/platform.h"
 #include "quick/client.h"
 #include "quick/playbackview.h"
-#include "ui/icons.h"
+#include "presentation/icons.h"
 #include <QCloseEvent>
 #include <QGuiApplication>
 #include <QPainter>
@@ -10,7 +10,6 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickImageProvider>
-#include <QQuickStyle>
 #include <algorithm>
 
 #ifdef Q_OS_WIN
@@ -20,12 +19,20 @@
 #include <windowsx.h>
 #endif
 
-static void initializeQuickResources()
+// Q_INIT_RESOURCE expands to a global symbol and must not sit inside any namespace.
+static void initEchoResources()
 {
     Q_INIT_RESOURCE(quick);
     Q_INIT_RESOURCE(playback_shaders);
     Q_INIT_RESOURCE(echo);
 }
+
+namespace echo {
+void initializeEchoResources()
+{
+    initEchoResources();
+}
+} // namespace echo
 
 namespace echo {
 namespace {
@@ -98,23 +105,15 @@ namespace {
 }
 QuickView::QuickView(PlaybackView* playback, Client* client)
 {
-    initializeQuickResources();
-    static const bool styleReady = [] {
-        QQuickStyle::setStyle(QStringLiteral("Basic"));
-        return true;
-    }();
-    Q_UNUSED(styleReady);
-    m_customChrome = client != nullptr;
+    m_customChrome = true;
 #ifdef Q_OS_MACOS
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     // Keep Cocoa's full-size content mode in Qt's own window state, so Qt
     // preserves it when maximizing or returning from native fullscreen.
-    if (m_customChrome)
-        setFlags(Qt::Window | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
+    setFlags(Qt::Window | Qt::ExpandedClientAreaHint | Qt::NoTitleBarBackgroundHint);
 #endif
 #else
-    if (m_customChrome)
-        setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
+    setFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
 #endif
     connect(this, &QWindow::windowStateChanged, this, &QuickView::chromeChanged);
     connect(this, &QWindow::visibilityChanged, this, &QuickView::chromeChanged);
@@ -125,23 +124,20 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
     setResizeMode(QQuickView::SizeRootObjectToView);
     engine()->addImageProvider(QStringLiteral("echo-icons"), new Icons);
     rootContext()->setContextProperty(QStringLiteral("playback"), playback);
-    if (client) {
-        rootContext()->setContextProperty(QStringLiteral("client"), client);
-        rootContext()->setContextProperty(QStringLiteral("chrome"), this);
-        const QSize initialSize = size();
-        create();
-        applyQuickWindowChrome(this);
-        // Expanded Cocoa content can alter the initial native geometry during
-        // creation. Reassert the requested size in Qt logical coordinates.
-        resize(initialSize);
-    }
+    rootContext()->setContextProperty(QStringLiteral("client"), client);
+    rootContext()->setContextProperty(QStringLiteral("chrome"), this);
+    const QSize initialSize = size();
+    create();
+    applyQuickWindowChrome(this);
+    // Expanded Cocoa content can alter the initial native geometry during
+    // creation. Reassert the requested size in Qt logical coordinates.
+    resize(initialSize);
     connect(this, &QWindow::visibilityChanged, playback, [playback](QWindow::Visibility visibility) {
         bool active = visibility != QWindow::Hidden && visibility != QWindow::Minimized;
         for (auto* window : QGuiApplication::allWindows()) active |= window->property("echoMiniPlayer").toBool() && window->isVisible();
         playback->setPresentationActive(active);
     });
-    setSource(
-        QUrl(client ? QStringLiteral("qrc:/echo/quick/Shell.qml") : QStringLiteral("qrc:/echo/quick/Prototype.qml")));
+    setSource(QUrl(QStringLiteral("qrc:/echo/quick/Shell.qml")));
 }
 void QuickView::beginWindowMove()
 {
@@ -182,7 +178,13 @@ void QuickView::showFromBackground()
     // A tray click during the exit animation cancels its pending hide.
     m_hidePending = false;
     ++m_hideRevision;
-    if (visibility() == QWindow::Minimized) showNormal(); else show();
+    if (visibility() == QWindow::Minimized) {
+        showNormal();
+    } else {
+        // QWindow::show() selects the platform's default window state and can
+        // restore a maximized/fullscreen window when merely opening settings.
+        setVisible(true);
+    }
     raise();
     requestActivate();
 }

@@ -30,7 +30,6 @@ extern "C" {
 
 namespace echo {
 namespace {
-
 struct Marker {
     qint64 queuedFrame = 0;
     qint64 token = 0;
@@ -62,6 +61,12 @@ qint64 itemFrames(const Decoder& decoder, const PlaybackItem& item)
 
 } // namespace
 
+constexpr int kFadeTransportMs = 300;
+constexpr int kFadeShortMs = 120;
+constexpr int kDecodeBlockFrames = 4096;
+constexpr int kBufferLowDivisor = 5;
+constexpr int kVolumeRampDivisor = 50;
+
 struct AudioEngine::Worker {
     AudioEngine* owner = nullptr;
     std::unique_ptr<AudioOutput> output;
@@ -83,12 +88,23 @@ struct AudioEngine::Worker {
 
     Loaded current;
     Loaded upcoming;
-    DeviceFormat device;
+    struct OutputSession {
+        DeviceFormat device;
+        bool queued = false;
+        bool ready = false;
+    } session;
+    struct ResampleStage {
+        SwrContext* context = nullptr;
+        int rate = 0;
+        void reset()
+        {
+            if (context)
+                swr_free(&context);
+            rate = 0;
+        }
+        ~ResampleStage() { reset(); }
+    } resample;
     SampleFormat configuredSource;
-    bool queuedOutput = false;
-    bool deviceReady = false;
-    SwrContext* resampler = nullptr;
-    int resampleRate = 0;
     uint32_t dither = 0xC0FFEEU;
     uint32_t outputDither = 0x1234567U;
     float activeGain = 1.f;
@@ -105,14 +121,16 @@ struct AudioEngine::Worker {
     std::vector<Marker> markers;
     QThread* thread = nullptr;
     enum class OutputFade { None, In, OutPause, OutStop, OutSeek, OutPlay };
-    std::atomic<int> fadeKind {static_cast<int>(OutputFade::None)};
-    std::atomic<int> fadeTotal {0};
-    std::atomic<int> fadeDone {0};
-    float smoothedVolume = 1.f;
-    std::atomic<float> fadeLevel {1.f};
-    std::atomic<float> fadeStart {0.f};
-    QElapsedTimer fadeClock;
-    qint64 fadeAudibleStart = 0;
+    struct FadeController {
+        std::atomic<int> kind {static_cast<int>(OutputFade::None)};
+        std::atomic<int> total {0};
+        std::atomic<int> done {0};
+        float smoothedVolume = 1.f;
+        std::atomic<float> level {1.f};
+        std::atomic<float> start {0.f};
+        QElapsedTimer clock;
+        qint64 audibleStart = 0;
+    } fader;
 
     enum Command { Play = 1, Upcoming, Pause, Resume, Stop, Seek, Volume, ConfigureOutput, Gain, ReleaseFiles, Fading };
 
@@ -149,9 +167,9 @@ struct AudioEngine::Worker {
             }
             pump();
             publishPosition();
-            if (!queuedOutput && fadeKind.load() != static_cast<int>(OutputFade::None) && fadeKind.load() != static_cast<int>(OutputFade::In)
+            if (!session.queued && fader.kind.load() != static_cast<int>(OutputFade::None) && fader.kind.load() != static_cast<int>(OutputFade::In)
                 && ring.availableRead() == 0) {
-                fadeDone.store(fadeTotal.load());
+                fader.done.store(fader.total.load());
             }
             completeFade();
         }
@@ -164,13 +182,13 @@ struct AudioEngine::Worker {
     {
         switch (command) {
         case Play:
-            if (!beginFade(OutputFade::OutPlay, 300)) startPlayback();
+            if (!beginFade(OutputFade::OutPlay, kFadeTransportMs)) startPlayback();
             break;
         case Upcoming:
             loadUpcoming();
             break;
         case Pause:
-            if (!beginFade(OutputFade::OutPause, 120)) {
+            if (!beginFade(OutputFade::OutPause, kFadeShortMs)) {
                 if (output) {
                     output->pause();
                 }
@@ -178,8 +196,8 @@ struct AudioEngine::Worker {
             }
             break;
         case Resume:
-            if (deviceReady && output) {
-                beginFade(OutputFade::In, 120);
+            if (session.ready && output) {
+                beginFade(OutputFade::In, kFadeShortMs);
                 output->start();
                 setState(State::Playing);
             }
@@ -189,22 +207,22 @@ struct AudioEngine::Worker {
             emit owner->filesReleased();
             break;
         case Stop:
-            if (!beginFade(OutputFade::OutStop, 300)) {
+            if (!beginFade(OutputFade::OutStop, kFadeTransportMs)) {
                 stopPlayback();
             }
             break;
         case Seek:
-            if (!beginFade(OutputFade::OutSeek, 120)) {
+            if (!beginFade(OutputFade::OutSeek, kFadeShortMs)) {
                 seekCurrent();
             }
             break;
         case Volume:
-            if (output) output->setVolume(volumeCurve(volume.load()) * (queuedOutput ? fadeLevel.load() : 1.f));
+            if (output) output->setVolume(volumeCurve(volume.load()) * (session.queued ? fader.level.load() : 1.f));
             break;
         case Fading: {
             { QMutexLocker locker(&mutex); fadingEnabled = pendingFading; }
             if (!fadingEnabled) {
-                fadeDone.store(fadeTotal.load());
+                fader.done.store(fader.total.load());
                 completeFade(true);
                 cancelFade();
             }
@@ -224,9 +242,9 @@ struct AudioEngine::Worker {
             break;
         }
         case ConfigureOutput:
-            if (const auto fade = static_cast<OutputFade>(fadeKind.load());
+            if (const auto fade = static_cast<OutputFade>(fader.kind.load());
                 fade != OutputFade::None && fade != OutputFade::In) {
-                fadeDone.store(fadeTotal.load());
+                fader.done.store(fader.total.load());
                 completeFade(true);
             }
             reconfigureOutput();
@@ -273,7 +291,7 @@ struct AudioEngine::Worker {
         }
         output->setPull([this](uint8_t* dst, int frames) { return pull(dst, frames); });
         cancelFade();
-        beginFade(OutputFade::In, 120);
+        beginFade(OutputFade::In, kFadeShortMs);
         output->start();
         setState(State::Playing);
         emit owner->trackStarted(current.item.token);
@@ -335,14 +353,14 @@ struct AudioEngine::Worker {
 
     bool ensureDevice(const SampleFormat& source, bool force = false)
     {
-        if (!force && deviceReady && source == configuredSource) {
-            if (!resampler && (source.sampleRate != device.sampleRate || source.channels != device.channels
-                || (source.channelMask && device.channelMask && source.channelMask != device.channelMask))) {
+        if (!force && session.ready && source == configuredSource) {
+            if (!resample.context && (source.sampleRate != session.device.sampleRate || source.channels != session.device.channels
+                || (source.channelMask && session.device.channelMask && source.channelMask != session.device.channelMask))) {
                 setupResampler(source);
-                if (!resampler) {
+                if (!resample.context) {
                     emit owner->errorOccurred(QStringLiteral("无法初始化音频重采样或声道混音"));
                     output->close();
-                    deviceReady = false;
+                    session.ready = false;
                     setState(State::Stopped);
                     return false;
                 }
@@ -352,7 +370,7 @@ struct AudioEngine::Worker {
         if (output->isOpen()) {
             output->pause();
             output->close();
-            deviceReady = false;
+            session.ready = false;
         }
         QString error;
         DeviceFormat opened;
@@ -371,24 +389,24 @@ struct AudioEngine::Worker {
             lastSpatialStatus = status;
             emit owner->spatialStatusChanged(status);
         }
-        queuedOutput = output->queuedPlayback();
-        if (queuedOutput) smoothedVolume = 1.f;
+        session.queued = output->queuedPlayback();
+        if (session.queued) fader.smoothedVolume = 1.f;
         output->setVolume(volumeCurve(volume.load()));
         configuredSource = source;
-        device = opened;
-        deviceReady = true;
-        owner->m_deviceRate.store(device.sampleRate);
-        owner->m_deviceBits.store(device.bitsPerSample);
-        owner->m_deviceExclusive.store(device.exclusive);
-        emit owner->deviceOpened(source.sampleRate, source.bitsPerSample, source.isFloat, device.sampleRate, device.exclusive);
+        session.device = opened;
+        session.ready = true;
+        owner->m_deviceRate.store(session.device.sampleRate);
+        owner->m_deviceBits.store(session.device.bitsPerSample);
+        owner->m_deviceExclusive.store(session.device.exclusive);
+        emit owner->deviceOpened(source.sampleRate, source.bitsPerSample, source.isFloat, session.device.sampleRate, session.device.exclusive);
         freeResampler();
-        if (source.sampleRate != device.sampleRate || source.channels != device.channels
-            || (source.channelMask && device.channelMask && source.channelMask != device.channelMask)) {
+        if (source.sampleRate != session.device.sampleRate || source.channels != session.device.channels
+            || (source.channelMask && session.device.channelMask && source.channelMask != session.device.channelMask)) {
             setupResampler(source);
-            if (!resampler) {
+            if (!resample.context) {
                 emit owner->errorOccurred(QStringLiteral("无法初始化音频重采样或声道混音"));
                 output->close();
-                deviceReady = false;
+                session.ready = false;
                 setState(State::Stopped);
                 return false;
             }
@@ -403,59 +421,56 @@ struct AudioEngine::Worker {
         AVChannelLayout outLayout;
         if (source.channelMask) av_channel_layout_from_mask(&inLayout, source.channelMask);
         else av_channel_layout_default(&inLayout, source.channels);
-        if (device.channelMask) av_channel_layout_from_mask(&outLayout, device.channelMask);
-        else av_channel_layout_default(&outLayout, device.channels);
-        swr_alloc_set_opts2(&resampler, &outLayout, AV_SAMPLE_FMT_DBL, device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
+        if (session.device.channelMask) av_channel_layout_from_mask(&outLayout, session.device.channelMask);
+        else av_channel_layout_default(&outLayout, session.device.channels);
+        swr_alloc_set_opts2(&resample.context, &outLayout, AV_SAMPLE_FMT_DBL, session.device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
                             source.sampleRate, 0, nullptr);
-        if (resampler && std::strstr(swresample_configuration(), "--enable-libsoxr")
-            && av_opt_set(resampler, "resampler", "soxr", 0) == 0) {
-            av_opt_set_double(resampler, "precision", 28.0, 0);
+        if (resample.context && std::strstr(swresample_configuration(), "--enable-libsoxr")
+            && av_opt_set(resample.context, "resample.context", "soxr", 0) == 0) {
+            av_opt_set_double(resample.context, "precision", 28.0, 0);
         }
-        if (resampler) {
-            av_opt_set_int(resampler, "filter_size", 64, 0);
-            av_opt_set_int(resampler, "exact_rational", 1, 0);
-            av_opt_set_double(resampler, "rematrix_maxval", 1., 0);
+        if (resample.context) {
+            av_opt_set_int(resample.context, "filter_size", 64, 0);
+            av_opt_set_int(resample.context, "exact_rational", 1, 0);
+            av_opt_set_double(resample.context, "rematrix_maxval", 1., 0);
         }
-        if (!resampler || swr_init(resampler) < 0) {
+        if (!resample.context || swr_init(resample.context) < 0) {
             freeResampler();
-            swr_alloc_set_opts2(&resampler, &outLayout, AV_SAMPLE_FMT_DBL, device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
+            swr_alloc_set_opts2(&resample.context, &outLayout, AV_SAMPLE_FMT_DBL, session.device.sampleRate, &inLayout, AV_SAMPLE_FMT_DBL,
                                 source.sampleRate, 0, nullptr);
-            if (resampler) {
-                av_opt_set_int(resampler, "filter_size", 64, 0);
-                av_opt_set_int(resampler, "exact_rational", 1, 0);
-                av_opt_set_double(resampler, "rematrix_maxval", 1., 0);
+            if (resample.context) {
+                av_opt_set_int(resample.context, "filter_size", 64, 0);
+                av_opt_set_int(resample.context, "exact_rational", 1, 0);
+                av_opt_set_double(resample.context, "rematrix_maxval", 1., 0);
             }
-            if (!resampler || swr_init(resampler) < 0) {
+            if (!resample.context || swr_init(resample.context) < 0) {
                 freeResampler();
             }
         }
-        resampleRate = resampler ? device.sampleRate : 0;
+        resample.rate = resample.context ? session.device.sampleRate : 0;
         av_channel_layout_uninit(&inLayout);
         av_channel_layout_uninit(&outLayout);
     }
 
     void freeResampler()
     {
-        if (resampler) {
-            swr_free(&resampler);
-        }
-        resampleRate = 0;
+        resample.reset();
     }
 
     void pushMarker(const Loaded& slot, bool includeFilterDelay = false)
     {
         activeGain = std::pow(10.f, slot.item.gainDb / 20.f);
-        const int rate = device.sampleRate > 0 ? device.sampleRate : slot.format.sampleRate;
-        const qint64 delayed = includeFilterDelay && resampler ? swr_get_delay(resampler, rate) : 0;
+        const int rate = session.device.sampleRate > 0 ? session.device.sampleRate : slot.format.sampleRate;
+        const qint64 delayed = includeFilterDelay && resample.context ? swr_get_delay(resample.context, rate) : 0;
         markers.push_back(Marker {framesQueued + delayed, slot.item.token, slot.item.startMs, rate, slot.item});
         owner->m_activeToken.store(slot.item.token);
     }
 
     void reconfigureOutput()
     {
-        if (!current.decoder || !deviceReady) {
+        if (!current.decoder || !session.ready) {
             output->close();
-            deviceReady = false;
+            session.ready = false;
             freeResampler();
             owner->m_deviceRate.store(0);
             owner->m_deviceBits.store(0);
@@ -503,7 +518,7 @@ struct AudioEngine::Worker {
         emit owner->trackStarted(current.item.token);
         output->setPull([this](uint8_t* dst, int frames) { return pull(dst, frames); });
         if (playing) {
-            beginFade(OutputFade::In, 120);
+            beginFade(OutputFade::In, kFadeShortMs);
             output->start();
         }
     }
@@ -527,15 +542,15 @@ struct AudioEngine::Worker {
                 wait.wait(&mutex, 4);
                 return;
             }
-            const int waitMs = device.sampleRate > 0
-                                   ? std::max(20, device.latencyFrames * 1000 / std::max(device.sampleRate, 1) + 15)
+            const int waitMs = session.device.sampleRate > 0
+                                   ? std::max(20, session.device.latencyFrames * 1000 / std::max(session.device.sampleRate, 1) + 15)
                                    : 40;
             QThread::msleep(static_cast<unsigned long>(waitMs));
             finishTail();
             return;
         }
-        const int frameBytes = std::max(1, device.bytesPerFrame());
-        const int low = device.sampleRate > 0 ? device.sampleRate / 5 * frameBytes : 16384;
+        const int frameBytes = std::max(1, session.device.bytesPerFrame());
+        const int low = session.device.sampleRate > 0 ? session.device.sampleRate / kBufferLowDivisor * frameBytes : 16384;
         if (ring.availableRead() > low * 2) {
             QMutexLocker locker(&mutex);
             wait.wait(&mutex, 8);
@@ -549,7 +564,7 @@ struct AudioEngine::Worker {
         if (upcoming.decoder == nullptr && queuedNext.valid()) {
             loadUpcoming();
         }
-        const int chunk = 4096;
+        const int chunk = kDecodeBlockFrames;
         raw.resize(static_cast<size_t>(chunk * std::max(current.format.bytesPerFrame(), 4)));
         const int read = current.decoder->read(raw.data(), chunk);
         if (read < 0) {
@@ -567,15 +582,15 @@ struct AudioEngine::Worker {
     void queueFloatBlock(const uint8_t* pcm, int count, float gain = 1.f)
     {
         SampleFormat working;
-        working.sampleRate = device.sampleRate;
-        working.channels = device.channels;
+        working.sampleRate = session.device.sampleRate;
+        working.channels = session.device.channels;
         working.pcm = Fooyin::SampleFormat::F64;
         working.bitsPerSample = 64;
         working.bytesPerSample = 8;
         working.isFloat = true;
-        working.channelMask = device.channelMask;
-        converted.resize(static_cast<size_t>(count) * static_cast<size_t>(device.bytesPerFrame()));
-        convertSamples(pcm, working, count, converted.data(), device, gain, &dither);
+        working.channelMask = session.device.channelMask;
+        converted.resize(static_cast<size_t>(count) * static_cast<size_t>(session.device.bytesPerFrame()));
+        convertSamples(pcm, working, count, converted.data(), session.device, gain, &dither);
         enqueueConverted(count);
     }
 
@@ -583,11 +598,11 @@ struct AudioEngine::Worker {
     {
         if (std::abs(activeGain - gain) > 0.00001f) {
             const auto* samples = reinterpret_cast<const double*>(pcm);
-            ramped.assign(samples, samples + count * device.channels);
-            const float step = 1.f / std::max(1, device.sampleRate / 10);
+            ramped.assign(samples, samples + count * session.device.channels);
+            const float step = 1.f / std::max(1, session.device.sampleRate / 10);
             for (int frame = 0; frame < count; ++frame) {
                 activeGain += std::clamp(gain - activeGain, -step, step);
-                for (int ch = 0; ch < device.channels; ++ch) ramped[frame * device.channels + ch] *= activeGain;
+                for (int ch = 0; ch < session.device.channels; ++ch) ramped[frame * session.device.channels + ch] *= activeGain;
             }
             pcm = reinterpret_cast<const uint8_t*>(ramped.data());
             gain = 1.f;
@@ -600,14 +615,14 @@ struct AudioEngine::Worker {
     void enqueueConverted(int count)
     {
         int offset = 0;
-        const int bytes = count * std::max(1, device.bytesPerFrame());
+        const int bytes = count * std::max(1, session.device.bytesPerFrame());
         while (offset < bytes) {
             const int wrote = ring.write(converted.data() + offset, bytes - offset);
             if (wrote <= 0) {
                 QMutexLocker locker(&mutex);
                 wait.wait(&mutex, 4);
                 if (owner->m_state.load() != static_cast<int>(State::Playing) && !draining) {
-                    framesQueued += offset / std::max(1, device.bytesPerFrame());
+                    framesQueued += offset / std::max(1, session.device.bytesPerFrame());
                     return;
                 }
                 continue;
@@ -623,7 +638,7 @@ struct AudioEngine::Worker {
         if (!std::isfinite(gain) || gain < 0.f) {
             gain = 0.f;
         }
-        if (resampler) {
+        if (resample.context) {
             const uint8_t* resampleInput = src;
             const bool scale = gain != 1.f || std::abs(activeGain - gain) > 0.00001f;
             if (format.pcm != Fooyin::SampleFormat::F64 || scale) {
@@ -647,13 +662,13 @@ struct AudioEngine::Worker {
                 }
                 resampleInput = sourceFloat.data();
             }
-            const int estimated = swr_get_out_samples(resampler, frames);
+            const int estimated = swr_get_out_samples(resample.context, frames);
             const int outEstimate = estimated > 0 ? estimated : static_cast<int>(av_rescale_rnd(
-                swr_get_delay(resampler, format.sampleRate) + frames, device.sampleRate, format.sampleRate, AV_ROUND_UP)) + 256;
-            floatBlock.resize(static_cast<size_t>(outEstimate) * static_cast<size_t>(std::max(device.channels, 1)) * sizeof(double));
+                swr_get_delay(resample.context, format.sampleRate) + frames, session.device.sampleRate, format.sampleRate, AV_ROUND_UP)) + 256;
+            floatBlock.resize(static_cast<size_t>(outEstimate) * static_cast<size_t>(std::max(session.device.channels, 1)) * sizeof(double));
             uint8_t* outputPlanes[] = {floatBlock.data()};
             const uint8_t* inputPlanes[] = {resampleInput};
-            const int got = swr_convert(resampler, outputPlanes, outEstimate, inputPlanes, frames);
+            const int got = swr_convert(resample.context, outputPlanes, outEstimate, inputPlanes, frames);
             if (got > 0) {
                 queueFloatBlock(floatBlock.data(), got);
             }
@@ -666,22 +681,22 @@ struct AudioEngine::Worker {
             writeFloatBlock(sourceFloat.data(), frames, gain);
             return;
         }
-        converted.resize(static_cast<size_t>(frames) * static_cast<size_t>(device.bytesPerFrame()));
-        convertSamples(src, format, frames, converted.data(), device, gain, &dither);
+        converted.resize(static_cast<size_t>(frames) * static_cast<size_t>(session.device.bytesPerFrame()));
+        convertSamples(src, format, frames, converted.data(), session.device, gain, &dither);
         enqueueConverted(frames);
     }
 
     void flushResampler()
     {
-        if (!resampler || !deviceReady) {
+        if (!resample.context || !session.ready) {
             return;
         }
-        const int channels = std::max(1, device.channels);
+        const int channels = std::max(1, session.device.channels);
         for (int pass = 0; pass < 64; ++pass) {
             const int outEstimate = 8192;
             floatBlock.resize(static_cast<size_t>(outEstimate) * static_cast<size_t>(channels) * sizeof(double));
             uint8_t* outputPlanes[] = {floatBlock.data()};
-            const int got = swr_convert(resampler, outputPlanes, outEstimate, nullptr, 0);
+            const int got = swr_convert(resample.context, outputPlanes, outEstimate, nullptr, 0);
             if (got <= 0) {
                 break;
             }
@@ -729,9 +744,9 @@ struct AudioEngine::Worker {
 
     void finishTail()
     {
-        const auto fade = static_cast<OutputFade>(fadeKind.load());
+        const auto fade = static_cast<OutputFade>(fader.kind.load());
         if (fade != OutputFade::None && fade != OutputFade::In) {
-            fadeDone.store(fadeTotal.load());
+            fader.done.store(fader.total.load());
             completeFade(true);
             return;
         }
@@ -798,8 +813,8 @@ struct AudioEngine::Worker {
         ring.clear();
         draining = false;
         afterTail = AfterTail::None;
-        if (resampler) {
-            swr_init(resampler);
+        if (resample.context) {
+            swr_init(resample.context);
         }
         current.decoder->setRange(frame, current.item.endMs >= 0 ? current.item.endMs * current.format.sampleRate / 1000 : -1);
         framesPlayed.store(0);
@@ -810,80 +825,80 @@ struct AudioEngine::Worker {
         marker.token = current.item.token;
         marker.item = current.item;
         marker.startMs = current.item.startMs + position;
-        marker.sampleRate = device.sampleRate > 0 ? device.sampleRate : current.format.sampleRate;
+        marker.sampleRate = session.device.sampleRate > 0 ? session.device.sampleRate : current.format.sampleRate;
         markers.push_back(marker);
         owner->m_positionMs.store(marker.startMs);
         owner->m_activeToken.store(marker.token);
         emit owner->positionChanged();
         cancelFade();
-        if (wasPlaying && output && deviceReady) {
-            beginFade(OutputFade::In, 120);
+        if (wasPlaying && output && session.ready) {
+            beginFade(OutputFade::In, kFadeShortMs);
             output->start();
         }
     }
 
     bool beginFade(OutputFade kind, int milliseconds)
     {
-        if (!fadingEnabled || !deviceReady || device.sampleRate <= 0
+        if (!fadingEnabled || !session.ready || session.device.sampleRate <= 0
             || (kind != OutputFade::In && owner->m_state.load() != static_cast<int>(State::Playing))) {
             return false;
         }
-        if (queuedOutput) updateQueuedFade();
+        if (session.queued) updateQueuedFade();
         const float start = kind == OutputFade::In
-            ? (fadeKind.load() == static_cast<int>(OutputFade::None) ? 0.f : fadeLevel.load()) : fadeLevel.load();
-        const int frames = std::max(1, device.sampleRate * milliseconds / 1000);
-        fadeKind.store(static_cast<int>(OutputFade::None));
-        fadeStart.store(start);
-        fadeLevel.store(start);
-        fadeClock.start();
-        if (queuedOutput) {
-            fadeAudibleStart = std::max<qint64>(0, framesPlayed.load() - output->pendingFrames());
+            ? (fader.kind.load() == static_cast<int>(OutputFade::None) ? 0.f : fader.level.load()) : fader.level.load();
+        const int frames = std::max(1, session.device.sampleRate * milliseconds / 1000);
+        fader.kind.store(static_cast<int>(OutputFade::None));
+        fader.start.store(start);
+        fader.level.store(start);
+        fader.clock.start();
+        if (session.queued) {
+            fader.audibleStart = std::max<qint64>(0, framesPlayed.load() - output->pendingFrames());
             output->setVolume(volumeCurve(volume.load()) * start);
         }
-        fadeDone.store(0);
-        fadeTotal.store(frames);
-        fadeKind.store(static_cast<int>(kind));
+        fader.done.store(0);
+        fader.total.store(frames);
+        fader.kind.store(static_cast<int>(kind));
         return true;
     }
 
     void cancelFade()
     {
-        fadeKind.store(static_cast<int>(OutputFade::None));
-        fadeDone.store(0);
-        fadeTotal.store(0);
-        fadeLevel.store(1.f);
-        if (queuedOutput && output) output->setVolume(volumeCurve(volume.load()));
+        fader.kind.store(static_cast<int>(OutputFade::None));
+        fader.done.store(0);
+        fader.total.store(0);
+        fader.level.store(1.f);
+        if (session.queued && output) output->setVolume(volumeCurve(volume.load()));
     }
 
     void updateQueuedFade()
     {
-        const auto kind = static_cast<OutputFade>(fadeKind.load());
-        if (!queuedOutput || kind == OutputFade::None || fadeTotal.load() <= 0) return;
+        const auto kind = static_cast<OutputFade>(fader.kind.load());
+        if (!session.queued || kind == OutputFade::None || fader.total.load() <= 0) return;
         // Fade in against the audible clock: native queued output may need preroll before it starts.
         const qint64 elapsedFrames = kind == OutputFade::In
-            ? std::max<qint64>(0, framesPlayed.load() - output->pendingFrames() - fadeAudibleStart)
-            : fadeClock.elapsed() * device.sampleRate / 1000;
-        const int done = static_cast<int>(std::min<qint64>(fadeTotal.load(), elapsedFrames));
-        fadeDone.store(done);
-        const float progress = static_cast<float>(done) / fadeTotal.load();
+            ? std::max<qint64>(0, framesPlayed.load() - output->pendingFrames() - fader.audibleStart)
+            : fader.clock.elapsed() * session.device.sampleRate / 1000;
+        const int done = static_cast<int>(std::min<qint64>(fader.total.load(), elapsedFrames));
+        fader.done.store(done);
+        const float progress = static_cast<float>(done) / fader.total.load();
         const float end = kind == OutputFade::In ? 1.f : 0.f;
-        fadeLevel.store(fadeStart.load() + (end - fadeStart.load()) * progress);
-        output->setVolume(volumeCurve(volume.load()) * fadeLevel.load());
+        fader.level.store(fader.start.load() + (end - fader.start.load()) * progress);
+        output->setVolume(volumeCurve(volume.load()) * fader.level.load());
     }
 
     void completeFade(bool force = false)
     {
         if (!force) updateQueuedFade();
-        const auto kind = static_cast<OutputFade>(fadeKind.load());
-        const int total = fadeTotal.load();
-        if (kind == OutputFade::None || total <= 0 || fadeDone.load() < total) {
+        const auto kind = static_cast<OutputFade>(fader.kind.load());
+        const int total = fader.total.load();
+        if (kind == OutputFade::None || total <= 0 || fader.done.load() < total) {
             return;
         }
         // Keep an outgoing envelope at silence until the callback has actually stopped.
-        if (kind == OutputFade::In) fadeKind.store(static_cast<int>(OutputFade::None));
-        fadeLevel.store(kind == OutputFade::In ? 1.f : 0.f);
-        if (queuedOutput && output) output->setVolume(volumeCurve(volume.load()) * fadeLevel.load());
-        if (output && !queuedOutput && kind != OutputFade::In) output->drain();
+        if (kind == OutputFade::In) fader.kind.store(static_cast<int>(OutputFade::None));
+        fader.level.store(kind == OutputFade::In ? 1.f : 0.f);
+        if (session.queued && output) output->setVolume(volumeCurve(volume.load()) * fader.level.load());
+        if (output && !session.queued && kind != OutputFade::In) output->drain();
         if (kind == OutputFade::OutPlay) {
             startPlayback();
             return;
@@ -893,7 +908,7 @@ struct AudioEngine::Worker {
                 output->pause();
                 publishPosition();
             }
-            fadeKind.store(static_cast<int>(OutputFade::None));
+            fader.kind.store(static_cast<int>(OutputFade::None));
             setState(State::Paused);
             return;
         }
@@ -906,25 +921,29 @@ struct AudioEngine::Worker {
         }
     }
 
+    // Per-frame convertSamples rebuilds a SampleFormat, but a 512-frame 48 kHz
+    // float callback spends about 6 microseconds on it (measured at -O3: 3.3x a
+    // constant-gain block, well under 0.1% of the callback budget). The envelope
+    // also changes every frame, so a single block gain would not be byte-identical.
     void scalePulled(uint8_t* dst, int frames)
     {
         if (frames <= 0) {
             return;
         }
-        const float target = queuedOutput ? 1.f : volumeCurve(std::clamp(volume.load(), 0.f, 1.f));
-        const int channels = std::max(1, device.channels);
-        const int ramp = std::max(1, device.sampleRate / 50);
-        const auto kind = static_cast<OutputFade>(fadeKind.load());
-        const int total = fadeTotal.load();
-        const int done = fadeDone.load();
-        const float start = fadeStart.load();
-        float lastLevel = fadeLevel.load();
-        const int sampleBytes = std::max(1, device.containerBytes);
+        const float target = session.queued ? 1.f : volumeCurve(std::clamp(volume.load(), 0.f, 1.f));
+        const int channels = std::max(1, session.device.channels);
+        const int ramp = std::max(1, session.device.sampleRate / kVolumeRampDivisor);
+        const auto kind = static_cast<OutputFade>(fader.kind.load());
+        const int total = fader.total.load();
+        const int done = fader.done.load();
+        const float start = fader.start.load();
+        float lastLevel = fader.level.load();
+        const int sampleBytes = std::max(1, session.device.containerBytes);
         for (int frame = 0; frame < frames; ++frame) {
-            smoothedVolume += (target - smoothedVolume) * std::min(1.f, 1.f / static_cast<float>(ramp));
-            if (std::fabs(target - smoothedVolume) < 0.0000001f) smoothedVolume = target;
-            float envelope = smoothedVolume;
-            if (!queuedOutput && kind != OutputFade::None && total > 0) {
+            fader.smoothedVolume += (target - fader.smoothedVolume) * std::min(1.f, 1.f / static_cast<float>(ramp));
+            if (std::fabs(target - fader.smoothedVolume) < 0.0000001f) fader.smoothedVolume = target;
+            float envelope = fader.smoothedVolume;
+            if (!session.queued && kind != OutputFade::None && total > 0) {
                 const double progress = std::clamp(static_cast<double>(done + frame) / static_cast<double>(total), 0.0, 1.0);
                 const float end = kind == OutputFade::In ? 1.f : 0.f;
                 lastLevel = start + (end - start) * static_cast<float>(progress);
@@ -933,29 +952,29 @@ struct AudioEngine::Worker {
             if (std::fabs(envelope - 1.f) <= 0.0001f) {
                 continue;
             }
-            uint8_t* sample = dst + static_cast<size_t>(frame) * static_cast<size_t>(device.bytesPerFrame());
+            uint8_t* sample = dst + static_cast<size_t>(frame) * static_cast<size_t>(session.device.bytesPerFrame());
             SampleFormat source;
-            source.sampleRate = device.sampleRate;
+            source.sampleRate = session.device.sampleRate;
             source.channels = channels;
-            source.bitsPerSample = device.bitsPerSample;
+            source.bitsPerSample = session.device.bitsPerSample;
             source.bytesPerSample = sampleBytes;
-            source.isFloat = device.isFloat;
-            source.highAligned = device.highAligned;
-            source.channelMask = device.channelMask;
+            source.isFloat = session.device.isFloat;
+            source.highAligned = session.device.highAligned;
+            source.channelMask = session.device.channelMask;
             // Quantize at the actual device depth, including packed 24-bit and aligned containers.
-            convertSamples(sample, source, 1, sample, device, envelope, &outputDither);
+            convertSamples(sample, source, 1, sample, session.device, envelope, &outputDither);
         }
-        if (!queuedOutput && kind != OutputFade::None) {
-            fadeLevel.store(lastLevel);
-            fadeDone.store(done + frames);
+        if (!session.queued && kind != OutputFade::None) {
+            fader.level.store(lastLevel);
+            fader.done.store(done + frames);
         }
     }
 
     int pull(uint8_t* dst, int frames)
     {
-        const int bytes = frames * device.bytesPerFrame();
+        const int bytes = frames * session.device.bytesPerFrame();
         const int got = ring.read(dst, bytes);
-        const int frameBytes = std::max(1, device.bytesPerFrame());
+        const int frameBytes = std::max(1, session.device.bytesPerFrame());
         const int whole = got / frameBytes;
         scalePulled(dst, whole);
         framesPlayed.fetch_add(whole);
@@ -965,7 +984,7 @@ struct AudioEngine::Worker {
     void publishPosition()
     {
         const qint64 played = framesPlayed.load();
-        const qint64 heard = std::max<qint64>(0, played - output->pendingFrames() - device.latencyFrames);
+        const qint64 heard = std::max<qint64>(0, played - output->pendingFrames() - session.device.latencyFrames);
         Marker active;
         bool found = false;
         for (const auto& marker : markers) {
@@ -991,7 +1010,7 @@ struct AudioEngine::Worker {
             output->close();
         }
         freeResampler();
-        deviceReady = false;
+        session.ready = false;
     }
 };
 
@@ -1003,7 +1022,7 @@ AudioEngine::AudioEngine(QObject* parent)
 AudioEngine::AudioEngine(std::unique_ptr<AudioOutput> output, QObject* parent)
     : QObject(parent)
 {
-    m_worker = new Worker();
+    m_worker = std::make_unique<Worker>();
     m_worker->output = std::move(output);
     m_worker->owner = this;
     m_worker->thread = QThread::create([this] { m_worker->run(); });
@@ -1022,8 +1041,7 @@ AudioEngine::~AudioEngine()
     }
     m_worker->thread->wait();
     delete m_worker->thread;
-    delete m_worker;
-    m_worker = nullptr;
+    m_worker.reset();
 }
 
 void AudioEngine::play(const PlaybackItem& current, const PlaybackItem& upcoming)

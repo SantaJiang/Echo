@@ -1,6 +1,6 @@
 #include "playback/player.h"
+#include "library/settingskeys.h"
 
-#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QFile>
 #include <QTimer>
@@ -17,9 +17,10 @@
 
 namespace echo {
 
-Player::Player(Library* library, AudioEngine* engine, QObject* parent)
+Player::Player(TrackSource* library, AudioEngine* engine, QObject* parent)
     : QObject(parent)
     , m_library(library)
+    , m_loudnessService(library)
     , m_engine(engine)
 {
     connect(m_engine, &AudioEngine::spatialStatusChanged, this, [this](const QString& status) {
@@ -29,7 +30,7 @@ Player::Player(Library* library, AudioEngine* engine, QObject* parent)
     connect(this, &Player::changed, this, [this] { scheduleAnalysis(); });
     const auto invalidateTracks = [this] {
         m_queueTracks.clear();
-        m_loudnessKeys.clear();
+        m_loudnessService.clearKeys();
         m_analysisDirty = true;
         if (m_normalization) {
             updateNormalizationGains();
@@ -37,8 +38,8 @@ Player::Player(Library* library, AudioEngine* engine, QObject* parent)
             emit normalizationChanged();
         }
     };
-    connect(m_library, &Library::changed, this, invalidateTracks);
-    connect(m_library, &Library::sourceChanged, this, [invalidateTracks](qint64) { invalidateTracks(); });
+    connect(m_library, &TrackSource::changed, this, invalidateTracks);
+    connect(m_library, &TrackSource::sourceChanged, this, [invalidateTracks](qint64) { invalidateTracks(); });
     connect(m_engine, &AudioEngine::trackStarted, this, [this](qint64 token) {
         for (int index = 0; index < m_queue.size(); ++index) {
             if (m_queue[index].token == token) {
@@ -87,35 +88,19 @@ Player::~Player()
 
 QString Player::loudnessKey(const Track& track) const
 {
-    if (const auto it = m_loudnessKeys.constFind(track.id); it != m_loudnessKeys.cend()) return it.value();
-    const QFileInfo file(track.path);
-    const QString source = QStringLiteral("r128-v1|%1|%2|%3|%4|%5")
-        .arg(track.path).arg(file.size()).arg(file.lastModified().toMSecsSinceEpoch())
-        .arg(track.cueStartMs).arg(track.cueEndMs);
-    const QString key = QString::fromLatin1(QCryptographicHash::hash(source.toUtf8(), QCryptographicHash::Sha256).toHex());
-    m_loudnessKeys.insert(track.id, key);
-    return key;
+    return m_loudnessService.key(track);
 }
 
 LoudnessResult Player::cachedLoudness(const Track& track) const
 {
-    const QString key = loudnessKey(track);
-    if (m_loudness.contains(key)) return m_loudness.value(key);
-    const auto json = QJsonDocument::fromJson(m_library->setting(QStringLiteral("loudness/") + key).toUtf8()).object();
-    if (!json.contains(QStringLiteral("lufs")) || !json.contains(QStringLiteral("peak"))) {
-        m_loudness.insert(key, {}); // Cache misses too: pending files must not hit SQLite on every status update.
-        return {};
-    }
-    LoudnessResult result {true, json.value(QStringLiteral("lufs")).toDouble(), json.value(QStringLiteral("peak")).toDouble()};
-    m_loudness.insert(key, result);
-    return result;
+    return m_loudnessService.cached(track);
 }
 
 void Player::setNormalizationEnabled(bool enabled)
 {
     if (m_normalization == enabled) return;
     m_normalization = enabled;
-    m_library->setSetting(QStringLiteral("normalization"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::normalization, enabled ? QStringLiteral("1") : QStringLiteral("0"));
     updateNormalizationGains();
     scheduleAnalysis();
     emit normalizationChanged();
@@ -157,7 +142,7 @@ QString Player::normalizationStatus() const
         if (seen.contains(key)) continue;
         seen.insert(key);
         if (cachedLoudness(track).valid) ++done;
-        else if (m_analysisFailed.contains(key)) ++failed;
+        else if (m_loudnessService.failed(key)) ++failed;
     }
     if (seen.isEmpty()) return QStringLiteral("开始播放后，会自动分析当前播放队列。");
     if (done + failed < seen.size()) return QStringLiteral("正在分析当前队列：%1 / %2；完成后自动应用。").arg(done).arg(seen.size());
@@ -192,7 +177,7 @@ void Player::scheduleAnalysis()
         // A cursor avoids rescanning already measured queue entries after every result.
         Track track = m_analysisTracks[m_analysisCursor++];
         const QString key = loudnessKey(track);
-        if (cachedLoudness(track).valid || m_analysisFailed.contains(key) || track.missing) continue;
+        if (cachedLoudness(track).valid || m_loudnessService.failed(key) || track.missing) continue;
         PlaybackItem item;
         item.path = track.path;
         item.startMs = std::max<qint64>(0, track.cueStartMs);
@@ -206,18 +191,18 @@ void Player::scheduleAnalysis()
             const Track current = m_library->track(track.id);
             const bool sameRange = current.id && current.path == track.path
                 && current.cueStartMs == track.cueStartMs && current.cueEndMs == track.cueEndMs;
-            if (sameRange) m_loudnessKeys.remove(track.id);
+            if (sameRange) m_loudnessService.forgetTrack(track.id);
             if (!m_cancelAnalysis.load() && sameRange && key == loudnessKey(current)) {
                 if (result.valid) {
-                    m_loudness.insert(key, result);
+                    m_loudnessService.store(key, result);
                     QJsonObject json;
                     json.insert(QStringLiteral("lufs"), result.lufs);
                     json.insert(QStringLiteral("peak"), result.peak);
-                    m_library->setSetting(QStringLiteral("loudness/") + key,
+                    m_library->setSetting(settings::loudnessPrefix + key,
                         QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
                     updateNormalizationGains(track.id);
                 } else {
-                    m_analysisFailed.insert(key);
+                    m_loudnessService.markFailed(key);
                 }
             } else if (!m_cancelAnalysis.load()) {
                 m_analysisDirty = true;
@@ -236,11 +221,11 @@ void Player::scheduleAnalysis()
 
 bool Player::replaceContextQueue() const
 {
-    return m_library->setting(QStringLiteral("replace_context_queue"), QStringLiteral("1")) != QLatin1String("0");
+    return m_library->setting(settings::replaceContextQueue, QStringLiteral("1")) != QLatin1String("0");
 }
 void Player::setReplaceContextQueue(bool enabled)
 {
-    m_library->setSetting(QStringLiteral("replace_context_queue"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::replaceContextQueue, enabled ? QStringLiteral("1") : QStringLiteral("0"));
     emit changed();
 }
 bool Player::playable(qint64 id) const
@@ -326,7 +311,7 @@ void Player::playTracks(const QVector<qint64>& ids, int startIndex, bool albumCo
             if (shuffle)
                 m_shuffle = *shuffle;
             m_queueTracks.clear();
-            m_loudnessKeys.clear();
+            m_loudnessService.clearKeys();
             m_queue = std::move(replacement);
             m_history.clear();
             startIndex = std::min(mappedIndex, static_cast<int>(m_queue.size() - 1));
@@ -432,7 +417,7 @@ void Player::setFadingEnabled(bool enabled)
 {
     if (m_fading == enabled) return;
     m_fading = enabled;
-    m_library->setSetting(QStringLiteral("fading"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::fading, enabled ? QStringLiteral("1") : QStringLiteral("0"));
     m_engine->setFadingEnabled(enabled);
     emit changed();
 }
@@ -449,7 +434,7 @@ void Player::setExclusive(bool exclusive)
     m_exclusive = exclusive;
     if (exclusive && m_spatial) {
         m_spatial = false;
-        m_library->setSetting(QStringLiteral("spatial_audio"), QStringLiteral("0"));
+        m_library->setSetting(settings::spatialAudio, QStringLiteral("0"));
         emit spatialChanged();
     }
     m_engine->setExclusive(exclusive);
@@ -462,8 +447,8 @@ void Player::setSpatialEnabled(bool enabled)
     if (m_spatial == enabled) return;
     m_spatial = enabled;
     if (enabled) m_exclusive = false;
-    m_library->setSetting(QStringLiteral("spatial_audio"), enabled ? QStringLiteral("1") : QStringLiteral("0"));
-    m_library->setSetting(QStringLiteral("exclusive"), m_exclusive ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::spatialAudio, enabled ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::exclusive, m_exclusive ? QStringLiteral("1") : QStringLiteral("0"));
     m_spatialStatus.clear();
     m_engine->setSpatialEnabled(enabled);
     emit spatialChanged();
@@ -587,33 +572,32 @@ void Player::clearUpcoming()
 
 void Player::restoreSession()
 {
-    m_fading = m_library->setting(QStringLiteral("fading"), QStringLiteral("1")) != QLatin1String("0");
+    m_fading = m_library->setting(settings::fading, QStringLiteral("1")) != QLatin1String("0");
     m_engine->setFadingEnabled(m_fading);
-    m_normalization = m_library->setting(QStringLiteral("normalization"), QStringLiteral("0")) == QLatin1String("1");
-    m_volume = m_library->setting(QStringLiteral("volume"), QStringLiteral("1")).toFloat();
-    m_exclusive = m_library->setting(QStringLiteral("exclusive"), QStringLiteral("0")) == QLatin1String("1");
+    m_normalization = m_library->setting(settings::normalization, QStringLiteral("0")) == QLatin1String("1");
+    m_volume = m_library->setting(settings::volume, QStringLiteral("1")).toFloat();
+    m_exclusive = m_library->setting(settings::exclusive, QStringLiteral("0")) == QLatin1String("1");
 #ifdef Q_OS_MACOS
     // Apply the new macOS default once, then preserve subsequent user choices.
-    if (m_library->setting(QStringLiteral("spatial_default_v2")) != QLatin1String("1")) {
-        m_library->setSetting(QStringLiteral("spatial_audio"), QStringLiteral("1"));
-        m_library->setSetting(QStringLiteral("spatial_default_v2"), QStringLiteral("1"));
+    if (m_library->setting(settings::spatialDefault) != QLatin1String("1")) {
+        m_library->setSetting(settings::spatialAudio, QStringLiteral("1"));
+        m_library->setSetting(settings::spatialDefault, QStringLiteral("1"));
     }
-    m_spatial = m_library->setting(QStringLiteral("spatial_audio"), QStringLiteral("1")) == QLatin1String("1");
+    m_spatial = m_library->setting(settings::spatialAudio, QStringLiteral("1")) == QLatin1String("1");
     if (m_spatial) m_exclusive = false;
 #endif
     m_engine->setExclusive(m_exclusive);
     m_engine->setSpatialEnabled(m_spatial);
-    m_replayGain = m_library->setting(QStringLiteral("replaygain"), QStringLiteral("1")) != QLatin1String("0");
-    m_shuffle = m_library->setting(QStringLiteral("shuffle"), QStringLiteral("0")) == QLatin1String("1");
-    m_repeat = static_cast<Repeat>(m_library->setting(QStringLiteral("repeat"), QStringLiteral("0")).toInt());
+    m_replayGain = m_library->setting(settings::replayGain, QStringLiteral("1")) != QLatin1String("0");
+    m_shuffle = m_library->setting(settings::shuffle, QStringLiteral("0")) == QLatin1String("1");
+    m_repeat = static_cast<Repeat>(m_library->setting(settings::repeat, QStringLiteral("0")).toInt());
     m_engine->setVolume(m_volume);
-    const auto document = QJsonDocument::fromJson(m_library->setting(QStringLiteral("queue")).toUtf8());
+    const auto document = QJsonDocument::fromJson(m_library->setting(settings::queue).toUtf8());
     QVector<qint64> ids;
     for (const QJsonValue& value : document.array()) {
         ids.push_back(value.toInteger());
     }
-    const int index = m_library->setting(QStringLiteral("queue_index"), QStringLiteral("-1")).toInt();
-    const qint64 position = m_library->setting(QStringLiteral("position_ms"), QStringLiteral("0")).toLongLong();
+    const int index = m_library->setting(settings::queueIndex, QStringLiteral("-1")).toInt();
     if (!ids.isEmpty()) {
         m_queue.clear();
         for (const qint64 id : ids) {
@@ -623,7 +607,6 @@ void Player::restoreSession()
             m_queue.push_back(entry);
         }
         m_index = std::clamp(index, 0, static_cast<int>(m_queue.size() - 1));
-        Q_UNUSED(position);
     }
     emit changed();
 }
@@ -634,15 +617,14 @@ void Player::saveSession() const
     for (const Entry& entry : m_queue) {
         ids.append(entry.trackId);
     }
-    m_library->setSetting(QStringLiteral("queue"), QString::fromUtf8(QJsonDocument(ids).toJson(QJsonDocument::Compact)));
-    m_library->setSetting(QStringLiteral("queue_index"), QString::number(m_index));
-    m_library->setSetting(QStringLiteral("position_ms"), QString::number(m_engine->positionMs()));
-    m_library->setSetting(QStringLiteral("volume"), QString::number(m_volume, 'f', 3));
-    m_library->setSetting(QStringLiteral("exclusive"), m_exclusive ? QStringLiteral("1") : QStringLiteral("0"));
-    m_library->setSetting(QStringLiteral("spatial_audio"), m_spatial ? QStringLiteral("1") : QStringLiteral("0"));
-    m_library->setSetting(QStringLiteral("replaygain"), m_replayGain ? QStringLiteral("1") : QStringLiteral("0"));
-    m_library->setSetting(QStringLiteral("shuffle"), m_shuffle ? QStringLiteral("1") : QStringLiteral("0"));
-    m_library->setSetting(QStringLiteral("repeat"), QString::number(static_cast<int>(m_repeat)));
+    m_library->setSetting(settings::queue, QString::fromUtf8(QJsonDocument(ids).toJson(QJsonDocument::Compact)));
+    m_library->setSetting(settings::queueIndex, QString::number(m_index));
+    m_library->setSetting(settings::volume, QString::number(m_volume, 'f', 3));
+    m_library->setSetting(settings::exclusive, m_exclusive ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::spatialAudio, m_spatial ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::replayGain, m_replayGain ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::shuffle, m_shuffle ? QStringLiteral("1") : QStringLiteral("0"));
+    m_library->setSetting(settings::repeat, QString::number(static_cast<int>(m_repeat)));
 }
 
 Track Player::currentTrack() const

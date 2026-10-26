@@ -1,23 +1,14 @@
 #include "quick/client.h"
 #include "library/library.h"
+#include "library/settingskeys.h"
 #include "platform/platform.h"
 #include "quick/quickview.h"
 #include "quick/uimenu.h"
-#include "ui/icons.h"
-#include "ui/theme.h"
-#include <QGuiApplication>
-#include <QCursor>
+#include "presentation/theme.h"
 #include <QFile>
 #include <QImageReader>
 #include <QFileInfo>
-#include <QQuickItem>
-#include <QScopeGuard>
-#include <QShortcut>
-#include <QSqlDatabase>
-#include <QSqlQuery>
 #include <QUrl>
-#include <QUuid>
-#include <QtConcurrent>
 
 namespace echo {
 namespace {
@@ -35,115 +26,6 @@ namespace {
             { "missing", track.missing }, { "artwork", artUrl(base, track.artworkHash) },
             { "position", track.playlistPosition } };
     }
-    QVector<QVariantMap> albumRows(const QVector<Album>& albums, const QString& base)
-    {
-        QVector<QVariantMap> rows;
-        rows.reserve(albums.size());
-        for (const auto& a : albums)
-            rows << QVariantMap { { "key", a.key }, { "kind", "album" }, { "title", a.title }, { "subtitle", a.artist },
-                { "artwork", artUrl(base, a.artworkHash) }, { "count", a.tracks } };
-        return rows;
-    }
-    QuickPage readPage(const QString& path, const QString& kind, const QString& key, const QString& search, int sort,
-        bool descending, const QString& artBase)
-    {
-        QuickPage result;
-        auto finishRows = [&] {
-            result.trackRows.reserve(result.tracks.size());
-            for (const auto& track : result.tracks) {
-                result.trackRows << trackRow(track, artBase);
-                result.duration += track.durationMs;
-            }
-        };
-        if (kind == "search") {
-            const auto found = Library::searchDatabase(path, search);
-            result.tracks = found.tracks;
-            result.cards = albumRows(found.albums, artBase);
-            for (const auto& a : found.artists)
-                result.cards << QVariantMap { { "key", a.key }, { "kind", "artist" }, { "title", a.name },
-                    { "subtitle", QStringLiteral("%1 张专辑 · %2 首歌曲").arg(a.albums).arg(a.tracks) },
-                    { "artwork", QString() } };
-            for (const auto& p : found.playlists)
-                result.cards << QVariantMap { { "key", QString::number(p.id) }, { "kind", "playlist" },
-                    { "title", p.name }, { "subtitle", QStringLiteral("播放列表") }, { "artwork", QString() } };
-            finishRows();
-            return result;
-        }
-        const QString connection = "quick-" + QUuid::createUuid().toString(QUuid::Id128);
-        const auto cleanup = qScopeGuard([&] { QSqlDatabase::removeDatabase(connection); });
-        {
-            Database db;
-            if (!db.open(path, connection, &result.error, true))
-                return result;
-            QSqlQuery transaction(QSqlDatabase::database(connection));
-            transaction.exec("BEGIN");
-            const QString scope = "WHERE " + Database::libraryScope();
-            const QStringList columns { "track_number", "title", "artist", "album", "duration_ms" };
-            const QString order = QStringLiteral("ORDER BY %1 %2,disc_number,track_number,title,id")
-                                      .arg(columns.value(sort, "title"), descending ? "DESC" : "ASC");
-            if (kind == "songs")
-                result.tracks = db.queryTracks(scope, {}, order);
-            else if (kind == "album")
-                result.tracks = db.queryTracks(
-                    scope + " AND album_key=?", { key }, sort ? order : "ORDER BY disc_number,track_number,title,id");
-            else if (kind == "artist") {
-                result.cards = albumRows(db.albums(key), artBase);
-                result.tracks = db.queryTracks(
-                    scope + " AND artist_key=?", { key }, sort ? order : "ORDER BY album,disc_number,track_number,id");
-            } else if (kind == "source")
-                result.tracks = db.queryTracks("WHERE root_id=?", { key.toLongLong() },
-                    sort ? order : "ORDER BY album,disc_number,track_number,title,id");
-            else if (kind == "playlist") {
-                // Keep entry identities, duplicates and persisted ordering intact.
-                QSqlQuery entries(QSqlDatabase::database(connection));
-                entries.prepare("SELECT id,track_id FROM playlist_items WHERE playlist_id=? ORDER BY sort_order,id");
-                entries.addBindValue(key.toLongLong());
-                entries.exec();
-                QVector<qint64> ids, entryIds;
-                while (entries.next()) {
-                    entryIds << entries.value(0).toLongLong();
-                    ids << entries.value(1).toLongLong();
-                }
-                result.tracks = db.tracksByIds(ids);
-                for (int i = 0; i < result.tracks.size(); ++i) {
-                    result.tracks[i].listEntryId = entryIds[i];
-                    result.tracks[i].playlistPosition = i;
-                }
-                if (sort)
-                    std::stable_sort(result.tracks.begin(), result.tracks.end(), [=](const Track& a, const Track& b) {
-                        int c = sort == 4 ? (a.durationMs > b.durationMs          ? 1
-                                                    : a.durationMs < b.durationMs ? -1
-                                                                                  : 0)
-                                          : QString::localeAwareCompare(sort == 2 ? a.displayArtist()
-                                                    : sort == 3                   ? a.displayAlbum()
-                                                                                  : a.displayTitle(),
-                                                sort == 2       ? b.displayArtist()
-                                                    : sort == 3 ? b.displayAlbum()
-                                                                : b.displayTitle());
-                        return descending ? c > 0 : c < 0;
-                    });
-            } else if (kind == "albums")
-                result.cards = albumRows(db.albums({}), artBase);
-            else if (kind == "artists") {
-                for (const auto& a : db.artists())
-                    result.cards << QVariantMap { { "key", a.key }, { "kind", "artist" }, { "title", a.name },
-                        { "subtitle", QStringLiteral("%1 张专辑 · %2 首歌曲").arg(a.albums).arg(a.tracks) },
-                        { "artwork", QString() } };
-            } else if (kind == "sources") {
-                for (const auto& r : db.roots())
-                    result.cards << QVariantMap { { "key", QString::number(r.id) }, { "kind", "source" },
-                        { "title", r.name },
-                        { "subtitle",
-                            QStringLiteral("%1 首歌曲 · %2")
-                                .arg(r.tracks)
-                                .arg(r.status == "available" ? QStringLiteral("可用") : QStringLiteral("暂时不可用")) },
-                        { "path", r.path }, { "artwork", QString() }, { "missing", r.status != "available" } };
-            }
-            transaction.exec("COMMIT");
-        }
-        finishRows();
-        return result;
-    }
 }
 
 Client::Client(Library* library, Player* player, AudioEngine* engine, QObject* parent)
@@ -151,41 +33,45 @@ Client::Client(Library* library, Player* player, AudioEngine* engine, QObject* p
     , m_library(library)
     , m_player(player)
     , m_engine(engine)
-    , m_menuBar(std::make_unique<UiMenu>())
+    , m_pages(library, this)
+    , m_dialogs(this)
+    , m_system(this)
 {
-    m_pool.setMaxThreadCount(1);
-    m_reduceMotion = library->setting("quick_reduce_motion", "0") == "1";
-    const auto widths = library->setting("track_columns").split(u',');
-    if (widths.size() == 5)
-        for (int i = 0; i < 5; ++i)
-            m_columns[i] = std::clamp(widths[i].toInt(), i == 0 ? 40 : 64, 1200);
-    m_columnTimer.setSingleShot(true);
-    m_columnTimer.setInterval(200);
-    connect(&m_columnTimer, &QTimer::timeout, this, [this] {
-        QStringList widths;
-        for (const auto& v : m_columns)
-            widths << QString::number(v.toInt());
-        m_library->setSetting("track_columns", widths.join(u','));
+    m_reduceMotion = library->setting(settings::reduceMotion, QStringLiteral("0")) == QLatin1String("1");
+    m_pages.setApply([this](const PresentedPage& result) {
+        if (!result.error.isEmpty()) {
+            report(result.error);
+            return;
+        }
+        m_tracks.replace(result.trackRows);
+        m_tracks.setTrackState(m_library->favoriteIds(), m_player->currentTrack().id);
+        m_cards.replace(result.cards);
+        m_selection.retain(m_tracks.count(), [this](int row) { return rowKey(row); });
+        emit selectionChanged();
+        emit pageChanged();
+        if (!m_pages.pendingPlay().isEmpty() && m_pages.pendingPlay() == m_pages.routeKey()) {
+            const bool shuffle = m_pages.pendingShuffle();
+            m_pages.clearPendingPlay();
+            playAll(shuffle);
+        }
     });
-    m_navigationTimer.setSingleShot(true);
-    m_navigationTimer.setInterval(120);
-    connect(&m_navigationTimer, &QTimer::timeout, this, &Client::requestPage);
-    m_searchTimer.setSingleShot(true);
-    m_searchTimer.setInterval(180);
-    connect(&m_searchTimer, &QTimer::timeout, this, &Client::requestPage);
+    connect(&m_pages, &LibraryPresenter::pageChanged, this, &Client::pageChanged);
+    connect(&m_pages, &LibraryPresenter::navigationStarted, this, &Client::navigationStarted);
+    connect(&m_pages, &LibraryPresenter::columnsChanged, this, &Client::columnsChanged);
+    connect(&m_dialogs, &DialogService::changed, this, &Client::dialogChanged);
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setInterval(30);
     connect(&m_refreshTimer, &QTimer::timeout, this, &Client::refresh);
     auto changed = [this] {
-        ++m_generation;
+        m_pages.invalidate();
         m_refreshTimer.start();
     };
     connect(library, &Library::changed, this, changed);
     connect(library, &Library::sourceChanged, this, [changed](qint64) { changed(); });
     connect(library, &Library::favoritesChanged, this, [this] {
         syncTrackState();
-        if (m_route.kind == "playlist" && m_route.key.toLongLong() == m_library->favoritesPlaylistId()) {
-            ++m_generation;
+        if (route().kind == QLatin1String("playlist") && route().key.toLongLong() == m_library->favoritesPlaylistId()) {
+            m_pages.invalidate();
             m_refreshTimer.start();
         }
     });
@@ -210,36 +96,6 @@ Client::Client(Library* library, Player* player, AudioEngine* engine, QObject* p
         syncTrackState();
         syncQueue();
     });
-    connect(&m_query, &QFutureWatcher<QuickPage>::finished, this, [this] {
-        if (m_runningGeneration != m_generation) {
-            requestPage();
-            return;
-        }
-        const auto result = m_query.result();
-        m_busy = false;
-        if (!result.error.isEmpty()) {
-            report(result.error);
-            emit pageChanged();
-            return;
-        }
-        m_pageTracks = result.tracks;
-        m_totalDuration = result.duration;
-        m_tracks.replace(result.trackRows);
-        m_tracks.setTrackState(m_library->favoriteIds(), m_player->currentTrack().id);
-        m_cards.replace(result.cards);
-        QSet<QString> retained;
-        for (int i = 0; !m_selection.isEmpty() && i < m_tracks.count(); ++i)
-            if (m_selection.contains(rowKey(i)))
-                retained.insert(rowKey(i));
-        m_selection = retained;
-        ++m_selectionRevision;
-        emit selectionChanged();
-        emit pageChanged();
-        if (!m_pendingPlay.isEmpty() && m_pendingPlay == routeKey()) {
-            m_pendingPlay.clear();
-            playAll(m_pendingShuffle);
-        }
-    });
     connect(player, &Player::changed, this, &Client::preferencesChanged);
     connect(player, &Player::normalizationChanged, this, &Client::preferencesChanged);
     connect(player, &Player::spatialChanged, this, &Client::preferencesChanged);
@@ -250,240 +106,70 @@ Client::Client(Library* library, Player* player, AudioEngine* engine, QObject* p
 }
 Client::~Client()
 {
-    if (m_columnTimer.isActive()) {
-        m_columnTimer.stop();
-        QStringList widths;
-        for (const auto& v : m_columns)
-            widths << QString::number(v.toInt());
-        m_library->setSetting("track_columns", widths.join(u','));
-    }
-    m_query.waitForFinished();
-    m_pool.waitForDone();
+    m_pages.shutdown();
 }
 void Client::attach(QuickView* window)
 {
-    m_window = window;
-    window->setProperty("echoMainWindow", true);
-    qGuiApp->setQuitOnLastWindowClosed(false);
-    installTrayIcon(this, [this] { showMainWindow(); }, [this] { showSettings(); },
-        [this](const QPoint& position) { emit trayMenuRequested(position); });
-    installApplicationMenu(this, menuData(*m_menuBar, true), [this](int token) { triggerMenu(token); });
-    installMediaIntegration(window, [this](MediaCommand command, qint64 value) {
-        switch (command) {
-        case MediaCommand::Toggle:
-            m_player->toggle();
-            break;
-        case MediaCommand::Next:
-            m_player->next();
-            break;
-        case MediaCommand::Previous:
-            m_player->previous();
-            break;
-        case MediaCommand::Seek:
-            m_player->seek(value);
-            break;
-        }
+    m_system.attach(window, SystemIntegration::Hooks {
+        [this] { showSettings(); },
+        [this] { addMusicFolder(); },
+        [this] { createPlaylist(); },
+        [this] { emit focusSearch(); },
+        [this](int token) { triggerMenu(token); },
+        [this] { return m_menus.describe(m_menus.bar(), true); },
+        [this](const QPoint& position) { emit trayMenuRequested(position); },
+        [this] { return m_dialogs.isOpen(); },
+        m_player,
+        m_library,
+        m_engine,
     });
-    auto shortcut = [this, window](QKeySequence key, std::function<void()> call) {
-        auto* s = new QShortcut(key, window);
-        connect(s, &QShortcut::activated, this, std::move(call));
-    };
-    shortcut(QKeySequence::Quit, [] { quitApplication(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_O), [this] { addMusicFolder(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma), [this] { showSettings(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_N), [this] { createPlaylist(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_F), [this] { emit focusSearch(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_Right), [this] { m_player->next(); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_Left), [this] { m_player->previous(); });
-    shortcut(
-        QKeySequence(Qt::CTRL | Qt::Key_Up), [this] { m_player->setVolume(std::min(1.f, m_player->volume() + .05f)); });
-    shortcut(QKeySequence(Qt::CTRL | Qt::Key_Down),
-        [this] { m_player->setVolume(std::max(0.f, m_player->volume() - .05f)); });
-    auto* clock = new QTimer(this);
-    clock->setInterval(250);
-    connect(clock, &QTimer::timeout, this, [this] {
-        syncSystem();
-    });
-    clock->start();
-    connect(m_library->artwork(), &ArtworkCache::ready, this, [this](const QString& hash, int size) {
-        const auto track = m_player->currentTrack();
-        if (hash == track.artworkHash && size == 160) {
-            m_systemArtwork = m_library->artwork()->pixmap(hash, size).toImage();
-            syncSystem(true);
-        }
-    });
-    connect(m_player, &Player::changed, this, [this] { syncSystem(); });
-    connect(m_engine, &AudioEngine::positionChanged, this, [this] { syncSystem(true); });
-    connect(window, &QuickView::hiddenToTray, m_player, &Player::saveSession);
-    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive && m_window && !m_window->isVisible() && (!m_mini || !m_mini->isVisible())
-            && m_dialog.isEmpty())
-            showMainWindow();
-    });
-    syncSystem(true);
-}
-void Client::syncSystem(bool force)
-{
-    const auto track = m_player->currentTrack();
-    if (m_systemArtworkHash != track.artworkHash) {
-        m_systemArtworkHash = track.artworkHash;
-        m_systemArtwork = m_library->artwork()->pixmap(track.artworkHash, 160).toImage();
-    }
-    updateSystemNowPlaying(track, m_systemArtwork, m_player->positionMs(), track.durationMs,
-        m_player->state() == AudioEngine::State::Playing, force);
 }
 QVariantMap Client::page() const
 {
-    QString subtitle = QStringLiteral("%1 首歌曲 · %2").arg(m_pageTracks.size()).arg(formatDuration(m_totalDuration));
-    if (m_route.kind == "albums" || m_route.kind == "artists" || m_route.kind == "sources")
+    const auto& current = route();
+    QString subtitle = QStringLiteral("%1 首歌曲 · %2").arg(pageTracks().size()).arg(formatDuration(m_pages.totalDuration()));
+    if (current.kind == QLatin1String("albums") || current.kind == QLatin1String("artists") || current.kind == QLatin1String("sources"))
         subtitle = QStringLiteral("%1 个项目").arg(m_cards.count());
-    if (m_route.kind == "source")
-        subtitle = m_sourcePath + " · " + subtitle;
-    return { { "kind", m_route.kind }, { "key", m_route.key }, { "title", m_route.title }, { "subtitle", subtitle },
-        { "busy", m_busy }, { "canBack", !m_history.isEmpty() }, { "sort", m_route.sort },
-        { "descending", m_route.descending }, { "query", m_search }, { "route", routeKey() },
-        { "artwork", m_tracks.count() ? m_tracks.get(0).value("artwork") : QVariant(QString()) } };
+    if (current.kind == QLatin1String("source"))
+        subtitle = m_pages.sourcePath() + QStringLiteral(" · ") + subtitle;
+    return { { QStringLiteral("kind"), current.kind }, { QStringLiteral("key"), current.key },
+        { QStringLiteral("title"), current.title }, { QStringLiteral("subtitle"), subtitle },
+        { QStringLiteral("busy"), m_pages.busy() }, { QStringLiteral("canBack"), m_pages.canBack() },
+        { QStringLiteral("sort"), current.sort }, { QStringLiteral("descending"), current.descending },
+        { QStringLiteral("query"), m_pages.searchText() }, { QStringLiteral("route"), routeKey() },
+        { QStringLiteral("artwork"), m_tracks.count() ? m_tracks.get(0).value(QStringLiteral("artwork")) : QVariant(QString()) } };
 }
-QString Client::routeKey() const { return m_route.kind + ":" + m_route.key; }
+QString Client::routeKey() const { return m_pages.routeKey(); }
 void Client::navigate(const QString& kind, const QString& key, const QString& title)
 {
-    static const QSet<QString> allowed { "songs", "albums", "artists", "sources", "album", "artist", "source",
-        "playlist" };
-    if (!allowed.contains(kind))
-        return;
-    if (kind == m_route.kind && key == m_route.key)
-        return;
-    m_selections[routeKey()] = m_selection;
-    m_history << m_route;
-    m_route = { kind, key, title.isEmpty() ? kind : title };
-    m_search.clear();
-    m_searchTimer.stop();
-    m_pendingPlay.clear();
-    m_sourcePath = kind == "source" ? m_library->root(key.toLongLong()).path : QString();
-    m_selection = m_selections.value(routeKey());
-    m_anchor = -1;
-    ++m_selectionRevision;
-    emit selectionChanged();
-    ++m_generation;
-    m_busy = true;
-    m_navigationTimer.start();
-    emit navigationStarted();
+    m_pages.navigate(kind, key, title,
+        [this](const QString& previous) { m_selection.remember(previous); },
+        [this](const QString& next) { m_selection.restore(next); emit selectionChanged(); });
 }
 void Client::back()
 {
-    if (m_route.kind == "search") {
-        search({});
-        return;
-    }
-    if (m_history.isEmpty())
-        return;
-    m_selections[routeKey()] = m_selection;
-    const Route previous = m_history.takeLast();
-    m_route = previous;
-    m_selection = m_selections.value(routeKey());
-    m_search = m_route.kind == "search" ? m_route.key : QString();
-    m_sourcePath = m_route.kind == "source" ? m_library->root(m_route.key.toLongLong()).path : QString();
-    m_searchTimer.stop();
-    m_pendingPlay.clear();
-    ++m_selectionRevision;
-    emit selectionChanged();
-    ++m_generation;
-    m_busy = true;
-    m_navigationTimer.start();
-    emit navigationStarted();
+    m_pages.back([this](const QString& previous) { m_selection.remember(previous); },
+        [this](const QString& next) { m_selection.restore(next); emit selectionChanged(); },
+        [this] { clearSelection(); });
 }
 void Client::search(const QString& text)
 {
-    const QString query = text.trimmed();
-    if (m_search == query)
-        return;
-    if (m_route.kind != "search")
-        m_beforeSearch = m_route;
-    m_search = query;
-    m_searchTimer.stop();
-    m_navigationTimer.stop();
-    m_busy = true;
-    emit navigationStarted();
-    ++m_generation;
-    m_pendingPlay.clear();
-    clearSelection();
-    if (query.isEmpty()) {
-        m_route = m_beforeSearch;
-        m_navigationTimer.start();
-        return;
-    }
-    m_route = { "search", query, QStringLiteral("搜索结果") };
-    m_busy = true;
-    m_searchTimer.start();
+    m_pages.search(text, [this] { clearSelection(); });
 }
 void Client::refresh()
 {
-    if (m_route.kind == "source")
-        m_sourcePath = m_library->root(m_route.key.toLongLong()).path;
+    m_pages.refreshSourcePath();
     rebuildNavigation();
     syncQueue(true);
     requestPage();
 }
 void Client::requestPage()
 {
-    // One worker, at most one pending refresh; obsolete snapshots never reach QML.
-    if (m_searchTimer.isActive() || m_navigationTimer.isActive())
-        return;
-    if (m_query.isRunning()) {
-        ++m_generation;
-        m_dirty = true;
-        return;
-    }
-    m_dirty = false;
-    m_busy = true;
-    m_runningGeneration = ++m_generation;
-    emit pageChanged();
-    const auto route = m_route;
-    const auto query = m_search;
-    const auto path = m_library->databasePath();
-    const auto base = m_library->artwork()->filePath({});
-    m_query.setFuture(QtConcurrent::run(&m_pool, [path, route, query, base] {
-        return readPage(path, route.kind, route.key, query, route.sort, route.descending, base);
-    }));
+    m_pages.requestPage();
 }
 void Client::rebuildNavigation()
 {
-    QVector<QVariantMap> rows;
-    const QStringList kinds { "songs", "albums", "artists", "sources" },
-        titles { QStringLiteral("歌曲"), QStringLiteral("专辑"), QStringLiteral("艺术家"), QStringLiteral("文件夹") };
-    for (int i = 0; i < kinds.size(); ++i)
-        rows << QVariantMap { { "key", kinds[i] }, { "kind", kinds[i] }, { "title", titles[i] },
-            { "icon", i == 3 ? "folders" : kinds[i] }, { "depth", 0 } };
-    const auto lists = m_library->playlists();
-    const auto folders = m_library->playlistFolders();
-    rows << QVariantMap { { "key", "playlistSection" }, { "kind", "playlistSection" },
-        { "title", QStringLiteral("播放列表") }, { "icon", "" }, { "depth", 0 } };
-    for (const auto& p : lists)
-        if (p.isFavorites())
-            rows << QVariantMap { { "key", QString::number(p.id) }, { "kind", "playlist" }, { "title", p.name },
-                { "icon", "heartFilled" }, { "depth", 0 }, { "protected", true } };
-    QSet<qint64> visited;
-    std::function<void(qint64, int)> append = [&](qint64 parent, int depth) {
-        for (const auto& f : folders)
-            if (f.parentId == parent && !visited.contains(f.id)) {
-                visited.insert(f.id);
-                rows << QVariantMap { { "key", QString::number(f.id) }, { "kind", "listFolder" }, { "title", f.name },
-                    { "icon", "folders" }, { "depth", depth } };
-                append(f.id, depth + 1);
-            }
-        for (const auto& p : lists)
-            if (!p.isFavorites() && p.folderId == parent)
-                rows << QVariantMap { { "key", QString::number(p.id) }, { "kind", "playlist" }, { "title", p.name },
-                    { "icon", "playlist" }, { "depth", depth } };
-    };
-    append(0, 0);
-    m_navigation.replace(rows);
-    if (m_route.kind == "playlist")
-        for (const auto& p : lists)
-            if (QString::number(p.id) == m_route.key) {
-                m_route.title = p.name;
-                break;
-            }
+    m_navigation.replace(m_pages.rebuildNavigation());
 }
 void Client::syncTrackState()
 {
@@ -527,126 +213,92 @@ void Client::openCard(int row)
 void Client::playCard(int row, bool shuffle)
 {
     openCard(row);
-    m_pendingPlay = routeKey();
-    m_pendingShuffle = shuffle;
+    m_pages.armPlay(routeKey(), shuffle);
 }
 void Client::playRow(int row)
 {
-    if (m_busy || row < 0 || row >= m_pageTracks.size())
+    if (m_pages.busy() || row < 0 || row >= pageTracks().size())
         return;
-    const auto track = m_pageTracks[row];
+    const auto track = pageTracks()[row];
     if (track.missing || !QFileInfo(track.path).isFile()) {
         showUnavailable(track.id);
         return;
     }
-    if ((m_route.kind == "source" || m_route.kind == "playlist") && !m_player->replaceContextQueue())
+    if ((route().kind == "source" || route().kind == "playlist") && !m_player->replaceContextQueue())
         m_player->playSinglePreservingQueue(track.id);
     else {
         QVector<qint64> ids;
-        for (const auto& t : m_pageTracks)
+        for (const auto& t : pageTracks())
             ids << t.id;
-        m_player->playTracks(ids, row, m_route.kind == "album");
+        m_player->playTracks(ids, row, route().kind == "album");
     }
 }
 void Client::playAll(bool shuffle)
 {
-    if (m_busy || m_pageTracks.isEmpty())
+    if (m_pages.busy() || pageTracks().isEmpty())
         return;
     QVector<qint64> ids;
-    for (const auto& t : m_pageTracks)
+    for (const auto& t : pageTracks())
         ids << t.id;
-    m_player->playTracks(ids, 0, m_route.kind == "album", shuffle);
+    m_player->playTracks(ids, 0, route().kind == "album", shuffle);
 }
 void Client::sortBy(int column)
 {
-    if (column < 0 || column > 4)
-        return;
-    if (m_route.sort == column)
-        m_route.descending = !m_route.descending;
-    else {
-        m_route.sort = column;
-        m_route.descending = false;
-    }
-    ++m_generation;
-    requestPage();
+    m_pages.sortBy(column);
 }
 QString Client::rowKey(int row) const { return m_tracks.keyAt(row); }
 bool Client::isSelected(int row) const { return m_selection.contains(rowKey(row)); }
 void Client::selectRow(int row, int modifiers)
 {
-    if (row < 0 || row >= m_tracks.count())
-        return;
-    if (modifiers & Qt::ShiftModifier) {
-        if (m_anchor < 0)
-            m_anchor = row;
-        if (!(modifiers & (Qt::ControlModifier | Qt::MetaModifier)))
-            m_selection.clear();
-        for (int i = std::min(row, m_anchor); i <= std::max(row, m_anchor); ++i)
-            m_selection.insert(rowKey(i));
-    } else if (modifiers & (Qt::ControlModifier | Qt::MetaModifier)) {
-        const auto key = rowKey(row);
-        if (m_selection.contains(key))
-            m_selection.remove(key);
-        else
-            m_selection.insert(key);
-        m_anchor = row;
-    } else {
-        m_selection = { rowKey(row) };
-        m_anchor = row;
-    }
-    ++m_selectionRevision;
-    emit selectionChanged();
+    if (m_selection.selectRow(row, m_tracks.count(), modifiers, [this](int index) { return rowKey(index); }))
+        emit selectionChanged();
 }
 void Client::selectAll()
 {
-    for (int i = 0; i < m_tracks.count(); ++i)
-        m_selection.insert(rowKey(i));
-    ++m_selectionRevision;
+    m_selection.selectAll(m_tracks.count(), [this](int index) { return rowKey(index); });
     emit selectionChanged();
 }
 void Client::clearSelection()
 {
     m_selection.clear();
-    m_anchor = -1;
-    ++m_selectionRevision;
     emit selectionChanged();
 }
 QVector<qint64> Client::selectedIds() const
 {
     QVector<qint64> ids;
-    for (int i = 0; i < m_pageTracks.size(); ++i)
+    for (int i = 0; i < pageTracks().size(); ++i)
         if (isSelected(i))
-            ids << m_pageTracks[i].id;
+            ids << pageTracks()[i].id;
     return ids;
 }
 void Client::favoriteRow(int row)
 {
-    if (row >= 0 && row < m_pageTracks.size()) {
-        const auto id = m_pageTracks[row].id;
+    if (row >= 0 && row < pageTracks().size()) {
+        const auto id = pageTracks()[row].id;
         m_library->setFavorites({ id }, !m_library->isFavorite(id));
     }
 }
 void Client::removeSelected()
 {
-    if (m_route.kind != "playlist")
+    if (route().kind != "playlist")
         return;
-    if (m_route.key.toLongLong() == m_library->favoritesPlaylistId())
+    if (route().key.toLongLong() == m_library->favoritesPlaylistId())
         m_library->setFavorites(selectedIds(), false);
     else {
         QVector<int> positions;
-        for (int i = 0; i < m_pageTracks.size(); ++i)
+        for (int i = 0; i < pageTracks().size(); ++i)
             if (isSelected(i))
-                positions << m_pageTracks[i].playlistPosition;
-        m_library->removePlaylistPositions(m_route.key.toLongLong(), positions);
+                positions << pageTracks()[i].playlistPosition;
+        m_library->removePlaylistPositions(route().key.toLongLong(), positions);
     }
 }
 void Client::moveTrack(int from, int to)
 {
-    if (m_route.kind != "playlist" || m_route.sort || m_route.key.toLongLong() == m_library->favoritesPlaylistId()
-        || from < 0 || to < 0 || from >= m_pageTracks.size() || to >= m_pageTracks.size())
+    if (route().kind != "playlist" || route().sort || route().key.toLongLong() == m_library->favoritesPlaylistId()
+        || from < 0 || to < 0 || from >= pageTracks().size() || to >= pageTracks().size())
         return;
     m_library->movePlaylistItem(
-        m_route.key.toLongLong(), m_pageTracks[from].playlistPosition, m_pageTracks[to].playlistPosition);
+        route().key.toLongLong(), pageTracks()[from].playlistPosition, pageTracks()[to].playlistPosition);
 }
 void Client::queueAction(const QString& a, int row, int to)
 {
@@ -661,22 +313,15 @@ void Client::queueAction(const QString& a, int row, int to)
             m_player->moveQueue(row, to);
     }
 }
-void Client::setScroll(double offset) { m_scrolls[routeKey()] = offset; }
-double Client::scroll() const { return m_scrolls.value(routeKey()); }
-void Client::resizeColumn(int column, double width)
-{
-    if (column < 0 || column >= 5)
-        return;
-    m_columns[column] = std::clamp(width, column == 0 ? 40. : 64., 1200.);
-    emit columnsChanged();
-    m_columnTimer.start();
-}
+void Client::setScroll(double offset) { m_pages.setScroll(offset); }
+double Client::scroll() const { return m_pages.scroll(); }
+void Client::resizeColumn(int column, double width) { m_pages.resizeColumn(column, width); }
 void Client::setReduceMotion(bool value)
 {
     if (m_reduceMotion == value)
         return;
     m_reduceMotion = value;
-    m_library->setSetting("quick_reduce_motion", value ? "1" : "0");
+    m_library->setSetting(settings::reduceMotion, value ? QStringLiteral("1") : QStringLiteral("0"));
     emit reduceMotionChanged();
 }
 void Client::report(const QString& text)
@@ -691,7 +336,7 @@ QVariantMap Client::preferences() const
     return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()}, {"fading", m_player->fadingEnabled()},
         {"spatial", m_player->spatialEnabled()}, {"spatialStatus", m_player->spatialStatus()},
         {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion},
-        {"dynamicPlaybackBackground", m_library->setting("dynamic_playback_background", "0") == "1"}};
+        {"dynamicPlaybackBackground", m_library->setting(settings::dynamicPlaybackBackground, QStringLiteral("0")) == QLatin1String("1")}};
 }
 void Client::setPreference(const QString& key, bool value)
 {
@@ -702,81 +347,39 @@ void Client::setPreference(const QString& key, bool value)
     else if (key == "exclusive") m_player->setExclusive(value);
     else if (key == "replayGain") m_player->setReplayGainEnabled(value);
     else if (key == "reduceMotion") setReduceMotion(value);
-    else if (key == "dynamicPlaybackBackground") m_library->setSetting("dynamic_playback_background", value ? "1" : "0");
+    else if (key == "dynamicPlaybackBackground") m_library->setSetting(settings::dynamicPlaybackBackground, value ? QStringLiteral("1") : QStringLiteral("0"));
     emit preferencesChanged();
 }
-void Client::requestDialog(QVariantMap data, Reply reply)
+void Client::requestDialog(QVariantMap data, DialogService::Reply reply)
 {
-    data["token"] = ++m_dialogToken;
-    if (!m_dialog.isEmpty()) { m_pendingDialogs.append({std::move(data), std::move(reply)}); return; }
-    m_dialog = std::move(data); m_reply = std::move(reply);
-    emit dialogChanged();
+    m_dialogs.request(std::move(data), std::move(reply));
 }
 void Client::answerDialog(int token, const QVariantMap& answer)
 {
-    if (m_dialog.isEmpty() || m_dialog.value("token").toInt() != token) return;
-    auto reply = std::move(m_reply);
-    m_dialog.clear(); emit dialogChanged();
-    if (reply) reply(answer);
-    if (m_dialog.isEmpty() && !m_pendingDialogs.isEmpty()) {
-        auto next = m_pendingDialogs.takeFirst();
-        m_dialog = std::move(next.data); m_reply = std::move(next.reply); emit dialogChanged();
-    }
+    m_dialogs.answer(token, answer);
 }
 void Client::askName(const QString& title, const QString& initial, const QString& accept, std::function<void(QString)> reply)
 {
-    requestDialog({{"kind", "name"}, {"title", title}, {"initial", initial}, {"accept", accept}},
-        [reply = std::move(reply)](const QVariantMap& a) { if (a.value("accepted").toBool()) reply(a.value("name").toString().trimmed()); });
+    m_dialogs.askName(title, initial, accept, std::move(reply));
 }
 void Client::choosePath(const QString& title, const QString& mode, const QStringList& filters, std::function<void(QString)> reply)
 {
-    requestDialog({{"kind", "file"}, {"title", title}, {"mode", mode}, {"filters", filters}},
-        [reply = std::move(reply)](const QVariantMap& a) {
-            if (!a.value("accepted").toBool()) return;
-            const auto value = a.value("path").toString(); const QUrl url(value);
-            const auto path = url.isLocalFile() ? url.toLocalFile() : value;
-            if (!path.isEmpty()) reply(path);
-        });
-}
-QVariantList Client::menuData(const UiMenu& menu, bool application)
-{
-    QVariantList result;
-    auto& callbacks = application ? m_appCallbacks : m_menuCallbacks;
-    for (const auto& entry : menu.entries) {
-        const int token = ++m_menuToken;
-        QVariantMap item{{"text", entry.text}, {"token", token}, {"separator", entry.separator}};
-        if (entry.invoke) callbacks[token] = entry.invoke;
-        if (entry.submenu) item["children"] = menuData(*entry.submenu, application);
-        result << item;
-    }
-    return result;
+    m_dialogs.choosePath(title, mode, filters, std::move(reply));
 }
 void Client::triggerMenu(int token)
 {
-    auto invoke = m_menuCallbacks.value(token, m_appCallbacks.value(token));
-    if (invoke) invoke();
+    m_menus.trigger(token);
 }
-QPointF Client::cursorPosition() const { return m_window ? m_window->mapFromGlobal(QCursor::pos()) : QPoint(); }
-void Client::popup(UiMenu& menu) { m_menuCallbacks.clear(); emit menuRequested(menuData(menu)); }
-void Client::setMiniWindow(QWindow* window)
+QPointF Client::cursorPosition() const { return m_system.cursorPosition(); }
+void Client::popup(UiMenu& menu)
 {
-    m_mini = window;
-    if (window) { window->setProperty("echoMiniPlayer", true); applyMiniWindowChrome(window); }
+    m_menus.beginPopup();
+    emit menuRequested(m_menus.describe(menu));
 }
-void Client::showMainWindow()
-{
-    if (m_mini) m_mini->hide();
-    emit mainRequested();
-    if (!m_window) return;
-    m_window->showFromBackground();
-}
+void Client::setMiniWindow(QWindow* window) { m_system.setMiniWindow(window); }
+void Client::showMainWindow() { m_system.showMainWindow(); }
 void Client::showSettings() { showMainWindow(); emit settingsRequested(); }
-void Client::showMini()
-{
-    emit miniRequested();
-    if (m_window) m_window->hideToBackground();
-    if (m_mini) { m_mini->show(); m_mini->raise(); m_mini->requestActivate(); }
-}
+void Client::showMini() { m_system.showMini(); }
 void Client::openUrls(const QVariantList& urls)
 {
     QStringList paths;
@@ -817,7 +420,7 @@ void Client::createFolder()
 }
 void Client::importPlaylist()
 {
-    const auto target = m_route.kind == "playlist" ? m_route.key.toLongLong() : 0;
+    const auto target = route().kind == "playlist" ? route().key.toLongLong() : 0;
     choosePath(QStringLiteral("导入播放列表"), "open", {"播放列表 (*.m3u *.m3u8)"}, [this, target](const QString& path) {
         auto id = target;
         if (id <= 0 || id == m_library->favoritesPlaylistId()) id = m_library->createPlaylist(QFileInfo(path).completeBaseName());
@@ -828,8 +431,8 @@ void Client::importPlaylist()
 }
 void Client::exportPlaylist()
 {
-    if (m_route.kind != "playlist") return;
-    const auto target = m_route.key.toLongLong();
+    if (route().kind != "playlist") return;
+    const auto target = route().key.toLongLong();
     choosePath(QStringLiteral("导出播放列表"), "save", {"播放列表 (*.m3u8)"}, [this, target](QString path) {
         if (QFileInfo(path).suffix().isEmpty()) path += ".m3u8";
         QString error; if (!m_library->exportM3u(target, path, &error)) report(error);
@@ -905,9 +508,9 @@ void Client::addToPlaylist(const QVector<qint64>& ids)
 }
 void Client::trackMenu(int row)
 {
-    if (row < 0 || row >= m_pageTracks.size()) return;
+    if (row < 0 || row >= pageTracks().size()) return;
     if (!isSelected(row)) selectRow(row);
-    const auto ids = selectedIds(); const auto track = m_pageTracks[row];
+    const auto ids = selectedIds(); const auto track = pageTracks()[row];
     UiMenu menu;
     menu.addAction(QStringLiteral("播放"), this, [this, row] { playRow(row); });
     menu.addAction(QStringLiteral("下一首播放"), this, [this, ids] { m_player->enqueueNext(ids); });
@@ -922,11 +525,11 @@ void Client::trackMenu(int row)
         menu.addAction(QStringLiteral("重新检查"), this, [this, track] { m_library->recheckTrack(track.id); });
         menu.addAction(QStringLiteral("重新定位…"), this, [this, track] { locateTrack(track.id); });
     }
-    if (m_route.kind == "playlist") {
+    if (route().kind == "playlist") {
         menu.addSeparator();
-        const auto playlistId = m_route.key.toLongLong();
+        const auto playlistId = route().key.toLongLong();
         menu.addAction(playlistId == m_library->favoritesPlaylistId() ? QStringLiteral("从我喜欢的移除") : QStringLiteral("从播放列表移除"), this, &Client::removeSelected);
-        if (!m_route.sort && playlistId != m_library->favoritesPlaylistId()) {
+        if (!route().sort && playlistId != m_library->favoritesPlaylistId()) {
             menu.addAction(QStringLiteral("上移"), this, [this, row] { moveTrack(row, row - 1); });
             menu.addAction(QStringLiteral("下移"), this, [this, row] { moveTrack(row, row + 1); });
         }
@@ -971,7 +574,7 @@ void Client::sourceMenu(qint64 id)
         });
     });
     menu.addSeparator(); menu.addAction(QStringLiteral("取消登记来源"), this, [this, id] {
-        m_library->removeRoot(id); if (m_route.kind == "source" && m_route.key.toLongLong() == id) navigate("sources", {}, QStringLiteral("文件夹"));
+        m_library->removeRoot(id); if (route().kind == "source" && route().key.toLongLong() == id) navigate("sources", {}, QStringLiteral("文件夹"));
     }); popup(menu);
 }
 void Client::playlistMenu(qint64 id)
@@ -988,7 +591,7 @@ void Client::playlistMenu(qint64 id)
     for (const auto& f : m_library->playlistFolders()) move->addAction(f.name, this, [this, id, f] { m_library->movePlaylistToFolder(id, f.id); });
     menu.addAction(QStringLiteral("导出播放列表…"), this, [this, current] { navigate("playlist", QString::number(current.id), current.name); exportPlaylist(); });
     menu.addAction(QStringLiteral("删除歌单"), this, [this, id] {
-        m_library->deletePlaylist(id); if (m_route.kind == "playlist" && m_route.key.toLongLong() == id) navigate("songs", {}, QStringLiteral("歌曲"));
+        m_library->deletePlaylist(id); if (route().kind == "playlist" && route().key.toLongLong() == id) navigate("songs", {}, QStringLiteral("歌曲"));
     }); popup(menu);
 }
 void Client::folderMenu(qint64 id)
@@ -1016,31 +619,31 @@ void Client::action(const QString& name)
     else if (name == "quit") quitApplication();
     else if (name == "refresh") m_library->rescanAll();
     else if (name == "selectAll") selectAll();
-    else if (name == "menu") popup(*m_menuBar);
+    else if (name == "menu") popup(m_menus.bar());
     else if (name == "pageMenu") {
-        if (m_route.kind == "source") sourceMenu(m_route.key.toLongLong());
-        else if (m_route.kind == "playlist") playlistMenu(m_route.key.toLongLong());
+        if (route().kind == "source") sourceMenu(route().key.toLongLong());
+        else if (route().kind == "playlist") playlistMenu(route().key.toLongLong());
     } else if (name == "trash") trashTracks(selectedIds());
 }
 void Client::setupMenus()
 {
-    auto* file = m_menuBar->addMenu(QStringLiteral("文件"));
+    auto* file = m_menus.bar().addMenu(QStringLiteral("文件"));
     file->addAction(QStringLiteral("添加音乐文件夹…"), this, &Client::addMusicFolder);
     file->addAction(QStringLiteral("导入播放列表…"), this, &Client::importPlaylist);
     file->addAction(QStringLiteral("导出播放列表…"), this, &Client::exportPlaylist);
     file->addAction(QStringLiteral("设置…"), this, &Client::showSettings);
     file->addAction(QStringLiteral("退出 Echo"), this, [] { quitApplication(); });
-    auto* edit = m_menuBar->addMenu(QStringLiteral("编辑"));
+    auto* edit = m_menus.bar().addMenu(QStringLiteral("编辑"));
     edit->addAction(QStringLiteral("撤销"), m_library, &Library::undo);
     edit->addAction(QStringLiteral("重做"), m_library, &Library::redo);
     edit->addAction(QStringLiteral("新建歌单…"), this, [this] { createPlaylist(); });
     edit->addAction(QStringLiteral("新建歌单文件夹…"), this, &Client::createFolder);
-    auto* control = m_menuBar->addMenu(QStringLiteral("控制"));
+    auto* control = m_menus.bar().addMenu(QStringLiteral("控制"));
     control->addAction(QStringLiteral("播放/暂停"), m_player, &Player::toggle);
     control->addAction(QStringLiteral("下一首"), m_player, &Player::next);
     control->addAction(QStringLiteral("上一首"), m_player, &Player::previous);
     control->addAction(QStringLiteral("迷你播放器"), this, &Client::showMini);
-    auto* view = m_menuBar->addMenu(QStringLiteral("显示"));
+    auto* view = m_menus.bar().addMenu(QStringLiteral("显示"));
     view->addAction(QStringLiteral("设置…"), this, &Client::showSettings);
 }
 }

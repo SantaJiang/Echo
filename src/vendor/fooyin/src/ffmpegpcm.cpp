@@ -30,4 +30,43 @@ SampleFormat sampleFormatFromFFmpeg(int avSampleFormat, int bitsPerRawSample)
     }
 }
 
+int pcmBitDepth(SampleFormat format)
+{
+    switch (format) {
+    case SampleFormat::U8:
+        return 8;
+    case SampleFormat::S16:
+        return 16;
+    case SampleFormat::S24In32:
+        return 24;
+    case SampleFormat::S32:
+    case SampleFormat::F32:
+        return 32;
+    case SampleFormat::F64:
+        return 64;
+    case SampleFormat::Unknown:
+        return 0;
+    }
+    return 0;
+}
+
+int pcmBytesPerSample(SampleFormat format)
+{
+    switch (format) {
+    case SampleFormat::U8:
+        return 1;
+    case SampleFormat::S16:
+        return 2;
+    case SampleFormat::S24In32:
+    case SampleFormat::S32:
+    case SampleFormat::F32:
+        return 4;
+    case SampleFormat::F64:
+        return 8;
+    case SampleFormat::Unknown:
+        return 0;
+    }
+    return 0;
+}
+
 } // namespace Fooyin::Utils

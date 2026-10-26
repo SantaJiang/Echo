@@ -15,12 +15,10 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix qtdeclarative)"
       - name: 编译
         run: cmake --build build
+      # Qt 来源不一致，着色器必须用同一套 Qt 的 qsb 重编：
+      # macOS 用 Homebrew 当前 qtbase（未锁补丁版本），Ubuntu 锁 6.8.3，Windows 用 MSYS2 UCRT64 的 Qt6。
       - name: 自测
-        run: |
-          ./build/echo-selftest
-          ./build/echo-playbacktest
-          ./build/echo-foldertest
-          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest --qml-smoke
+        run: ctest --test-dir build --output-on-failure
 
   ubuntu:
     runs-on: ubuntu-24.04
@@ -41,10 +39,7 @@ jobs:
       - name: 编译
         run: cmake --build build
       - name: 自测
-        run: |
-          ./build/echo-selftest
-          ./build/echo-playbacktest
-          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest --qml-smoke
+        run: ctest --test-dir build --output-on-failure
 
   windows:
     runs-on: windows-latest
@@ -72,7 +67,4 @@ jobs:
       - name: 编译
         run: cmake --build build
       - name: 自测
-        run: |
-          ./build/echo-selftest.exe
-          ./build/echo-playbacktest.exe
-          QT_QPA_PLATFORM=offscreen ./build/echo-quicktest.exe --qml-smoke
+        run: ctest --test-dir build --output-on-failure

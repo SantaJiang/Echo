@@ -26,15 +26,6 @@ PlaybackView::PlaybackView(Library* library, Player* player, AudioEngine* engine
         emit playbackChanged();
         emit positionChanged();
     });
-    connect(engine, &AudioEngine::deviceOpened, this,
-        [this](int rate, int bits, bool floating, int deviceRate, bool exclusive) {
-            Q_UNUSED(rate);
-            Q_UNUSED(bits);
-            Q_UNUSED(floating);
-            m_deviceRate = deviceRate;
-            m_deviceExclusive = exclusive;
-            updateFormat();
-        });
     m_clock.setInterval(100);
     connect(&m_clock, &QTimer::timeout, this, &PlaybackView::positionChanged);
     refresh();
@@ -84,24 +75,6 @@ void PlaybackView::setPresentationActive(bool active)
     if (active)
         emit positionChanged();
 }
-void PlaybackView::updateFormat()
-{
-    QString text;
-    if (m_track.sampleRate > 0) {
-        text = QStringLiteral("%1 kHz · %2 bit").arg(m_track.sampleRate / 1000., 0, 'f', 1).arg(m_track.bitDepth);
-        if (m_track.codec.contains("_f32") || m_track.codec.contains("_f64"))
-            text += QStringLiteral(" float");
-        if (m_deviceRate > 0 && m_track.sampleRate != m_deviceRate)
-            text += QStringLiteral(" → %1 kHz").arg(m_deviceRate / 1000., 0, 'f', 1);
-        if (m_deviceRate > 0)
-            text += m_deviceExclusive ? QStringLiteral(" · 独占") : QStringLiteral(" · 共享输出");
-    }
-    if (text != m_format) {
-        m_format = text;
-        emit formatChanged();
-    }
-}
-
 void PlaybackView::refresh(bool reloadMetadata)
 {
     Track current = m_player->currentTrack();
@@ -141,7 +114,6 @@ void PlaybackView::refresh(bool reloadMetadata)
             });
             emit lyricsChanged();
         }
-        updateFormat();
         emit trackChanged();
     }
     emit playbackChanged();
