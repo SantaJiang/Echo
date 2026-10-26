@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Controls
 import QtQuick.Layouts
 
@@ -12,7 +13,29 @@ Rectangle {
     property real openness: opened ? 1 : 0
     signal closeRequested()
     objectName: "queuePanel"
-    color: "#211c2a"
+    color: "transparent"
+    radius: 14
+    Rectangle {
+        id: surface
+        anchors.fill: parent
+        color: "#211c2a"
+        radius: panel.radius
+        border.color: "#25ffffff"
+        layer.enabled: true
+        visible: false
+    }
+    MultiEffect {
+        objectName: "queueShadow"
+        anchors.fill: surface
+        source: surface
+        z: -1
+        shadowEnabled: true
+        blurMax: 24
+        shadowBlur: 1
+        shadowOpacity: 0.30
+        shadowColor: "black"
+        shadowVerticalOffset: 6
+    }
     visible: openness > 0
     enabled: opened
     Behavior on openness {

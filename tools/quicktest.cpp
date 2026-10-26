@@ -234,7 +234,7 @@ int main(int argc, char** argv)
             qInfo() << "PASS" << checks << "headless QML startup checks; GPU interaction suite runs separately";
             return 0;
         }
-        if (app.arguments().contains("--layout-contract-test") || app.arguments().contains("--album-resize-test") || app.arguments().contains("--ui-motion-review") || app.arguments().contains("--window-stability-review")) {
+        if (app.arguments().contains("--floating-queue-test") || app.arguments().contains("--layout-contract-test") || app.arguments().contains("--album-resize-test") || app.arguments().contains("--ui-motion-review") || app.arguments().contains("--window-stability-review")) {
             QTimer::singleShot(0, &app, [&] {
                 echo::Client client(&library, &player, &engine);
                 echo::QuickView shell(&playback, &client);
@@ -255,6 +255,88 @@ int main(int argc, char** argv)
                 auto* trackInfo = find("barTrackInfo");
                 auto* actions = find("barActions");
                 const auto rect = [](QQuickItem* item) { return item->mapRectToScene(item->boundingRect()); };
+                if (app.arguments().contains("--floating-queue-test")) {
+                    QDir().mkpath("/tmp/echo-floating-queue");
+                    shell.resize(1180, 800);
+                    shell.raise(); shell.requestActivate();
+                    pump(250);
+                    auto* list = find("queueList");
+                    auto* toggle = find("queueToggle");
+                    const auto clickToggle = [&] {
+                        QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
+                            toggle->mapToScene(QPointF(22, 22)).toPoint());
+                    };
+                    QVector<QVariantMap> rows;
+                    for (int i = 0; i < 30; ++i)
+                        rows << QVariantMap{{"title", QString("Queue track %1").arg(i)}, {"artist", "Echo"},
+                            {"artwork", ""}, {"current", i == 0}};
+                    client.queue()->replace(rows);
+                    const auto bodyBefore = rect(browser);
+                    const auto before = shell.grabWindow();
+                    client.setReduceMotion(false);
+                    clickToggle(); pump(65);
+                    check(queue->property("openness").toReal() > 0 && queue->property("openness").toReal() < 1,
+                        "shared floating queue animates on the library page");
+                    check(waitFor([&] { return queue->property("openness").toReal() == 1; }), "shared queue finishes opening");
+                    check(rect(browser) == bodyBefore, "library geometry is unchanged by floating queue");
+                    const auto bounds = rect(queue);
+                    check(bounds == QRectF(848, 60, 320, 800 - bar->height() - 72), "shared queue has consistent insets and width");
+                    const auto frame = shell.grabWindow();
+                    const auto sample = QPoint(qRound(230 * shell.devicePixelRatio()), qRound(400 * shell.devicePixelRatio()));
+                    check(before.pixelColor(sample) == frame.pixelColor(sample), "floating queue does not dim the surrounding page");
+                    auto* shadow = find("queueShadow");
+                    check(shadow->property("shadowEnabled").toBool() && shadow->property("blurMax").toInt() == 24,
+                        "shared queue uses a bounded background shadow");
+                    check(frame.save("/tmp/echo-floating-queue/library.png"), "shared library queue screenshot saved");
+                    shadow->setProperty("shadowEnabled", false); pump(60);
+                    const auto noShadow = shell.grabWindow();
+                    const QPoint shadowSample(qRound((bounds.left() - 4) * shell.devicePixelRatio()),
+                        qRound(bounds.center().y() * shell.devicePixelRatio()));
+                    check(frame.pixelColor(shadowSample).lightness() < noShadow.pixelColor(shadowSample).lightness(),
+                        "rendered shadow darkens pixels immediately outside the panel");
+                    shadow->setProperty("shadowEnabled", true); pump(60);
+                    list->setProperty("contentY", 180);
+                    pump(80);
+                    const auto scroll = list->property("contentY").toReal();
+                    shell.rootObject()->setProperty("expanded", true);
+                    pump(450);
+                    check(queue->isVisible() && queue->property("openness").toReal() == 1
+                            && list->property("contentY").toReal() == scroll && rect(queue) == bounds,
+                        "same floating queue and scroll position survive entering playback");
+                    check(shell.grabWindow().save("/tmp/echo-floating-queue/playback.png"), "shared playback queue screenshot saved");
+                    shell.rootObject()->setProperty("expanded", false);
+                    pump(450);
+                    check(list->property("contentY").toReal() == scroll && queue->isVisible(), "queue scroll survives leaving playback");
+                    const auto pageBeforeDismiss = client.page();
+                    auto* tracks = find("trackList");
+                    const auto trackScroll = tracks->property("contentY");
+                    const auto wheelPoint = tracks->mapToScene(QPointF(80, 100));
+                    QWheelEvent outsideWheel(wheelPoint, shell.mapToGlobal(wheelPoint.toPoint()), QPoint(), QPoint(0, -120),
+                        Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                    QCoreApplication::sendEvent(&shell, &outsideWheel); pump(60);
+                    check(tracks->property("contentY") == trackScroll && queue->isVisible(), "outside wheel neither scrolls the page nor dismisses queue");
+                    QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, QPoint(80, 138));
+                    check(!shell.rootObject()->property("queueOpen").toBool() && client.page() == pageBeforeDismiss,
+                        "outside sidebar click closes queue without navigating");
+                    check(waitFor([&] { return !queue->isVisible(); }), "outside dismissal finishes");
+                    clickToggle(); pump(70); clickToggle(); pump(40); clickToggle();
+                    check(waitFor([&] { return queue->property("openness").toReal() == 1; }), "rapid toggle reversal finishes open");
+                    for (int i = 0; i < 15; ++i) {
+                        shell.resize(1040 + i * 20, 700 + i * 5); pump(12);
+                        check(std::abs(rect(queue).right() - shell.width() + 12) < .5, "floating queue tracks live window resizing");
+                    }
+                    QTest::keyClick(&shell, Qt::Key_Escape);
+                    check(waitFor([&] { return !queue->isVisible(); }), "Escape dismisses library queue");
+                    client.setReduceMotion(true); clickToggle();
+                    check(queue->property("openness").toReal() == 1, "reduced motion opens shared queue immediately");
+                    auto* close = find("queueCloseButton");
+                    QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier, close->mapToScene(QPointF(15, 15)).toPoint());
+                    check(!queue->isVisible(), "close button immediately dismisses reduced motion queue");
+                    check(qmlIssues.isEmpty(), "floating queue has no QML warnings");
+                    qInfo() << "PASS" << checks << "floating queue checks";
+                    QCoreApplication::exit(0);
+                    return;
+                }
                 if (app.arguments().contains("--window-stability-review")) {
                     QDir().mkpath("/tmp/echo-window-stability");
                     auto* dialogs = shell.rootObject()->findChild<QObject*>("appDialogs");
@@ -536,8 +618,8 @@ int main(int argc, char** argv)
                             check(std::abs(side.width() - 218) < 1 && std::abs(side.bottom() - controls.top()) < 1,
                                 "sidebar keeps its layout column above the player bar");
                             check(std::abs(body.left() - side.right() - 30) < 1
-                                    && std::abs(body.right() - panel.left() + (opened ? 0 : 30)) < 1,
-                                "all library pages share the same constrained workspace margins");
+                                    && std::abs(body.right() - shell.width() + 30) < 1,
+                                "all library pages retain full workspace margins with floating queue");
                             check(body.width() > 200 && body.height() > 200 && body.bottom() <= controls.top() + 1,
                                 "library content stays usable and inside the window at every tested size");
                             check(std::abs(rect(transport).center().x() - shell.width() / 2.) < 1,
@@ -1545,9 +1627,8 @@ int main(int argc, char** argv)
             shell.rootObject()->setProperty("expanded", true);
             pump(450);
             auto* queueToggle = bar->findChild<QQuickItem*>("queueToggle");
-            auto* floatingQueue = shell.rootObject()->findChild<QQuickItem*>("playbackQueuePanel");
-            auto* floatingList = shell.rootObject()->findChild<QQuickItem*>("playbackQueueList");
-            auto* libraryQueue = shell.rootObject()->findChild<QQuickItem*>("queuePanel");
+            auto* floatingQueue = shell.rootObject()->findChild<QQuickItem*>("queuePanel");
+            auto* floatingList = shell.rootObject()->findChild<QQuickItem*>("queueList");
             const auto coverBeforeQueue = cover->mapRectToScene(cover->boundingRect());
             const auto lyricsBeforeQueue = lyrics->mapRectToScene(lyrics->boundingRect());
             const auto clickQueue = [&] {
@@ -1567,8 +1648,8 @@ int main(int argc, char** argv)
                     && queueBounds.bottom() <= fixedBarPosition.y() && floatingQueue->width() == 320,
                 "floating queue fits between titlebar and shared controls");
             check(cover->mapRectToScene(cover->boundingRect()) == coverBeforeQueue
-                    && lyrics->mapRectToScene(lyrics->boundingRect()) == lyricsBeforeQueue && !libraryQueue->isVisible(),
-                "playback cover and lyrics retain their layout while library queue stays hidden");
+                    && lyrics->mapRectToScene(lyrics->boundingRect()) == lyricsBeforeQueue && floatingQueue->isVisible(),
+                "playback cover and lyrics retain their layout under the shared queue");
             pump(750);
             check(bar->opacity() == 1 && collapse->opacity() == 1,
                 "open queue keeps playback controls and collapse arrow visible beyond idle timeout");
@@ -2042,7 +2123,7 @@ int main(int argc, char** argv)
             const auto originalTexture = cover->property("renderTextureSize");
             for (const bool opening : {true, false}) {
                 const QRectF before = cover->mapRectToScene(cover->boundingRect());
-                const qreal available = viewportWidth - 218 - 60 - (opening ? 270 : 0);
+                const qreal available = viewportWidth - 218 - 60;
                 const qreal cell = qMin(226., available / 2);
                 const int columns = qMax(2, int(available / cell));
                 const QPointF origin = grid->mapToScene(QPointF(0, 0));
@@ -2080,8 +2161,8 @@ int main(int argc, char** argv)
                     previous = current; previousTime = now;
                 }
                 check(bounded && monotonic, "queue toggle moves album monotonically to final grid without size reversals");
-                if (!noSteps || interpolatedFrames <= 5) qInfo() << "Grid reflow diagnostics" << viewportWidth << opening << noSteps << interpolatedFrames << before << destination << previous << grid->property("animateQueueLayout");
-                check(noSteps && interpolatedFrames > 5, "album row wrapping interpolates across frames without resizing the artwork");
+                if (!noSteps || interpolatedFrames != 0) qInfo() << "Grid reflow diagnostics" << viewportWidth << opening << noSteps << interpolatedFrames << before << destination << previous << grid->property("animateQueueLayout");
+                check(noSteps && interpolatedFrames == 0 && previous == before, "floating queue never reflows or resizes album artwork");
                 check(stableTextures, "queue toggle does not reload artwork or reallocate cover texture sizes");
                 const QRectF after = cover->mapRectToScene(cover->boundingRect());
                 check(qAbs(after.x()-destination.x()) < 1 && qAbs(after.y()-destination.y()) < 1
@@ -2124,11 +2205,7 @@ int main(int argc, char** argv)
         client.cards()->replace(originalCards);
         pump(350);
         QObject::disconnect(reflowConnection);
-        check(reflowFrames.size() > 20, "queue reflow presents continuous animation frames");
-        std::sort(reflowFrames.begin(), reflowFrames.end());
-        qInfo() << "Queue album reflow frame intervals median/p95/max ms" << reflowFrames[reflowFrames.size()/2]
-            << reflowFrames[reflowFrames.size()*95/100] << reflowFrames.last();
-        check(reflowFrames[reflowFrames.size()*95/100] < 25, "queue album reflow frame p95 stays under 25 ms");
+        check(reflowFrames.isEmpty(), "floating queue does not activate retained squeeze animation");
         std::function<QQuickItem*(QQuickItem*)> findHoverCover = [&](QQuickItem* parent) -> QQuickItem* {
             if (parent->objectName() == "cardArtwork0")
                 return parent;
@@ -2222,15 +2299,21 @@ int main(int argc, char** argv)
         check(queueList, "queue view exists");
         auto* libraryContent = shell.rootObject()->findChild<QQuickItem*>("libraryContent");
         auto* openQueuePanel = shell.rootObject()->findChild<QQuickItem*>("queuePanel");
-        check(libraryContent && qAbs(libraryContent->x() + libraryContent->width() - openQueuePanel->x()) < .5,
-            "open queue meets library content without a blank vertical strip");
+        check(libraryContent && qAbs(libraryContent->x() + libraryContent->width() - shell.width() + 30) < .5
+                && openQueuePanel->x() < libraryContent->x() + libraryContent->width(),
+            "open queue overlaps full-width library content");
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
             queueList->mapToScene(QPointF(100, queueList->height() - 15)).toPoint());
         check(shell.rootObject()->property("queueOpen").toBool(), "blank space inside queue keeps it open");
         auto* dismissTrackList = shell.rootObject()->findChild<QQuickItem*>("trackList");
+        const auto selectedBeforeDismiss = client.selectedCount();
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
             dismissTrackList->mapToScene(QPointF(150, 24)).toPoint());
-        check(shell.rootObject()->property("queueOpen").toBool(), "song selection does not dismiss queue");
+        check(!shell.rootObject()->property("queueOpen").toBool() && client.selectedCount() == selectedBeforeDismiss,
+            "outside song click dismisses queue without changing selection");
+        pump(300);
+        shell.rootObject()->setProperty("queueOpen", true);
+        pump(300);
         QTest::mouseClick(&shell, Qt::LeftButton, Qt::NoModifier,
             dismissTrackList->mapToScene(QPointF(150, dismissTrackList->height() - 20)).toPoint());
         check(!shell.rootObject()->property("queueOpen").toBool(), "blank track viewport dismisses queue");
@@ -2273,7 +2356,7 @@ int main(int argc, char** argv)
         for (int i = 0; i < 12; ++i) {
             shell.resize(1040 + i * 50, 740);
             pump(12);
-            openQueueFollowedWindow &= qAbs(queuePanel->x() + queuePanel->width() - shell.rootObject()->width()) < .5;
+            openQueueFollowedWindow &= qAbs(queuePanel->x() + queuePanel->width() - shell.rootObject()->width() + 12) < .5;
         }
         check(openQueueFollowedWindow, "open queue stays attached to right edge throughout live resize");
         shell.rootObject()->setProperty("queueOpen", false);

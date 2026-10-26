@@ -8,7 +8,8 @@ FocusScope {
     property bool expanded: false
     property bool queueOpen: false
     property var contextMenuPoint: null
-    readonly property bool libraryQueueOpen: queueOpen && !expanded
+    // Retain page squeeze adapters for embedded layouts; floating queues never activate them.
+    readonly property bool libraryQueueLayoutOpen: false
     onQueueOpenChanged: showControls()
     function contextAt(item, position, action) {
         contextMenuPoint = item.mapToItem(root, position.x, position.y);
@@ -19,8 +20,8 @@ FocusScope {
     readonly property bool transitioning: reveal > 0 && reveal < 1
     property bool controlsIdle: false
     readonly property bool isPlaying: playback.playing
-    readonly property bool controlsShown: !expanded || transitioning || !controlsIdle || queueOpen || playbackQueuePanel.openness > 0 || playerBar.interacting || appDialogs.active || appMenu.opened
-    readonly property bool canAutoHideControls: expanded && !transitioning && !queueOpen && playbackQueuePanel.openness === 0 && !playerBar.interacting && !appDialogs.active && !appMenu.opened
+    readonly property bool controlsShown: !expanded || transitioning || !controlsIdle || queueOpen || queuePanel.openness > 0 || playerBar.interacting || appDialogs.active || appMenu.opened
+    readonly property bool canAutoHideControls: expanded && !transitioning && !queueOpen && queuePanel.openness === 0 && !playerBar.interacting && !appDialogs.active && !appMenu.opened
     property real controlsReveal: controlsShown ? 1 : 0
     onCanAutoHideControlsChanged: restartControlsTimer()
     function closeQueue() {
@@ -119,21 +120,13 @@ FocusScope {
         anchors.bottomMargin: playerBar.height
         visible: root.reveal < 1
         enabled: !root.expanded
-        MouseArea {
-            objectName: "queueDismissBackground"
-            y: windowChrome.height
-            width: queuePanel.x
-            height: Math.max(0, parent.height - y)
-            enabled: root.queueOpen
-            onClicked: root.queueOpen = false
-        }
         RowLayout {
             anchors.fill: parent
             spacing: 0
             NavigationSidebar {
                 id: sidebar
                 controller: client
-                queueOpen: root.libraryQueueOpen
+                queueOpen: root.libraryQueueLayoutOpen
                 topInset: windowChrome.height
                 Layout.preferredWidth: root.sideWidth
                 Layout.minimumWidth: root.sideWidth
@@ -148,33 +141,17 @@ FocusScope {
                 windowWidth: root.width
                 fullContentWidth: libraryShell.width - sidebar.width - 2 * horizontalMargin
                 queueWidth: queuePanel.width
-                queueOpen: root.libraryQueueOpen
+                queueOpen: root.libraryQueueLayoutOpen
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.minimumWidth: 0
                 Layout.leftMargin: horizontalMargin
-                Layout.rightMargin: horizontalMargin * (1 - queuePanel.openness)
+                Layout.rightMargin: horizontalMargin
                 Layout.topMargin: 28
                 onCardContextRequested: (sender, position, row) => root.contextAt(sender, position, () => client.cardMenu(row))
                 onTrackContextRequested: (sender, position, row) => root.contextAt(sender, position, () => client.trackMenu(row))
                 onQueueDismissRequested: root.queueOpen = false
             }
-            Item {
-                id: queueSpace
-                Layout.preferredWidth: queuePanel.width * queuePanel.openness
-                Layout.minimumWidth: Layout.preferredWidth
-                Layout.maximumWidth: Layout.preferredWidth
-                Layout.fillHeight: true
-            }
-        }
-        QueuePanel {
-            id: queuePanel
-            controller: client
-            opened: root.libraryQueueOpen
-            reduceMotion: client.reduceMotion
-            width: 300
-            height: parent.height
-            x: parent.width - queueSpace.width
         }
     }
     PlayerBar {
@@ -230,35 +207,28 @@ FocusScope {
         }
     }
     Item {
-        id: playbackQueueOverlay
-        objectName: "playbackQueueOverlay"
+        id: queueOverlay
+        objectName: "queueOverlay"
         anchors.fill: parent
         anchors.bottomMargin: playerBar.height
         z: 4.5
-        visible: root.reveal > 0 && playbackQueuePanel.openness > 0
-        enabled: root.expanded
-        Rectangle {
+        visible: queuePanel.openness > 0
+        MouseArea {
+            objectName: "queueDismissBackground"
             anchors.fill: parent
-            color: "#28000000"
-            opacity: playbackQueuePanel.openness
-            MouseArea {
-                objectName: "playbackQueueDismiss"
-                anchors.fill: parent
-                acceptedButtons: Qt.AllButtons
-                onClicked: root.closeQueue()
-                onWheel: wheel => wheel.accepted = true
-            }
+            anchors.topMargin: windowChrome.height
+            acceptedButtons: Qt.AllButtons
+            onClicked: root.closeQueue()
+            onWheel: wheel => wheel.accepted = true
         }
         QueuePanel {
-            id: playbackQueuePanel
-            objectName: "playbackQueuePanel"
-            listObjectName: "playbackQueueList"
+            id: queuePanel
+            objectName: "queuePanel"
+            listObjectName: "queueList"
             controller: client
-            opened: root.expanded && root.queueOpen
+            opened: root.queueOpen
             reduceMotion: client.reduceMotion
             dismissable: true
-            radius: 14
-            border.color: "#25ffffff"
             width: 320
             height: Math.max(0, parent.height - windowChrome.height - 24)
             x: parent.width - (width + 12) * openness
