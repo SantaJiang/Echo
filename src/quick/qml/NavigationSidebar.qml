@@ -15,7 +15,7 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 18
-        anchors.topMargin: sidebar.topInset + 2
+        anchors.topMargin: sidebar.topInset
         spacing: 8
         Text {
             text: "资料库"

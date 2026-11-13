@@ -172,7 +172,9 @@ Rectangle {
                     text: bar.timeText(playback.position) + " / " + bar.timeText(playback.duration)
                     color: Theme.caaa1b7
                     font.pixelSize: 12
-                    font.family: "Menlo"
+                    font.family: Qt.platform.os === "osx" ? "Menlo"
+                                 : Qt.platform.os === "windows" ? "Consolas"
+                                 : Qt.application.font.family
                     Layout.rightMargin: 12
                 }
                 ActionButton {

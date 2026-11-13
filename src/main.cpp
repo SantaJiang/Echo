@@ -69,11 +69,14 @@ int main(int argc, char** argv)
 
     QFont font;
 #if defined(Q_OS_MACOS)
-    font.setFamily(QStringLiteral(".AppleSystemUIFont"));
+    font.setFamilies({ QStringLiteral(".AppleSystemUIFont") });
 #elif defined(Q_OS_WIN)
-    font.setFamily(QStringLiteral("Segoe UI"));
+    // Windows 只给 Segoe UI 时中文没有字形，会回退到宋体；
+    // 优先用系统 UI 字体微软雅黑，Segoe UI 作为西文兜底。
+    font.setFamilies({ QStringLiteral("Microsoft YaHei UI"), QStringLiteral("Microsoft YaHei"),
+                       QStringLiteral("Segoe UI") });
 #else
-    font.setFamily(QStringLiteral("Noto Sans"));
+    font.setFamilies({ QStringLiteral("Noto Sans") });
 #endif
     font.setPointSize(13);
     application.setFont(font);

@@ -10,22 +10,26 @@ Item {
     readonly property bool windows: platformName === "windows"
     property real sidebarWidth: 218
     height: 48
+    // macOS 的红绿灯占住左上角，拖动区从 88 起并避开搜索栏所在的一行；
+    // Windows/Linux 的标题栏整行都是空的（内容已在它下方），可以直接铺满。
     DragSurface {
         objectName: "windowDragArea"
         x: bar.mac ? 88 : 6
         width: Math.max(0, bar.width - x - (bar.mac ? 6 : controls.width + 8))
-        height: 24
+        height: bar.mac ? 24 : bar.height
     }
     DragSurface {
-        x: bar.mac ? 88 : 6
+        visible: bar.mac
+        x: 88
         y: 24
         width: bar.sidebarWidth - x
         height: 24
     }
     DragSurface {
+        visible: bar.mac
         x: bar.sidebarWidth + 432
         y: 24
-        width: Math.max(0, bar.width - x - (bar.mac ? 6 : controls.width + 8))
+        width: Math.max(0, bar.width - x - (controls.width + 8))
         height: 24
     }
     component DragSurface: MouseArea {

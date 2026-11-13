@@ -244,8 +244,9 @@ bool QuickView::nativeEvent(const QByteArray& type, void* message, qintptr* resu
             *result = HTMAXBUTTON;
             return true;
         }
-        if (x < w - qRound(146 * dpr)
-            && (y < qRound(24 * dpr) || (y < qRound(48 * dpr) && (x < qRound(218 * dpr) || x >= qRound(650 * dpr))))) {
+        // 内容从标题栏下沿（48）开始，整条标题栏都是空的，
+        // 除窗口按钮外都可以拖动。
+        if (x < w - qRound(146 * dpr) && y < qRound(48 * dpr)) {
             *result = HTCAPTION;
             return true;
         }

@@ -38,7 +38,8 @@ public:
             }
             return false;
         }
-        if (FAILED(m_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, IID_PPV_ARGS(&m_client)))) {
+        if (FAILED(m_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                reinterpret_cast<void**>(m_client.GetAddressOf())))) {
             if (error) {
                 *error = QStringLiteral("无法打开 WASAPI");
             }
@@ -83,7 +84,8 @@ public:
             const REFERENCE_TIME aligned = static_cast<REFERENCE_TIME>(
                 (10000000.0 * static_cast<double>(alignedFrames) / static_cast<double>(desired.Format.nSamplesPerSec)) + 0.5);
             m_client.Reset();
-            if (FAILED(m_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, IID_PPV_ARGS(&m_client)))) {
+            if (FAILED(m_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                reinterpret_cast<void**>(m_client.GetAddressOf())))) {
                 if (error) {
                     *error = QStringLiteral("无法重新打开 WASAPI");
                 }

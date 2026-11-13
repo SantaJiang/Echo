@@ -48,6 +48,12 @@ FocusScope {
         }
     }
     readonly property real sideWidth: 218
+    // macOS 的红绿灯按钮悬浮在内容之上，搜索栏可以贴到窗口顶部；
+    // Windows/Linux 用的是自绘标题栏，内容必须从标题栏下沿开始，
+    // 否则搜索栏会压住窗口拖动区（WM_NCHITTEST 的 HTCAPTION 区域）。
+    readonly property bool macChrome: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    readonly property real contentTopInset: macChrome ? 28 : windowChrome.height
+    readonly property real sidebarTopInset: macChrome ? windowChrome.height + 2 : contentTopInset
     clip: true
     focus: true
     Behavior on reveal {
@@ -101,7 +107,7 @@ FocusScope {
             NavigationSidebar {
                 id: sidebar
                 controller: client
-                topInset: windowChrome.height
+                topInset: root.sidebarTopInset
                 Layout.preferredWidth: root.sideWidth
                 Layout.minimumWidth: root.sideWidth
                 Layout.maximumWidth: root.sideWidth
@@ -119,7 +125,7 @@ FocusScope {
                 Layout.minimumWidth: 0
                 Layout.leftMargin: horizontalMargin
                 Layout.rightMargin: horizontalMargin
-                Layout.topMargin: 28
+                Layout.topMargin: root.contentTopInset
                 onCardContextRequested: (sender, position, row) => root.contextAt(sender, position, () => client.cardMenu(row))
                 onTrackContextRequested: (sender, position, row) => root.contextAt(sender, position, () => client.trackMenu(row))
                 onQueueDismissRequested: root.queueOpen = false
