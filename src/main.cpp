@@ -60,11 +60,14 @@ int main(int argc, char** argv)
     QCoreApplication::setOrganizationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationName(QStringLiteral("Echo"));
     QCoreApplication::setApplicationVersion(QStringLiteral(ECHO_VERSION));
+    // On macOS the bundle owns the Dock icon and its appearance variants.
+#if !defined(Q_OS_MACOS)
     QIcon appIcon;
     for (const int size : { 32, 64, 128, 256, 512 }) {
         appIcon.addFile(QStringLiteral(":/icons/echo-%1.png").arg(size));
     }
     application.setWindowIcon(appIcon);
+#endif
     qInstallMessageHandler(writeLog);
 
     QFont font;

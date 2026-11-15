@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Echo VERSION 1.0.5 LANGUAGES CXX)
+project(Echo VERSION 1.0.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -121,6 +121,28 @@ if(APPLE)
   target_link_libraries(echo_ui_support PUBLIC "-framework AppKit" "-framework MediaPlayer")
   target_sources(echo PRIVATE data/echo.icns)
   set_source_files_properties(data/echo.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  execute_process(
+    COMMAND xcrun --sdk macosx --show-sdk-version
+    OUTPUT_VARIABLE macos_sdk_version
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(macos_sdk_version VERSION_GREATER_EQUAL "26.0")
+    set(app_icon_source "${CMAKE_CURRENT_SOURCE_DIR}/data/AppIcon.icon")
+    set(app_icon_output "${CMAKE_CURRENT_BINARY_DIR}/macos-icon")
+    set(app_icon_catalog "${app_icon_output}/Assets.car")
+    add_custom_command(
+      OUTPUT "${app_icon_catalog}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${app_icon_output}"
+      COMMAND xcrun actool --compile "${app_icon_output}" --platform macosx
+              --minimum-deployment-target 12.0 --app-icon AppIcon
+              --output-partial-info-plist "${app_icon_output}/Info.plist"
+              "${app_icon_source}"
+      DEPENDS "${app_icon_source}/icon.json" "${app_icon_source}/Assets/Mark.png"
+      VERBATIM
+    )
+    set_source_files_properties("${app_icon_catalog}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    target_sources(echo PRIVATE "${app_icon_catalog}")
+  endif()
   set_source_files_properties(src/platform/platform_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   set_target_properties(echo PROPERTIES OUTPUT_NAME Echo MACOSX_BUNDLE TRUE
     MACOSX_BUNDLE_GUI_IDENTIFIER org.echo.player MACOSX_BUNDLE_BUNDLE_NAME Echo
