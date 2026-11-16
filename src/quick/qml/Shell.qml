@@ -58,7 +58,9 @@ FocusScope {
     readonly property bool roundWindow: Qt.platform.os === "linux" && !chrome.maximized && !chrome.fullscreen
     readonly property real windowRadius: roundWindow ? 12 : 0
     readonly property real contentTopInset: macChrome ? 28 : windowChrome.height
-    readonly property real sidebarTopInset: macChrome ? windowChrome.height + 2 : contentTopInset
+    // macOS 红绿灯在左侧，导航仍让出整条标题栏。Windows 和 Linux 的按钮在右侧，
+    // 左侧导航上移，不必再空出整条标题栏。
+    readonly property real sidebarTopInset: macChrome ? windowChrome.height + 2 : 24
     clip: true
     focus: true
     layer.enabled: roundWindow
@@ -238,6 +240,7 @@ FocusScope {
     WindowBar {
         id: windowChrome
         sidebarWidth: root.sideWidth
+        sidebarContentTop: root.sidebarTopInset
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
