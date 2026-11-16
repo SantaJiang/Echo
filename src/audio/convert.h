@@ -1,0 +1,25 @@
+#pragma once
+
+#include "audio/format.h"
+
+#include <cstdint>
+
+namespace echo {
+
+// Converts interleaved PCM. Integer copies and 24-in-32 alignment stay bit-exact.
+// Gain, remixing and bit-depth reduction use TPDF dither at the destination integer precision.
+void convertSamples(const uint8_t* src, const SampleFormat& srcFmt, int frames, uint8_t* dst, const DeviceFormat& dstFmt,
+                    float gain, uint32_t* ditherState);
+
+[[nodiscard]] inline float volumeCurve(float slider)
+{
+    if (slider <= 0.f) {
+        return 0.f;
+    }
+    if (slider >= 1.f) {
+        return 1.f;
+    }
+    return slider * slider;
+}
+
+} // namespace echo

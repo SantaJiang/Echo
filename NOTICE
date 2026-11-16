@@ -1,0 +1,21 @@
+Echo is a local music player, licensed under the MIT License (see LICENSE).
+
+Third-party components are used under their own licenses and are linked
+dynamically where those licenses require it:
+
+- Qt is used under the GNU Lesser General Public License version 3.
+- FFmpeg libraries (libavformat, libavcodec, libavutil, libswresample) are
+  linked dynamically. Their license depends on how FFmpeg was built: the
+  default configuration is LGPL 2.1 or later, while builds with GPL components
+  enabled (such as the Homebrew and MSYS2 packages used for macOS and Windows
+  releases) are GPL 2 or later.
+- libebur128 is used under the MIT License: https://github.com/jiixyj/libebur128 .
+- TagLib is used under the Mozilla Public License version 1.1 or the GNU Lesser
+  General Public License version 2.1.
+- Font Awesome Free 6 (resources/fonts/fa-solid-900.ttf) by Fonticons, Inc.
+  (https://fontawesome.com). The font file is licensed under the SIL Open Font
+  License 1.1 and the icons under CC BY 4.0; the full license text is
+  resources/fonts/LICENSE.txt.
+
+Corresponding source for the LGPL libraries is available from their upstream
+projects: https://qt.io , https://ffmpeg.org and https://taglib.org .

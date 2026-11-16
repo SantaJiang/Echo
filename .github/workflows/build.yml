@@ -1,0 +1,70 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装依赖
+        run: brew install cmake ninja pkg-config qtbase qtdeclarative ffmpeg taglib libebur128
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix qtdeclarative)"
+      - name: 编译
+        run: cmake --build build
+      # Qt 来源不一致，着色器必须用同一套 Qt 的 qsb 重编：
+      # macOS 用 Homebrew 当前 qtbase（未锁补丁版本），Ubuntu 锁 6.8.3，Windows 用 MSYS2 UCRT64 的 Qt6。
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+
+  ubuntu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config qt6-base-dev \
+            libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
+            libebur128-dev libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libebur128
+            mingw-w64-ucrt-x86_64-taglib
+      - uses: actions/checkout@v4
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure

@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+.DS_Store
+*.user
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+*.dmg
+*.AppImage
+output/
