@@ -28,10 +28,11 @@ void installTrayIcon(QObject*, const std::function<void()>&, const std::function
 #else
 
 #include <QDBusAbstractAdaptor>
-#include <QDBusServiceWatcher>
-#include <QDBusPendingCall>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDBusObjectPath>
+#include <QDBusPendingCall>
+#include <QDBusServiceWatcher>
 #include <QGuiApplication>
 
 namespace echo {
