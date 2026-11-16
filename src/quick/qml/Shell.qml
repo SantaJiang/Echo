@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import QtQuick.Layouts
 import "qrc:/echo/quick/theme"
 
@@ -52,10 +53,31 @@ FocusScope {
     // Windows/Linux 用的是自绘标题栏，内容必须从标题栏下沿开始，
     // 否则搜索栏会压住窗口拖动区（WM_NCHITTEST 的 HTCAPTION 区域）。
     readonly property bool macChrome: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    // UKUI's window radius is 12. macOS and Windows round the native frame;
+    // a frameless Linux window has to clip itself, and maximized windows stay square.
+    readonly property bool roundWindow: Qt.platform.os === "linux" && !chrome.maximized && !chrome.fullscreen
+    readonly property real windowRadius: roundWindow ? 12 : 0
     readonly property real contentTopInset: macChrome ? 28 : windowChrome.height
     readonly property real sidebarTopInset: macChrome ? windowChrome.height + 2 : contentTopInset
     clip: true
     focus: true
+    layer.enabled: roundWindow
+    layer.smooth: true
+    layer.effect: MultiEffect {
+        maskEnabled: true
+        maskThresholdMin: 0.5
+        maskSpreadAtMin: 1.0
+        maskSource: windowCornerMask
+    }
+    Rectangle {
+        id: windowCornerMask
+        anchors.fill: parent
+        radius: root.windowRadius
+        visible: false
+        antialiasing: true
+        layer.enabled: root.roundWindow
+        layer.smooth: true
+    }
     Behavior on reveal {
         NumberAnimation {
             duration: Theme.motion(client.reduceMotion, Theme.motionPanel)

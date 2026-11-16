@@ -120,7 +120,13 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
     setTitle(QStringLiteral("Echo"));
     setMinimumSize(QSize(1040, 680));
     resize(1180, 800);
+    // Linux has no DWM/Cocoa corner radius for a frameless window. A transparent
+    // clear colour lets the QML mask show the desktop through the corners.
+#ifdef Q_OS_LINUX
+    setColor(Qt::transparent);
+#else
     setColor(QColor("#16141d"));
+#endif
     setResizeMode(QQuickView::SizeRootObjectToView);
     engine()->addImageProvider(QStringLiteral("echo-icons"), new Icons);
     rootContext()->setContextProperty(QStringLiteral("playback"), playback);
