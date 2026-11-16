@@ -9,14 +9,22 @@ Item {
     readonly property bool mac: platformName === "osx" || platformName === "macos"
     readonly property bool windows: platformName === "windows"
     property real sidebarWidth: 218
+    // 导航内容的起点。拖动区停在这里，避免盖住已经上移的侧栏。
+    property real sidebarContentTop: 48
     height: 48
-    // macOS 的红绿灯占住左上角，拖动区从 88 起并避开搜索栏所在的一行；
-    // Windows/Linux 的标题栏整行都是空的（内容已在它下方），可以直接铺满。
+    // macOS 的红绿灯占住左上角，拖动区从 88 起并避开搜索栏所在的一行。
+    // Windows 和 Linux 的左侧导航上移后，只有导航上方的窄条和右侧标题栏还能拖动。
     DragSurface {
         objectName: "windowDragArea"
-        x: bar.mac ? 88 : 6
+        x: bar.mac ? 88 : bar.sidebarWidth
         width: Math.max(0, bar.width - x - (bar.mac ? 6 : controls.width + 8))
         height: bar.mac ? 24 : bar.height
+    }
+    DragSurface {
+        visible: !bar.mac
+        x: 6
+        width: Math.max(0, bar.sidebarWidth - x)
+        height: Math.min(bar.height, bar.sidebarContentTop)
     }
     DragSurface {
         visible: bar.mac
