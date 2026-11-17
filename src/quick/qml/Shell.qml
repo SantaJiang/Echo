@@ -49,6 +49,9 @@ FocusScope {
         }
     }
     readonly property real sideWidth: 218
+    // Only punch the sidebar hole when the compositor is really painting a
+    // backdrop behind us. Otherwise the column would show black.
+    readonly property bool sidebarGlass: chrome.sidebarBackdrop && Boolean(client.preferences.glassSidebar)
     // macOS 的红绿灯按钮悬浮在内容之上，搜索栏可以贴到窗口顶部；
     // Windows/Linux 用的是自绘标题栏，内容必须从标题栏下沿开始，
     // 否则搜索栏会压住窗口拖动区（WM_NCHITTEST 的 HTCAPTION 区域）。
@@ -115,9 +118,24 @@ FocusScope {
         enabled: !appDialogs.active && !libraryView.searchActive && !root.expanded
         onActivated: client.selectAll()
     }
+    // Theme base plate. In glass mode it leaves the left column empty so the
+    // system backdrop can show through the sidebar.
     Rectangle {
+        id: canvasBacking
+        objectName: "shellCanvas"
         anchors.fill: parent
+        anchors.leftMargin: root.sidebarGlass ? root.sideWidth : 0
         color: Theme.canvas
+    }
+    // Glass has no hard edge of its own; without this line the sidebar and the
+    // content area bleed into each other.
+    Rectangle {
+        objectName: "glassSidebarDivider"
+        visible: root.sidebarGlass
+        x: root.sideWidth - 1
+        width: 1
+        height: root.height - playerBar.height
+        color: Theme.hairline
     }
     Item {
         id: libraryShell
@@ -131,6 +149,7 @@ FocusScope {
             NavigationSidebar {
                 id: sidebar
                 controller: client
+                glass: root.sidebarGlass
                 topInset: root.sidebarTopInset
                 Layout.preferredWidth: root.sideWidth
                 Layout.minimumWidth: root.sideWidth

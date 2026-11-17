@@ -107,6 +107,15 @@ namespace {
 QuickView::QuickView(PlaybackView* playback, Client* client)
 {
     m_customChrome = true;
+    // A system backdrop can only show through an alpha-composited surface. This
+    // is a static switch and must be armed before create().
+    QQuickWindow::setDefaultAlphaBuffer(true);
+    m_backdropAvailable = echo::supportsWindowBackdrop();
+    m_glassWanted = client->preferences().value(QStringLiteral("glassSidebar")).toBool();
+    const bool glass = m_backdropAvailable && m_glassWanted;
+    // The platform layer cannot read the preference itself, so the request
+    // travels on the window.
+    setProperty("echoGlassWanted", glass);
 #ifdef Q_OS_MACOS
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     // Keep Cocoa's full-size content mode in Qt's own window state, so Qt
@@ -123,10 +132,12 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
     resize(1180, 800);
     // Linux has no DWM/Cocoa corner radius for a frameless window. A transparent
     // clear colour lets the QML mask show the desktop through the corners.
+    // macOS and Windows stay opaque unless a backdrop is really available:
+    // a transparent window without one renders black.
 #ifdef Q_OS_LINUX
     setColor(Qt::transparent);
 #else
-    setColor(activeUiTheme().canvas);
+    setColor(glass ? QColor(Qt::transparent) : activeUiTheme().canvas);
 #endif
     setResizeMode(QQuickView::SizeRootObjectToView);
     engine()->addImageProvider(QStringLiteral("echo-icons"), new Icons);
@@ -135,7 +146,23 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
     rootContext()->setContextProperty(QStringLiteral("chrome"), this);
     const QSize initialSize = size();
     create();
-    applyQuickWindowChrome(this);
+    setProperty("echoWindowBackdrop", applyQuickWindowChrome(this));
+    // The preference asked for glass but the platform refused (Windows 10, or
+    // the compositor's transparency switch is off): go back to an opaque window
+    // before the first frame, otherwise the sidebar hole shows black.
+    if (!sidebarBackdrop() && glass)
+        setColor(activeUiTheme().canvas);
+    connect(client, &Client::preferencesChanged, this, [this, client] {
+        const bool wanted = client->preferences().value(QStringLiteral("glassSidebar")).toBool();
+        if (wanted == m_glassWanted)
+            return;
+        m_glassWanted = wanted;
+        const bool on = wanted && m_backdropAvailable;
+        setProperty("echoGlassWanted", on);
+        setColor(on ? QColor(Qt::transparent) : activeUiTheme().canvas);
+        setProperty("echoWindowBackdrop", echo::setWindowBackdrop(this, on));
+        emit chromeChanged();
+    });
     // Expanded Cocoa content can alter the initial native geometry during
     // creation. Reassert the requested size in Qt logical coordinates.
     resize(initialSize);
@@ -283,6 +310,18 @@ bool QuickView::nativeEvent(const QByteArray& type, void* message, qintptr* resu
             toggleMaximized();
         *result = 0;
         return true;
+    }
+    // Turning the system "Transparency effects" switch off silently disables
+    // Mica while DwmSetWindowAttribute keeps returning S_OK, so re-probe on
+    // every relevant broadcast and only touch DWM when the answer changed.
+    if (msg->message == WM_SETTINGCHANGE || msg->message == WM_DWMCOMPOSITIONCHANGED
+        || msg->message == WM_THEMECHANGED) {
+        const bool active = echo::setWindowBackdrop(this, property("echoGlassWanted").toBool());
+        if (active != sidebarBackdrop()) {
+            setColor(active ? QColor(Qt::transparent) : activeUiTheme().canvas);
+            setProperty("echoWindowBackdrop", active);
+            emit chromeChanged();
+        }
     }
     return QQuickView::nativeEvent(type, message, result);
 }

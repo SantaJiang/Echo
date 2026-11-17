@@ -214,6 +214,8 @@ Item {
             Label { Layout.fillWidth: true; text: dialogs.controller.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
             AppCheck { controller: dialogs.controller; objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
+            AppCheck { controller: dialogs.controller; objectName: "glassSidebarSetting"; Layout.fillWidth: true; text: "侧边栏毛玻璃"; preference: "glassSidebar"; visible: chrome.sidebarBackdropAvailable }
+            Label { Layout.fillWidth: true; text: "让左侧导航透出桌面壁纸的模糊效果。"; visible: chrome.sidebarBackdropAvailable; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 8; Layout.bottomMargin: 8 }
         }
         footer: DialogActions {

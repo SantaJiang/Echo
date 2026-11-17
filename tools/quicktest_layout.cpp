@@ -78,6 +78,27 @@ int echo::quicktest::runLayoutContract(Harness& harness)
                 auto* trackInfo = find("barTrackInfo");
                 auto* actions = find("barActions");
                 const auto rect = [](QQuickItem* item) { return item->mapRectToScene(item->boundingRect()); };
+                if (app.arguments().contains("--glass-sidebar-test")) {
+                    auto* canvas = find("shellCanvas");
+                    const auto tint = [&] { return sidebar->property("color").value<QColor>(); };
+                    const bool available = shell.property("sidebarBackdropAvailable").toBool();
+                    const bool active = shell.property("sidebarBackdrop").toBool();
+                    check(active == (available && client.preferences().value("glassSidebar").toBool()),
+                        "the sidebar hole follows the preference and the platform capability");
+                    check(canvas->x() == (active ? 218. : 0.),
+                        "the base plate only leaves the sidebar column to the backdrop while it is active");
+                    check(active ? (tint().alpha() > 0 && tint().alpha() < 255) : tint().alpha() == 255,
+                        "the sidebar is tinted only while a backdrop is active");
+                    client.setPreference("glassSidebar", false);
+                    pump(60);
+                    check(canvas->x() == 0 && tint().alpha() == 255 && !shell.property("sidebarBackdrop").toBool(),
+                        "disabling the preference restores the opaque sidebar at runtime");
+                    client.setPreference("glassSidebar", true);
+                    pump(60);
+                    check(qmlIssues.isEmpty(), "the glass sidebar preference produces no QML warnings");
+                    QCoreApplication::exit(0);
+                    return;
+                }
                 if (app.arguments().contains("--floating-queue-test")) {
                     QDir().mkpath("/tmp/echo-floating-queue");
                     shell.resize(1180, 800);

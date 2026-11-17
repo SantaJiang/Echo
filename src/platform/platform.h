@@ -15,7 +15,16 @@ namespace echo {
 enum class MediaCommand { Toggle, Next, Previous, Seek };
 
 void quitApplication();
-void applyQuickWindowChrome(QWindow* window);
+// Whether the platform can paint a system backdrop behind transparent QML.
+// Safe to call before a window exists.
+bool supportsWindowBackdrop();
+// Installs the native window chrome. Returns whether a system backdrop is
+// actually showing through: Qt paints opaque by default, so a false result
+// means the window must keep its opaque clear colour.
+bool applyQuickWindowChrome(QWindow* window);
+// Toggles the backdrop of an already chromed window. Returns whether it is
+// active afterwards.
+bool setWindowBackdrop(QWindow* window, bool enabled);
 // Returns true when ready will run after the native fullscreen transition finishes.
 bool deferHideUntilFullscreenExit(QWindow* window, const std::function<void()>& ready);
 void useDarkAppearance();

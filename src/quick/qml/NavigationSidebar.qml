@@ -9,9 +9,11 @@ Rectangle {
     required property var controller
     property bool queueOpen: false
     property real topInset: 48
+    // Tints over the system backdrop instead of painting an opaque column.
+    property bool glass: false
     signal contextRequested(Item sender, point position, int row)
     signal queueDismissRequested()
-    color: Theme.sidebar
+    color: sidebar.glass ? Theme.sidebarGlass : Theme.sidebar
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 18

@@ -16,6 +16,12 @@ QtObject {
 
     readonly property color canvas: "#17151D"
     readonly property color sidebar: "#201D28"
+    // Sidebar tint when the system backdrop shows through. Cocoa's material
+    // already carries its own base colour, so a thin wash is enough; DWM Mica
+    // is much fainter and needs a heavier tint to keep the labels readable.
+    readonly property color sidebarGlass: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+        ? "#59201D28"
+        : "#8C201D28"
     readonly property color surface: "#24202D"
     readonly property color surfaceRaised: "#302C3D"
     readonly property color scrim: "#990B0910"

@@ -336,7 +336,8 @@ QVariantMap Client::preferences() const
     return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()}, {"fading", m_player->fadingEnabled()},
         {"spatial", m_player->spatialEnabled()}, {"spatialStatus", m_player->spatialStatus()},
         {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion},
-        {"dynamicPlaybackBackground", m_library->setting(settings::dynamicPlaybackBackground, QStringLiteral("0")) == QLatin1String("1")}};
+        {"dynamicPlaybackBackground", m_library->setting(settings::dynamicPlaybackBackground, QStringLiteral("0")) == QLatin1String("1")},
+        {"glassSidebar", m_library->setting(settings::glassSidebar, QStringLiteral("1")) == QLatin1String("1")}};
 }
 void Client::setPreference(const QString& key, bool value)
 {
@@ -348,6 +349,7 @@ void Client::setPreference(const QString& key, bool value)
     else if (key == "replayGain") m_player->setReplayGainEnabled(value);
     else if (key == "reduceMotion") setReduceMotion(value);
     else if (key == "dynamicPlaybackBackground") m_library->setSetting(settings::dynamicPlaybackBackground, value ? QStringLiteral("1") : QStringLiteral("0"));
+    else if (key == "glassSidebar") m_library->setSetting(settings::glassSidebar, value ? QStringLiteral("1") : QStringLiteral("0"));
     emit preferencesChanged();
 }
 void Client::requestDialog(QVariantMap data, DialogService::Reply reply)

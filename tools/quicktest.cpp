@@ -148,7 +148,7 @@ int main(int argc, char** argv)
             return 0;
         }
         echo::quicktest::Harness harness{app, temp, library, error, ids, tags, otherIds, sourceId, probe, engine, player, playback, client, window, coverPath};
-        if (app.arguments().contains("--floating-queue-test") || app.arguments().contains("--layout-contract-test") || app.arguments().contains("--album-resize-test") || app.arguments().contains("--ui-motion-review") || app.arguments().contains("--window-stability-review"))
+        if (app.arguments().contains("--floating-queue-test") || app.arguments().contains("--layout-contract-test") || app.arguments().contains("--album-resize-test") || app.arguments().contains("--ui-motion-review") || app.arguments().contains("--window-stability-review") || app.arguments().contains("--glass-sidebar-test"))
             return echo::quicktest::runLayoutContract(harness);
         if (app.arguments().contains("--background-test"))
             return echo::quicktest::runBackgroundTest(harness);

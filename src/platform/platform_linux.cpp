@@ -7,7 +7,15 @@ namespace echo {
 void useDarkAppearance() {}
 
 void installApplicationMenu(QObject*, const QVariantList&, const std::function<void(int)>&) {}
-void applyQuickWindowChrome(QWindow*) {}
+
+// A frameless Linux window has no compositor-provided material to sample, so
+// the sidebar stays opaque. The transparent clear colour exists only so the
+// QML corner mask can show the desktop at the very edges.
+bool supportsWindowBackdrop() { return false; }
+
+bool applyQuickWindowChrome(QWindow*) { return false; }
+
+bool setWindowBackdrop(QWindow*, bool) { return false; }
 
 
 

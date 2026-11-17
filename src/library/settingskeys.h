@@ -20,5 +20,6 @@ inline const QString loudnessPrefix = QStringLiteral("loudness/");
 inline const QString reduceMotion = QStringLiteral("quick_reduce_motion");
 inline const QString trackColumns = QStringLiteral("track_columns");
 inline const QString dynamicPlaybackBackground = QStringLiteral("dynamic_playback_background");
+inline const QString glassSidebar = QStringLiteral("glass_sidebar");
 
 } // namespace echo::settings

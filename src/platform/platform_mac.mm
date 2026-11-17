@@ -50,6 +50,59 @@ namespace {
 
 Q_LOGGING_CATEGORY(windowLog, "echo.window", QtWarningMsg)
 
+// Mirrors Shell.qml's sideWidth. The material is a native view, so it cannot
+// read the QML property.
+constexpr CGFloat kSidebarGlassWidth = 218.0;
+NSUserInterfaceItemIdentifier const kSidebarGlassId = @"echo.sidebar.glass";
+
+// winId() hands back the content view itself. A subview added there would sit
+// above Quick's backing layer and hide the entire interface, so the material
+// goes in as a sibling placed below the content view.
+NSView* sidebarGlass(NSView* content, bool create)
+{
+    NSView* host = content.superview;
+    if (!host)
+        return nil;
+    for (NSView* sibling in host.subviews) {
+        if ([sibling.identifier isEqualToString:kSidebarGlassId])
+            return sibling;
+    }
+    if (!create)
+        return nil;
+    NSVisualEffectView* glass = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+    glass.identifier = kSidebarGlassId;
+    // .sidebar is the list-sidebar material: it darkens itself for a dark
+    // background, which keeps the text contrast. .underWindowBackground is
+    // brighter and washes the labels out.
+    glass.material = NSVisualEffectMaterialSidebar;
+    glass.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    glass.state = NSVisualEffectStateActive; // no white flash when unfocused
+    glass.autoresizingMask = NSViewHeightSizable;
+    [host addSubview:glass positioned:NSWindowBelow relativeTo:content];
+    return glass;
+}
+
+void layoutSidebarGlass(QWindow* window)
+{
+    if (!window)
+        return;
+    NSView* content = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
+    NSView* host = content.superview;
+    if (!host)
+        return;
+    // Qt can rebuild the layer whenever the surface changes; an opaque layer
+    // turns every transparent pixel black, which is exactly the sidebar.
+    if (content.layer)
+        content.layer.opaque = NO;
+    NSView* glass = sidebarGlass(content, true);
+    if (!glass)
+        return;
+    const CGFloat scale = content.bounds.size.width / qMax(1, window->width());
+    const NSRect local = NSMakeRect(0, 0, kSidebarGlassWidth * scale, content.bounds.size.height);
+    glass.frame = [content convertRect:local toView:host];
+    glass.hidden = !window->property("echoWindowBackdrop").toBool();
+}
+
 std::function<void(MediaCommand, qint64)> g_handler;
 
 void dispatchCommand(MediaCommand command, qint64 argument)
@@ -220,13 +273,24 @@ bool deferHideUntilFullscreenExit(QWindow* window, const std::function<void()>& 
     return true;
 }
 
-void applyQuickWindowChrome(QWindow* window)
+bool applyQuickWindowChrome(QWindow* window)
 {
-    if (QGuiApplication::platformName() != QStringLiteral("cocoa") || window->property("echoQuickChrome").toBool())
-        return;
-    window->setProperty("echoQuickChrome", true);
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+        return false;
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
     NSWindow* native = view.window;
+    // The window has to composite over the material, and Metal will not blend
+    // while its backing layer claims to be opaque. Both are idempotent and are
+    // re-applied on every call because Qt can rebuild the layer.
+    native.opaque = NO;
+    native.backgroundColor = NSColor.clearColor;
+    view.wantsLayer = YES;
+    view.layer.opaque = NO;
+    if (window->property("echoQuickChrome").toBool()) {
+        layoutSidebarGlass(window);
+        return setWindowBackdrop(window, window->property("echoGlassWanted").toBool());
+    }
+    window->setProperty("echoQuickChrome", true);
     if (!(native.styleMask & NSWindowStyleMaskFullSizeContentView))
         native.styleMask |= NSWindowStyleMaskFullSizeContentView;
     native.titlebarAppearsTransparent = YES;
@@ -269,15 +333,21 @@ void applyQuickWindowChrome(QWindow* window)
             [button setFrameOrigin:[button.superview convertPoint:point fromView:content]];
         }
     };
-    positionButtons();
-    QObject::connect(window, &QWindow::widthChanged, window, [window, positionButtons] {
-        QTimer::singleShot(0, window, positionButtons);
+    // The glass has to follow resize and native fullscreen too, so it is laid
+    // out separately from the buttons, which stand still during fullscreen.
+    const auto layoutChrome = [window, positionButtons] {
+        layoutSidebarGlass(window);
+        positionButtons();
+    };
+    layoutChrome();
+    QObject::connect(window, &QWindow::widthChanged, window, [window, layoutChrome] {
+        QTimer::singleShot(0, window, layoutChrome);
     });
-    QObject::connect(window, &QWindow::heightChanged, window, [window, positionButtons] {
-        QTimer::singleShot(0, window, positionButtons);
+    QObject::connect(window, &QWindow::heightChanged, window, [window, layoutChrome] {
+        QTimer::singleShot(0, window, layoutChrome);
     });
-    QObject::connect(window, &QWindow::visibilityChanged, window, [window, positionButtons] {
-        QTimer::singleShot(0, window, positionButtons);
+    QObject::connect(window, &QWindow::visibilityChanged, window, [window, layoutChrome] {
+        QTimer::singleShot(0, window, layoutChrome);
     });
     NSMutableArray* fullscreenObservers = [NSMutableArray array];
     for (NSNotificationName name : @[NSWindowWillEnterFullScreenNotification, NSWindowDidEnterFullScreenNotification,
@@ -290,8 +360,13 @@ void applyQuickWindowChrome(QWindow* window)
                 guarded->setProperty("echoFullscreenTransition", phase);
                 if ([name isEqual:NSWindowDidEnterFullScreenNotification]) guarded->setProperty("echoNativeFullscreen", true);
                 if ([name isEqual:NSWindowDidExitFullScreenNotification]) guarded->setProperty("echoNativeFullscreen", false);
-                if ([name isEqual:NSWindowDidExitFullScreenNotification])
-                    QTimer::singleShot(0, guarded.data(), positionButtons);
+                if ([name isEqual:NSWindowDidExitFullScreenNotification]) {
+                    QTimer::singleShot(0, guarded.data(), [guarded, positionButtons] {
+                        if (!guarded) return;
+                        layoutSidebarGlass(guarded.data());
+                        positionButtons();
+                    });
+                }
             }];
         [fullscreenObservers addObject:observer];
     }
@@ -355,6 +430,26 @@ void applyQuickWindowChrome(QWindow* window)
             return nil;
         }];
     QObject::connect(window, &QObject::destroyed, [monitor] { [NSEvent removeMonitor:monitor]; });
+    return setWindowBackdrop(window, window->property("echoGlassWanted").toBool());
+}
+
+bool supportsWindowBackdrop()
+{
+    return QGuiApplication::platformName() == QStringLiteral("cocoa");
+}
+
+bool setWindowBackdrop(QWindow* window, bool enabled)
+{
+    if (!window || QGuiApplication::platformName() != QStringLiteral("cocoa"))
+        return false;
+    NSView* content = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
+    if (!content)
+        return false;
+    NSView* glass = sidebarGlass(content, enabled);
+    if (!glass)
+        return false;
+    glass.hidden = !enabled;
+    return enabled;
 }
 
 void installMediaIntegration(QWindow*, const std::function<void(MediaCommand, qint64)>& handler)
