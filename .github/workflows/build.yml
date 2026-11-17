@@ -3,36 +3,75 @@ name: build
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  macos:
+  # 版本号（CMakeLists.txt 的 project(Echo VERSION ...)）在 master 上提升时触发全平台打包，
+  # 其余提交只跑三平台 CI。workflow_dispatch 可手动触发完整打包。
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+      packaging: ${{ steps.detect.outputs.packaging }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: detect
+        run: |
+          version=$(sed -n 's/^project(Echo VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          packaging=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            packaging=true
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/master" ]; then
+            if git cat-file -e HEAD~1 2>/dev/null; then
+              previous=$(git show HEAD~1:CMakeLists.txt | sed -n 's/^project(Echo VERSION \([0-9][0-9.]*\).*/\1/p')
+              if [ "$previous" != "$version" ]; then
+                packaging=true
+              fi
+            else
+              packaging=true
+            fi
+          fi
+          echo "packaging=$packaging" >> "$GITHUB_OUTPUT"
+          echo "version=$version packaging=$packaging"
+
+  ci-macos:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'false'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: 安装依赖
-        run: brew install cmake ninja pkg-config qtbase qtdeclarative ffmpeg taglib libebur128
+        run: brew install cmake ninja pkg-config qtbase qtdeclarative qtshadertools ffmpeg taglib libebur128
+      # Homebrew 把 Qt 拆成多个 keg，qtbase 的 Qt6Config 默认只在自身前缀里找组件，
+      # 必须放开 NO_DEFAULT_PATH 才能经由 CMAKE_PREFIX_PATH 找到 qtdeclarative/qtshadertools。
       - name: 配置
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix qtdeclarative)"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase);$(brew --prefix qtdeclarative);$(brew --prefix qtshadertools)"
+          -DQT_DISABLE_NO_DEFAULT_PATH_IN_QT_PACKAGES=ON
       - name: 编译
         run: cmake --build build
-      # Qt 来源不一致，着色器必须用同一套 Qt 的 qsb 重编：
-      # macOS 用 Homebrew 当前 qtbase（未锁补丁版本），Ubuntu 锁 6.8.3，Windows 用 MSYS2 UCRT64 的 Qt6。
       - name: 自测
         run: ctest --test-dir build --output-on-failure
 
-  ubuntu:
+  ci-ubuntu:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'false'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config qt6-base-dev \
+          sudo apt-get install -y cmake ninja-build pkg-config \
             libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
             libebur128-dev libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
+          modules: 'qtshadertools'
           cache: true
       - name: 配置
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
@@ -41,7 +80,9 @@ jobs:
       - name: 自测
         run: ctest --test-dir build --output-on-failure
 
-  windows:
+  ci-windows:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'false'
     runs-on: windows-latest
     defaults:
       run:
@@ -58,6 +99,7 @@ jobs:
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-qt6-shadertools
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-libebur128
             mingw-w64-ucrt-x86_64-taglib
@@ -68,3 +110,183 @@ jobs:
         run: cmake --build build
       - name: 自测
         run: ctest --test-dir build --output-on-failure
+
+  package-macos:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装依赖
+        # 打包需要 macdeployqt 一次收齐全部 Qt 框架与 QML，用统一的 qt 元包（CI 用轻量拆分 keg）。
+        run: brew install cmake ninja pkg-config qt ffmpeg taglib libebur128
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+      - name: 打包 DMG
+        run: cpack --config build/CPackConfig.cmake -B dist
+          -D CPACK_PACKAGE_FILE_NAME=Echo-$VERSION-macOS-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Echo-${{ env.VERSION }}-macOS-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  package-deb:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config dpkg-dev \
+            libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
+            libebur128-dev libtag1-dev libpipewire-0.3-dev libasound2-dev ffmpeg
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qtshadertools'
+          cache: true
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+      - name: 打包 DEB
+        run: cpack --config build/CPackConfig.cmake -G DEB -B dist
+          -D CPACK_PACKAGE_FILE_NAME=Echo-$VERSION-Linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Echo-${{ env.VERSION }}-Linux-${{ matrix.arch }}-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  package-rpm:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: fedora:43
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - name: 安装依赖
+        run: dnf install -y git cmake ninja-build gcc-c++ pkgconf-pkg-config
+          qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtshadertools-devel
+          ffmpeg-free-devel ffmpeg-free taglib-devel libebur128-devel
+          pipewire-devel alsa-lib-devel rpm-build dejavu-sans-fonts
+      - uses: actions/checkout@v4
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+      - name: 打包 RPM
+        run: cpack --config build/CPackConfig.cmake -G RPM -B dist
+          -D CPACK_PACKAGE_FILE_NAME=Echo-$VERSION-Linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Echo-${{ env.VERSION }}-Linux-${{ matrix.arch }}-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  package-windows:
+    needs: detect
+    if: needs.detect.outputs.packaging == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-qt6-shadertools
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libebur128
+            mingw-w64-ucrt-x86_64-taglib
+            mingw-w64-ucrt-x86_64-nsis
+      - uses: actions/checkout@v4
+      - name: 配置
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: 编译
+        run: cmake --build build
+      - name: 自测
+        run: ctest --test-dir build --output-on-failure
+      - name: 打包安装器
+        run: cpack --config build/CPackConfig.cmake -G NSIS -B dist
+          -D CPACK_PACKAGE_FILE_NAME=Echo-$VERSION-Windows-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Echo-${{ env.VERSION }}-Windows-x86_64
+          path: dist/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: [detect, package-macos, package-deb, package-rpm, package-windows]
+    if: needs.detect.outputs.packaging == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          ls -la artifacts
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "v$VERSION" artifacts/* --repo "$GITHUB_REPOSITORY" \
+              --title "Echo $VERSION" --generate-notes
+          fi

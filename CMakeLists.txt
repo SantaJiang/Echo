@@ -208,7 +208,7 @@ if(APPLE)
 endif()
 if(WIN32)
   get_filename_component(ECHO_QT_BIN "${Qt6_DIR}/../../../bin" ABSOLUTE)
-  find_program(ECHO_WINDEPLOYQT windeployqt HINTS "${ECHO_QT_BIN}")
+  find_program(ECHO_WINDEPLOYQT NAMES windeployqt windeployqt6 HINTS "${ECHO_QT_BIN}")
 endif()
 
 include(GNUInstallDirs)
@@ -219,6 +219,19 @@ if(ECHO_MACDEPLOYQT)
 endif()
 if(ECHO_WINDEPLOYQT)
   install(CODE "execute_process(COMMAND \"${ECHO_WINDEPLOYQT}\" \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe\" --qmldir \"${CMAKE_SOURCE_DIR}/src/quick/qml\" COMMAND_ERROR_IS_FATAL ANY)")
+  # windeployqt only deploys Qt itself; the MinGW runtime, FFmpeg, TagLib and
+  # ebur128 DLLs must be collected from the MSYS2 prefix as well.
+  install(CODE [[
+    file(GLOB_RECURSE echo_installed_dlls "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/*.dll")
+    file(GET_RUNTIME_DEPENDENCIES
+      EXECUTABLES "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/Echo.exe"
+      LIBRARIES ${echo_installed_dlls}
+      RESOLVED_DEPENDENCIES_VAR echo_runtime_deps
+      UNRESOLVED_DEPENDENCIES_VAR echo_system_deps
+      DIRECTORIES "$ENV{MSYSTEM_PREFIX}/bin" "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+      PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-")
+    file(COPY ${echo_runtime_deps} DESTINATION "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}")
+  ]])
 endif()
 option(ECHO_INSTALL_PROBE "Install the echo-probe diagnostic tool" OFF)
 if(ECHO_INSTALL_PROBE)
@@ -240,9 +253,15 @@ elseif(WIN32)
   set(CPACK_GENERATOR NSIS)
   set(CPACK_NSIS_DISPLAY_NAME "Echo")
   set(CPACK_NSIS_PACKAGE_NAME "Echo")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY "Echo")
 else()
   set(CPACK_GENERATOR DEB)
+  set(CPACK_DEBIAN_PACKAGE_NAME "echo")
   set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Echo")
+  set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+  set(CPACK_RPM_PACKAGE_NAME "echo")
+  set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+  set(CPACK_RPM_PACKAGE_GROUP "Applications/Multimedia")
 endif()
 include(CPack)

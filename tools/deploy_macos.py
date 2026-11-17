@@ -58,9 +58,13 @@ def main():
     optional = ["imageformats/libqjpeg.dylib", "imageformats/libqgif.dylib",
                 "imageformats/libqicns.dylib", "imageformats/libqsvg.dylib",
                 "imageformats/libqwebp.dylib"]
+    # Homebrew's unified qt formula keeps plugins under share/qt, aqt/SDK under plugins.
+    plugin_root = qt / "plugins"
+    if not plugin_root.is_dir():
+        plugin_root = qt / "share/qt/plugins"
     copied = []
     for name in required + optional:
-        source = qt / "plugins" / name
+        source = plugin_root / name
         if not source.is_file():
             if name in required:
                 raise RuntimeError(f"Required Qt plugin missing: {source}")
@@ -85,6 +89,27 @@ def main():
         "[Paths]\nPlugins = PlugIns\nQmlImports = Resources/qml\n", encoding="utf-8")
 
     binaries = [p for p in contents.rglob("*") if macho(p)]
+    # Homebrew frameworks carry cross-keg absolute install names that macdeployqt
+    # leaves untouched. Rebase every bundled framework onto @rpath.
+    bundled = {f.stem for f in frameworks.glob("*.framework")}
+    for name in sorted(bundled):
+        binary = frameworks / f"{name}.framework/Versions/A/{name}"
+        if binary.is_file():
+            run("install_name_tool", "-id", f"@rpath/{name}.framework/Versions/A/{name}", str(binary))
+    # Third-party dylibs (webp, ffmpeg, ...) keep their SDK install names too.
+    bundled_dylibs = {p.name for p in frameworks.glob("*.dylib")}
+    for name in sorted(bundled_dylibs):
+        run("install_name_tool", "-id", f"@rpath/{name}", str(frameworks / name))
+    for consumer in binaries:
+        for dependency in dependencies(consumer):
+            match = re.fullmatch(r"/.*/([^/]+)\.framework/Versions/A/\1", dependency)
+            if match and match.group(1) in bundled:
+                name = match.group(1)
+                run("install_name_tool", "-change", dependency,
+                    f"@rpath/{name}.framework/Versions/A/{name}", str(consumer))
+            elif dependency.startswith("/") and dependency.rsplit("/", 1)[-1] in bundled_dylibs:
+                run("install_name_tool", "-change", dependency,
+                    "@rpath/" + dependency.rsplit("/", 1)[-1], str(consumer))
     for binary in binaries:
         # All Qt and bundled third-party libraries are in Contents/Frameworks.
         # QML plugins originally carry loader-relative SDK /lib paths, which no
