@@ -38,11 +38,6 @@ Client::Client(Library* library, Player* player, AudioEngine* engine, QObject* p
     , m_system(this)
 {
     m_reduceMotion = library->setting(settings::reduceMotion, QStringLiteral("0")) == QLatin1String("1");
-    const QString storedTheme = library->setting(settings::theme, QStringLiteral("dusk"));
-    const QString resolvedTheme = canonicalThemeId(storedTheme);
-    if (storedTheme != resolvedTheme)
-        library->setSetting(settings::theme, resolvedTheme);
-    applyUiTheme(resolvedTheme);
     m_pages.setApply([this](const PresentedPage& result) {
         if (!result.error.isEmpty()) {
             report(result.error);
@@ -341,18 +336,7 @@ QVariantMap Client::preferences() const
     return {{"replaceQueue", m_player->replaceContextQueue()}, {"normalize", m_player->normalizationEnabled()}, {"fading", m_player->fadingEnabled()},
         {"spatial", m_player->spatialEnabled()}, {"spatialStatus", m_player->spatialStatus()},
         {"exclusive", m_player->exclusive()}, {"replayGain", m_player->replayGainEnabled()}, {"reduceMotion", m_reduceMotion},
-        {"dynamicPlaybackBackground", m_library->setting(settings::dynamicPlaybackBackground, QStringLiteral("0")) == QLatin1String("1")},
-        {"theme", canonicalThemeId(m_library->setting(settings::theme, QStringLiteral("dusk")))}};
-}
-void Client::setTheme(const QString& id)
-{
-    const QString resolved = canonicalThemeId(id);
-    if (m_library->setting(settings::theme, QStringLiteral("dusk")) == resolved)
-        return;
-    m_library->setSetting(settings::theme, resolved);
-    applyUiTheme(resolved);
-    emit themeChanged();
-    emit preferencesChanged();
+        {"dynamicPlaybackBackground", m_library->setting(settings::dynamicPlaybackBackground, QStringLiteral("0")) == QLatin1String("1")}};
 }
 void Client::setPreference(const QString& key, bool value)
 {

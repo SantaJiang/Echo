@@ -128,13 +128,6 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
 #else
     setColor(activeUiTheme().canvas);
 #endif
-    connect(client, &Client::themeChanged, this, [this] {
-#ifndef Q_OS_LINUX
-        const QColor canvas = activeUiTheme().canvas;
-        if (color() != canvas)
-            setColor(canvas);
-#endif
-    });
     setResizeMode(QQuickView::SizeRootObjectToView);
     engine()->addImageProvider(QStringLiteral("echo-icons"), new Icons);
     rootContext()->setContextProperty(QStringLiteral("playback"), playback);

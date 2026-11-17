@@ -78,13 +78,11 @@ public:
     void openPaths(const QStringList& paths);
     Q_INVOKABLE void showMainWindow();
     Q_INVOKABLE void showSettings();
-    Q_INVOKABLE void setTheme(const QString& id);
     Q_INVOKABLE void setScroll(double offset);
     Q_INVOKABLE double scroll() const;
 signals:
     void dialogChanged();
     void preferencesChanged();
-    void themeChanged();
     void settingsRequested();
     void menuRequested(const QVariantList& entries);
     void trayMenuRequested(const QPoint& position);

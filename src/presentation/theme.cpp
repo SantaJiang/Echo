@@ -4,37 +4,22 @@
 #include <QPalette>
 namespace echo {
 namespace {
-const UiTheme kDusk { QStringLiteral("dusk"), QColor("#17151D"), QColor("#24202D"), QColor("#302C3D"), QColor("#F3EDF9"), QColor("#847E90"), QColor("#C9AAFF"), QColor("#21172C") };
-const UiTheme kGlacial { QStringLiteral("glacial"), QColor("#101418"), QColor("#1C242C"), QColor("#24303A"), QColor("#E8F1F6"), QColor("#7D8E9C"), QColor("#9FD4E8"), QColor("#102028") };
-const UiTheme* g_active = &kDusk;
-
-const UiTheme& themeFor(const QString& id)
-{
-    if (id == QLatin1String("glacial"))
-        return kGlacial;
-    return kDusk;
-}
-}
-
-QString canonicalThemeId(const QString& id)
-{
-    return themeFor(id.toLower()).id;
+const UiTheme kDusk { QColor("#17151D"), QColor("#24202D"), QColor("#302C3D"), QColor("#F3EDF9"), QColor("#847E90"), QColor("#C9AAFF"), QColor("#21172C") };
 }
 
 const UiTheme& activeUiTheme()
 {
-    return *g_active;
+    return kDusk;
 }
 
-void applyUiTheme(const QString& id)
+void useDarkTheme()
 {
-    g_active = &themeFor(canonicalThemeId(id));
     if (!qGuiApp)
         return;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     qGuiApp->styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
-    const UiTheme& theme = *g_active;
+    const UiTheme& theme = kDusk;
     QPalette pal;
     pal.setColor(QPalette::Window, theme.surface);
     pal.setColor(QPalette::WindowText, theme.textPrimary);
@@ -46,11 +31,6 @@ void applyUiTheme(const QString& id)
     pal.setColor(QPalette::HighlightedText, theme.onAccent);
     pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     QGuiApplication::setPalette(pal);
-}
-
-void useDarkTheme()
-{
-    applyUiTheme(QStringLiteral("dusk"));
 }
 QString formatDuration(qint64 milliseconds)
 {

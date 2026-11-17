@@ -3,7 +3,6 @@
 #include <QString>
 namespace echo {
 struct UiTheme {
-    QString id;
     QColor canvas;
     QColor surface;
     QColor surfaceRaised;
@@ -13,9 +12,7 @@ struct UiTheme {
     QColor onAccent;
 };
 
-[[nodiscard]] QString canonicalThemeId(const QString& id);
 [[nodiscard]] const UiTheme& activeUiTheme();
-void applyUiTheme(const QString& id);
 void useDarkTheme();
 [[nodiscard]] QString formatDuration(qint64 milliseconds);
 }

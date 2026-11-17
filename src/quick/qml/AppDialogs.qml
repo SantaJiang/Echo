@@ -214,47 +214,6 @@ Item {
             Label { Layout.fillWidth: true; text: dialogs.controller.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
             AppCheck { controller: dialogs.controller; objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
-            Label { text: "主题"; color: Theme.textSecondary; font.pixelSize: 12 }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                Repeater {
-                    model: Theme.choices
-                    delegate: Rectangle {
-                        id: themeChoice
-                        required property var modelData
-                        readonly property bool selected: (dialogs.controller.preferences.theme || "dusk") === modelData.id
-                        objectName: "themeChoice-" + modelData.id
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 52
-                        radius: 8
-                        color: modelData.canvas
-                        border.width: selected ? 2 : 1
-                        border.color: selected ? modelData.accent : Theme.border
-                        Accessible.role: Accessible.Button
-                        Accessible.name: modelData.name
-                        Accessible.onPressAction: dialogs.controller.setTheme(modelData.id)
-                        Column {
-                            anchors.centerIn: parent
-                            spacing: 4
-                            Rectangle {
-                                width: 14
-                                height: 14
-                                radius: 7
-                                color: modelData.accent
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-                            Text {
-                                text: modelData.name
-                                color: modelData.text
-                                font.pixelSize: 11
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-                        }
-                        TapHandler { onTapped: dialogs.controller.setTheme(themeChoice.modelData.id) }
-                    }
-                }
-            }
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 8; Layout.bottomMargin: 8 }
         }
         footer: DialogActions {

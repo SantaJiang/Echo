@@ -7,11 +7,6 @@ import "qrc:/echo/quick/theme"
 FocusScope {
     id: root
     objectName: "quickShell"
-    Binding {
-        target: Theme
-        property: "themeId"
-        value: client.preferences.theme || "dusk"
-    }
     property bool expanded: false
     property bool queueOpen: false
     property var contextMenuPoint: null
