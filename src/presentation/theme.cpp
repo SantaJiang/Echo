@@ -5,19 +5,13 @@
 namespace echo {
 namespace {
 const UiTheme kDusk { QStringLiteral("dusk"), QColor("#17151D"), QColor("#24202D"), QColor("#302C3D"), QColor("#F3EDF9"), QColor("#847E90"), QColor("#C9AAFF"), QColor("#21172C") };
-const UiTheme kNocturne { QStringLiteral("nocturne"), QColor("#16130F"), QColor("#262119"), QColor("#332C22"), QColor("#F6F0E6"), QColor("#8F8474"), QColor("#E4C48A"), QColor("#241C10") };
 const UiTheme kGlacial { QStringLiteral("glacial"), QColor("#101418"), QColor("#1C242C"), QColor("#24303A"), QColor("#E8F1F6"), QColor("#7D8E9C"), QColor("#9FD4E8"), QColor("#102028") };
-const UiTheme kVerdant { QStringLiteral("verdant"), QColor("#101614"), QColor("#1C2823"), QColor("#24342E"), QColor("#E8F3EE"), QColor("#7D948A"), QColor("#8ED4B8"), QColor("#102018") };
 const UiTheme* g_active = &kDusk;
 
 const UiTheme& themeFor(const QString& id)
 {
-    if (id == QLatin1String("nocturne"))
-        return kNocturne;
     if (id == QLatin1String("glacial"))
         return kGlacial;
-    if (id == QLatin1String("verdant"))
-        return kVerdant;
     return kDusk;
 }
 }
