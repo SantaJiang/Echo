@@ -19,9 +19,9 @@ Rectangle {
     Rectangle {
         id: surface
         anchors.fill: parent
-        color: Theme.c211c2a
+        color: Theme.sidebar
         radius: panel.radius
-        border.color: Theme.c25ffffff
+        border.color: Theme.hairline
         layer.enabled: true
         visible: false
     }
@@ -60,7 +60,7 @@ Rectangle {
             Layout.fillWidth: true
             Text {
                 text: "播放队列"
-                color: Theme.ceee6f7
+                color: Theme.textPrimary
                 font.pixelSize: 18
                 font.weight: Font.DemiBold
             }
@@ -100,7 +100,7 @@ Rectangle {
                 visible: queueList.count === 0
                 text: "播放队列为空"
                 horizontalAlignment: Text.AlignHCenter
-                color: Theme.c91869f
+                color: Theme.textSecondary
                 font.pixelSize: 13
             }
             delegate: Rectangle {
@@ -110,7 +110,7 @@ Rectangle {
                 width: queueList.width
                 height: 58
                 radius: 8
-                color: item.current ? Theme.rowSelected : qHover.hovered ? Theme.c15ffffff : "transparent"
+                color: item.current ? Theme.selection : qHover.hovered ? Theme.hairline : "transparent"
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: 7
@@ -127,14 +127,14 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: queueRow.item.title
-                            color: Theme.ce8dfef
+                            color: Theme.textPrimary
                             font.pixelSize: 12
                             elide: Text.ElideRight
                         }
                         Text {
                             Layout.fillWidth: true
                             text: queueRow.item.artist
-                            color: Theme.c8e819d
+                            color: Theme.textMuted
                             font.pixelSize: 11
                             elide: Text.ElideRight
                         }

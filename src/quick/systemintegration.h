@@ -5,7 +5,6 @@
 #include <QPointer>
 #include <functional>
 
-class QWindow;
 class QQuickView;
 
 namespace echo {
@@ -34,17 +33,13 @@ public:
 
     explicit SystemIntegration(QObject* parent = nullptr);
     void attach(QuickView* window, const Hooks& hooks);
-    void setMiniWindow(QWindow* window);
     void showMainWindow();
-    void showMini();
     [[nodiscard]] QuickView* window() const { return m_window; }
-    [[nodiscard]] QWindow* mini() const { return m_mini; }
     [[nodiscard]] QPointF cursorPosition() const;
 
 private:
     void sync(bool force);
     QPointer<QuickView> m_window;
-    QPointer<QWindow> m_mini;
     Hooks m_hooks;
     QString m_artworkHash;
     QImage m_artwork;

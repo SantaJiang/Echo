@@ -122,7 +122,7 @@ Item {
                 Text {
                     width: parent.width
                     text: card.item.title
-                    color: Theme.ce6dfef
+                    color: Theme.textPrimary
                     font.pixelSize: 13
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
@@ -130,7 +130,7 @@ Item {
                 Text {
                     width: parent.width
                     text: card.item.subtitle || ""
-                    color: Theme.c82788f
+                    color: Theme.textMuted
                     font.pixelSize: 11
                     elide: Text.ElideRight
                 }

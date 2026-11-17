@@ -6,7 +6,6 @@ namespace echo {
 
 void useDarkAppearance() {}
 
-void applyMiniWindowChrome(QWindow*) {}
 void installApplicationMenu(QObject*, const QVariantList&, const std::function<void(int)>&) {}
 void applyQuickWindowChrome(QWindow*) {}
 

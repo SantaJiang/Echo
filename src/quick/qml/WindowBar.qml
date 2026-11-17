@@ -101,13 +101,13 @@ Item {
                 height: bar.windows ? parent.height : 30
                 radius: bar.windows ? 4 : 15
                 antialiasing: true
-                color: control.windowAction === "close" && control.hovered ? Theme.cc83b4b : control.down ? Theme.c36ffffff : control.hovered || (control.windowAction === "maximize" && chrome.maximizeHovered) ? Theme.c20ffffff : "transparent"
+                color: control.windowAction === "close" && control.hovered ? Theme.danger : control.down ? Theme.pressed : control.hovered || (control.windowAction === "maximize" && chrome.maximizeHovered) ? Theme.hairline : "transparent"
                 border.width: control.visualFocus ? 1 : 0
-                border.color: Theme.cc9aaff
+                border.color: Theme.accent
             }
         }
         contentItem: Item {
-            readonly property color ink: chrome.active || control.hovered ? Theme.ce7e2ed : Theme.c88818e
+            readonly property color ink: chrome.active || control.hovered ? Theme.textPrimary : Theme.textMuted
             Rectangle {
                 anchors.centerIn: parent
                 width: 11
@@ -156,7 +156,7 @@ Item {
                     y: chrome.maximized ? 3 : 1
                     width: chrome.maximized ? 9 : 10
                     height: width
-                    color: chrome.maximized ? Theme.c211c28 : "transparent"
+                    color: chrome.maximized ? Theme.sidebar : "transparent"
                     border.color: control.contentItem.ink
                 }
             }

@@ -21,7 +21,7 @@ Item {
                     anchors.leftMargin: 9
                     anchors.verticalCenter: parent.verticalCenter
                     text: heading.modelData + (header.controller.page.sort === heading.index ? header.controller.page.descending ? " ↓" : " ↑" : "")
-                    color: Theme.c7f748e
+                    color: Theme.textMuted
                     font.pixelSize: 11
                 }
                 TapHandler {
@@ -50,6 +50,6 @@ Item {
         anchors.bottom: parent.bottom
         width: parent.width
         height: 1
-        color: Theme.c17ffffff
+        color: Theme.hover
     }
 }

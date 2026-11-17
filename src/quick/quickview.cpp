@@ -1,10 +1,10 @@
 #include "quick/quickview.h"
 #include "platform/platform.h"
+#include "presentation/theme.h"
 #include "quick/client.h"
 #include "quick/playbackview.h"
 #include "presentation/icons.h"
 #include <QCloseEvent>
-#include <QGuiApplication>
 #include <QPainter>
 #include <QPointer>
 #include <QQmlContext>
@@ -70,9 +70,10 @@ namespace {
                 return cover;
             }
             const auto pieces = id.split(u'/');
-            const QColor color = pieces.value(1) == "dark" ? QColor("#17151e")
-                : pieces.value(1) == "accent"              ? QColor("#c9aaff")
-                                                           : QColor("#eeebf5");
+            const UiTheme& ink = activeUiTheme();
+            const QColor color = pieces.value(1) == "dark" ? ink.canvas
+                : pieces.value(1) == "accent"              ? ink.accent
+                                                           : ink.textPrimary;
             const QHash<QString, Icon> kinds { { "play", Icon::Play }, { "pause", Icon::Pause },
                 { "previous", Icon::Previous }, { "next", Icon::Next }, { "heart", Icon::Heart },
                 { "heartFilled", Icon::HeartFilled }, { "shuffle", Icon::Shuffle }, { "repeat", Icon::Repeat },
@@ -125,8 +126,15 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
 #ifdef Q_OS_LINUX
     setColor(Qt::transparent);
 #else
-    setColor(QColor("#16141d"));
+    setColor(activeUiTheme().canvas);
 #endif
+    connect(client, &Client::themeChanged, this, [this] {
+#ifndef Q_OS_LINUX
+        const QColor canvas = activeUiTheme().canvas;
+        if (color() != canvas)
+            setColor(canvas);
+#endif
+    });
     setResizeMode(QQuickView::SizeRootObjectToView);
     engine()->addImageProvider(QStringLiteral("echo-icons"), new Icons);
     rootContext()->setContextProperty(QStringLiteral("playback"), playback);
@@ -139,8 +147,7 @@ QuickView::QuickView(PlaybackView* playback, Client* client)
     // creation. Reassert the requested size in Qt logical coordinates.
     resize(initialSize);
     connect(this, &QWindow::visibilityChanged, playback, [playback](QWindow::Visibility visibility) {
-        bool active = visibility != QWindow::Hidden && visibility != QWindow::Minimized;
-        for (auto* window : QGuiApplication::allWindows()) active |= window->property("echoMiniPlayer").toBool() && window->isVisible();
+        const bool active = visibility != QWindow::Hidden && visibility != QWindow::Minimized;
         playback->setPresentationActive(active);
     });
     setSource(QUrl(QStringLiteral("qrc:/echo/quick/Shell.qml")));

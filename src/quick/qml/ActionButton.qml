@@ -25,8 +25,8 @@ Button {
         antialiasing: true
         radius: width / 2
         border.width: control.visualFocus ? 2 : 0
-        border.color: Theme.cc9aaff
-        color: control.prominent ? Theme.cf3f1f8 : control.down ? Theme.c30ffffff : control.hovered ? Theme.c18ffffff : control.filled ? Theme.c12ffffff : "transparent"
+        border.color: Theme.accent
+        color: control.prominent ? Theme.textPrimary : control.down ? Theme.pressed : control.hovered ? Theme.hover : control.filled ? Theme.hover : "transparent"
         scale: control.down ? 0.94 : 1
         Behavior on scale {
             NumberAnimation {
@@ -44,7 +44,7 @@ Button {
             anchors.centerIn: parent
             width: control.iconSize
             height: width
-            source: "image://echo-icons/" + control.symbol + "/" + (control.prominent ? "dark" : control.active ? "accent" : "light")
+            source: Theme.icon(control.symbol, control.prominent ? "dark" : control.active ? "accent" : "light")
             sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
             fillMode: Image.PreserveAspectFit
             opacity: control.enabled ? 1 : 0.35

@@ -21,11 +21,11 @@ Rectangle {
     }
     objectName: "playerBar"
     height: 104
-    color: Theme.c24202d
+    color: Theme.surface
     Rectangle {
         width: parent.width
         height: 1
-        color: Theme.c12ffffff
+        color: Theme.hover
     }
     SeekSlider {
         id: barSeek
@@ -90,7 +90,7 @@ Rectangle {
                             Layout.maximumWidth: Math.max(0, smallCover.parent.width - 114)
                             Layout.preferredWidth: Math.min(implicitWidth, Math.max(0, smallCover.parent.width - 114))
                             text: playback.track.title
-                            color: Theme.cf3eef9
+                            color: Theme.textPrimary
                             font.pixelSize: 14
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
@@ -113,7 +113,7 @@ Rectangle {
                     Text {
                         Layout.fillWidth: true
                         text: playback.track.artist
-                        color: Theme.caaa1b7
+                        color: Theme.textSecondary
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -153,7 +153,7 @@ Rectangle {
                     anchors.top: parent.top
                     text: "1"
                     visible: playback.repeat === 2
-                    color: Theme.ccbb5ff
+                    color: Theme.accent
                     font.pixelSize: 10
                 }
             }
@@ -170,7 +170,7 @@ Rectangle {
                 spacing: 8
                 Text {
                     text: bar.timeText(playback.position) + " / " + bar.timeText(playback.duration)
-                    color: Theme.caaa1b7
+                    color: Theme.textSecondary
                     font.pixelSize: 12
                     font.family: Qt.platform.os === "osx" ? "Menlo"
                                  : Qt.platform.os === "windows" ? "Consolas"
@@ -206,9 +206,9 @@ Rectangle {
         height: 54
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
-            color: Theme.c332b40
+            color: Theme.surfaceRaised
             radius: 12
-            border.color: Theme.c20ffffff
+            border.color: Theme.hairline
         }
         SeekSlider {
             id: volumeSlider

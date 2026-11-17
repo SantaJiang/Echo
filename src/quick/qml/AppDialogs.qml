@@ -88,7 +88,7 @@ Item {
                 text: dialogs.request.text || ""
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
-                color: Theme.cddd4e8
+                color: Theme.textPrimary
                 font.pixelSize: 13
             }
             ScrollView {
@@ -102,9 +102,9 @@ Item {
                     textFormat: TextEdit.PlainText
                     readOnly: true; selectByMouse: true
                     wrapMode: TextEdit.WrapAnywhere
-                    color: Theme.caaa1b7
+                    color: Theme.textSecondary
                     font.pixelSize: 11
-                    background: Rectangle { color: Theme.c17151d; radius: 8 }
+                    background: Rectangle { color: Theme.canvas; radius: 8 }
                 }
             }
         }
@@ -164,26 +164,26 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     PillButton { text: "更换封面…"; enabled: !dialogs.request.cue; onClicked: artPicker.open() }
-                    Label { Layout.fillWidth: true; text: dialogs.request.cue ? "CUE 曲目的标题和艺术家会写回 CUE 文件" : "修改会写入音乐文件"; color: Theme.caaa1b7; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Label { Layout.fillWidth: true; text: dialogs.request.cue ? "CUE 曲目的标题和艺术家会写回 CUE 文件" : "修改会写入音乐文件"; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap }
                 }
             }
             GridLayout {
                 columns: 2; columnSpacing: 14; rowSpacing: 10
                 Layout.fillWidth: true
-                Label { text: "标题"; color: Theme.caaa1b7 }
+                Label { text: "标题"; color: Theme.textSecondary }
                 FormField { id: trackTitle; objectName: "trackTitleField"; Layout.fillWidth: true; Accessible.name: "标题" }
-                Label { text: "艺术家"; color: Theme.caaa1b7 }
+                Label { text: "艺术家"; color: Theme.textSecondary }
                 FormField { id: artist; Layout.fillWidth: true; Accessible.name: "艺术家" }
-                Label { text: "专辑"; color: Theme.caaa1b7 }
+                Label { text: "专辑"; color: Theme.textSecondary }
                 FormField { id: album; Layout.fillWidth: true; enabled: !dialogs.request.cue; Accessible.name: "专辑" }
-                Label { text: "专辑艺术家"; color: Theme.caaa1b7 }
+                Label { text: "专辑艺术家"; color: Theme.textSecondary }
                 FormField { id: albumArtist; Layout.fillWidth: true; enabled: !dialogs.request.cue; Accessible.name: "专辑艺术家" }
-                Label { text: "曲目编号"; color: Theme.caaa1b7 }
+                Label { text: "曲目编号"; color: Theme.textSecondary }
                 FormField { id: trackNumber; Layout.fillWidth: true; validator: IntValidator { bottom: 0; top: 999 } Accessible.name: "曲目编号" }
-                Label { text: "年份"; color: Theme.caaa1b7 }
+                Label { text: "年份"; color: Theme.textSecondary }
                 FormField { id: year; Layout.fillWidth: true; validator: IntValidator { bottom: 0; top: 9999 } Accessible.name: "年份" }
             }
-            Label { Layout.fillWidth: true; text: dialogs.request.path || ""; textFormat: Text.PlainText; color: Theme.c847e90; font.pixelSize: 11; wrapMode: Text.WrapAnywhere }
+            Label { Layout.fillWidth: true; text: dialogs.request.path || ""; textFormat: Text.PlainText; color: Theme.textMuted; font.pixelSize: 11; wrapMode: Text.WrapAnywhere }
         }
         footer: DialogActions {
             spacing: 10
@@ -205,21 +205,59 @@ Item {
             spacing: 12
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "从页面播放时替换当前队列"; preference: "replaceQueue" }
             AppCheck { controller: dialogs.controller; objectName: "fadingSetting"; Layout.fillWidth: true; text: "淡入淡出"; preference: "fading" }
-            Label { Layout.fillWidth: true; text: "柔和地播放、暂停和切歌。"; color: Theme.caaa1b7; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
+            Label { Layout.fillWidth: true; text: "柔和地播放、暂停和切歌。"; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "响度均衡"; preference: "normalize" }
-            Label { Layout.fillWidth: true; text: "让不同歌曲的音量更接近，分析结果会自动缓存。"; color: Theme.caaa1b7; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
+            Label { Layout.fillWidth: true; text: "让不同歌曲的音量更接近，分析结果会自动缓存。"; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "使用 ReplayGain 标签"; preference: "replayGain" }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "独占音频设备"; preference: "exclusive" }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "空间音频"; preference: "spatial"; visible: Qt.platform.os === "osx" }
-            Label { Layout.fillWidth: true; text: dialogs.controller.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: Theme.caaa1b7; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
+            Label { Layout.fillWidth: true; text: dialogs.controller.preferences.spatialStatus || ""; visible: Qt.platform.os === "osx" && text.length > 0; color: Theme.textSecondary; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.leftMargin: 36 }
             AppCheck { controller: dialogs.controller; Layout.fillWidth: true; text: "减少动态效果"; preference: "reduceMotion" }
             AppCheck { controller: dialogs.controller; objectName: "dynamicBackgroundSetting"; Layout.fillWidth: true; text: "播放页动态背景"; preference: "dynamicPlaybackBackground" }
-            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.c20ffffff; Layout.topMargin: 8; Layout.bottomMargin: 8 }
+            Label { text: "主题"; color: Theme.textSecondary; font.pixelSize: 12 }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Repeater {
+                    model: Theme.choices
+                    delegate: Rectangle {
+                        id: themeChoice
+                        required property var modelData
+                        readonly property bool selected: (dialogs.controller.preferences.theme || "dusk") === modelData.id
+                        objectName: "themeChoice-" + modelData.id
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 52
+                        radius: 8
+                        color: modelData.canvas
+                        border.width: selected ? 2 : 1
+                        border.color: selected ? modelData.accent : Theme.border
+                        Accessible.role: Accessible.Button
+                        Accessible.name: modelData.name
+                        Accessible.onPressAction: dialogs.controller.setTheme(modelData.id)
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 4
+                            Rectangle {
+                                width: 14
+                                height: 14
+                                radius: 7
+                                color: modelData.accent
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
+                            Text {
+                                text: modelData.name
+                                color: modelData.text
+                                font.pixelSize: 11
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
+                        }
+                        TapHandler { onTapped: dialogs.controller.setTheme(themeChoice.modelData.id) }
+                    }
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 8; Layout.bottomMargin: 8 }
         }
         footer: DialogActions {
-            spread: true
-            PillButton { text: "迷你播放器"; onClicked: { settings.close(); dialogs.controller.showMini(); } }
-            Item { Layout.fillWidth: true }
             PillButton { text: "完成"; primary: true; onClicked: settings.close() }
         }
     }

@@ -14,14 +14,14 @@ CheckBox {
         y: (control.height-height)/2
         width: 20; height: 20; radius: 6
         antialiasing: true
-        color: control.checked ? Theme.cc9aaff : Theme.c17151d
-        border.color: control.visualFocus ? Theme.ceee3ff : Theme.c71607e
-        Text { anchors.centerIn: parent; text: "✓"; visible: control.checked; color: Theme.c21172c; font.pixelSize: 15 }
+        color: control.checked ? Theme.accent : Theme.canvas
+        border.color: control.visualFocus ? Theme.textPrimary : Theme.border
+        Text { anchors.centerIn: parent; text: "✓"; visible: control.checked; color: Theme.accentText; font.pixelSize: 15 }
     }
     contentItem: Text {
         text: control.text
         font.pixelSize: 13
-        color: Theme.ceee3ff
+        color: Theme.textPrimary
         leftPadding: control.indicator.width + control.spacing
         verticalAlignment: Text.AlignVCenter
         wrapMode: Text.Wrap

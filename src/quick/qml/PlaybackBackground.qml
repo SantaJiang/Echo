@@ -1,4 +1,5 @@
 import QtQuick
+import "qrc:/echo/quick/theme"
 
 Item {
     id: background
@@ -62,6 +63,14 @@ Item {
         property vector2d viewportSize: Qt.vector2d(width, height)
         property vector2d artworkSize: Qt.vector2d(Math.max(1, artworkImage.implicitWidth),
                                                   Math.max(1, artworkImage.implicitHeight))
+        property color atmosphereTop: Theme.atmosphereTop
+        property color atmosphereBottom: Theme.atmosphereBottom
+        property color glowA: Theme.glowA
+        property color glowB: Theme.glowB
+        property color glowC: Theme.glowC
+        property color artworkBase: Theme.artworkBase
+        property color shadeTop: Theme.shadeTop
+        property color shadeBottom: Theme.shadeBottom
         fragmentShader: "qrc:/echo/quick/shaders/background.frag.qsb"
     }
 }

@@ -179,18 +179,6 @@ void useDarkAppearance()
     [NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]];
 }
 
-void applyMiniWindowChrome(QWindow* window)
-{
-    if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
-    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(window->winId());
-    NSWindow* native = view.window;
-    native.styleMask = NSWindowStyleMaskBorderless;
-    native.level = NSFloatingWindowLevel;
-    native.hidesOnDeactivate = NO;
-    native.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-    native.opaque = NO; native.backgroundColor = NSColor.clearColor; native.hasShadow = YES;
-}
-
 bool deferHideUntilFullscreenExit(QWindow* window, const std::function<void()>& ready)
 {
     if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return false;

@@ -158,7 +158,7 @@ Flickable {
                     font.weight: row.index === lyrics.emphasisIndex ? Font.Medium : Font.Normal
                     lineHeightMode: Text.FixedHeight
                     lineHeight: 32
-                    color: row.index === lyrics.emphasisIndex ? Theme.cfaf8ff : Theme.cddd6e8
+                    color: row.index === lyrics.emphasisIndex ? Theme.textPrimary : Theme.textSecondary
                 }
                 TapHandler {
                     enabled: modelData.time >= 0
@@ -172,7 +172,7 @@ Flickable {
         anchors.centerIn: parent
         visible: lyrics.count === 0
         text: "让音乐自己诉说"
-        color: Theme.c777081
+        color: Theme.textMuted
         font.pixelSize: 23
     }
     layer.enabled: true

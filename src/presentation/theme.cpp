@@ -3,23 +3,60 @@
 #include <QStyleHints>
 #include <QPalette>
 namespace echo {
-void useDarkTheme()
+namespace {
+const UiTheme kDusk { QStringLiteral("dusk"), QColor("#17151D"), QColor("#24202D"), QColor("#302C3D"), QColor("#F3EDF9"), QColor("#847E90"), QColor("#C9AAFF"), QColor("#21172C") };
+const UiTheme kNocturne { QStringLiteral("nocturne"), QColor("#16130F"), QColor("#262119"), QColor("#332C22"), QColor("#F6F0E6"), QColor("#8F8474"), QColor("#E4C48A"), QColor("#241C10") };
+const UiTheme kGlacial { QStringLiteral("glacial"), QColor("#101418"), QColor("#1C242C"), QColor("#24303A"), QColor("#E8F1F6"), QColor("#7D8E9C"), QColor("#9FD4E8"), QColor("#102028") };
+const UiTheme kVerdant { QStringLiteral("verdant"), QColor("#101614"), QColor("#1C2823"), QColor("#24342E"), QColor("#E8F3EE"), QColor("#7D948A"), QColor("#8ED4B8"), QColor("#102018") };
+const UiTheme* g_active = &kDusk;
+
+const UiTheme& themeFor(const QString& id)
 {
-    if (!qGuiApp) return;
+    if (id == QLatin1String("nocturne"))
+        return kNocturne;
+    if (id == QLatin1String("glacial"))
+        return kGlacial;
+    if (id == QLatin1String("verdant"))
+        return kVerdant;
+    return kDusk;
+}
+}
+
+QString canonicalThemeId(const QString& id)
+{
+    return themeFor(id.toLower()).id;
+}
+
+const UiTheme& activeUiTheme()
+{
+    return *g_active;
+}
+
+void applyUiTheme(const QString& id)
+{
+    g_active = &themeFor(canonicalThemeId(id));
+    if (!qGuiApp)
+        return;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     qGuiApp->styleHints()->setColorScheme(Qt::ColorScheme::Dark);
 #endif
+    const UiTheme& theme = *g_active;
     QPalette pal;
-    pal.setColor(QPalette::Window, QColor("#24202d"));
-    pal.setColor(QPalette::WindowText, QColor("#eee8f5"));
-    pal.setColor(QPalette::Base, QColor("#17151d"));
-    pal.setColor(QPalette::Text, QColor("#eee8f5"));
-    pal.setColor(QPalette::Button, QColor("#302938"));
-    pal.setColor(QPalette::ButtonText, QColor("#eee8f5"));
-    pal.setColor(QPalette::Highlight, QColor("#806398"));
-    pal.setColor(QPalette::HighlightedText, QColor("#ffffff"));
-    pal.setColor(QPalette::PlaceholderText, QColor("#8e849c"));
+    pal.setColor(QPalette::Window, theme.surface);
+    pal.setColor(QPalette::WindowText, theme.textPrimary);
+    pal.setColor(QPalette::Base, theme.canvas);
+    pal.setColor(QPalette::Text, theme.textPrimary);
+    pal.setColor(QPalette::Button, theme.surfaceRaised);
+    pal.setColor(QPalette::ButtonText, theme.textPrimary);
+    pal.setColor(QPalette::Highlight, theme.accent);
+    pal.setColor(QPalette::HighlightedText, theme.onAccent);
+    pal.setColor(QPalette::PlaceholderText, theme.textMuted);
     QGuiApplication::setPalette(pal);
+}
+
+void useDarkTheme()
+{
+    applyUiTheme(QStringLiteral("dusk"));
 }
 QString formatDuration(qint64 milliseconds)
 {

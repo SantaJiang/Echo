@@ -95,7 +95,7 @@ Item {
             width: tableArea.trackWidth
             height: 48
             radius: 7
-            color: selected ? Theme.rowSelected : rowHover.hovered ? Theme.c16ffffff : index % 2 ? Theme.c06ffffff : "transparent"
+            color: selected ? Theme.selection : rowHover.hovered ? Theme.hover : index % 2 ? Theme.stripe : "transparent"
             opacity: item.missing ? 0.45 : 1
             Accessible.role: Accessible.ListItem
             Accessible.name: item.title + "，" + item.artist
@@ -127,7 +127,7 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         text: trackRow.item.title
-                        color: trackRow.item.playing ? Theme.ccfb3f7 : Theme.ce4ddeb
+                        color: trackRow.item.playing ? Theme.accentStrong : Theme.textPrimary
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -142,7 +142,7 @@ Item {
                     leftPadding: 9
                     rightPadding: 12
                     text: trackRow.item.artist
-                    color: Theme.c9c92aa
+                    color: Theme.textSecondary
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -153,7 +153,7 @@ Item {
                     leftPadding: 9
                     rightPadding: 12
                     text: trackRow.item.album
-                    color: Theme.c9c92aa
+                    color: Theme.textSecondary
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -163,7 +163,7 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     leftPadding: 9
                     text: trackRow.item.duration
-                    color: Theme.c80758f
+                    color: Theme.textMuted
                     font.pixelSize: 11
                 }
             }

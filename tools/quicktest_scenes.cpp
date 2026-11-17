@@ -265,16 +265,6 @@ int echo::quicktest::runOptionalScenes(Harness& harness)
                 pump(1200);
                 check(shell.isVisible() && !shell.fullscreen() && !shell.property("echoNativeFullscreen").toBool()
                         && hidden.count() == 1, "reopen during native exit cancels the pending hide");
-                enterFullscreen();
-                client.showMini();
-                check(waitFor([&] { return !shell.isVisible() && !shell.property("echoNativeFullscreen").toBool(); }),
-                    "mini-player switch releases fullscreen Space before hiding");
-                bool miniVisible = false;
-                for (auto* candidate : QGuiApplication::allWindows())
-                    miniVisible |= candidate->property("echoMiniPlayer").toBool() && candidate->isVisible();
-                check(miniVisible && playback.playing(), "mini-player remains visible with background playback");
-                client.showMainWindow();
-                check(waitFor([&] { return shell.isVisible() && !shell.fullscreen(); }), "main window restores after fullscreen mini-player switch");
                 qInfo() << "PASS" << passedChecks() << "native fullscreen close checks";
                 QTimer::singleShot(0, &app, [] { QCoreApplication::exit(0); });
             });

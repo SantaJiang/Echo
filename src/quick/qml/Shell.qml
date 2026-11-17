@@ -7,6 +7,11 @@ import "qrc:/echo/quick/theme"
 FocusScope {
     id: root
     objectName: "quickShell"
+    Binding {
+        target: Theme
+        property: "themeId"
+        value: client.preferences.theme || "dusk"
+    }
     property bool expanded: false
     property bool queueOpen: false
     property var contextMenuPoint: null
@@ -117,7 +122,7 @@ FocusScope {
     }
     Rectangle {
         anchors.fill: parent
-        color: Theme.c17151d
+        color: Theme.canvas
     }
     Item {
         id: libraryShell
@@ -278,7 +283,6 @@ FocusScope {
             root.contextMenuPoint = null;
         }
     }
-    MiniPlayer { id: miniPlayer; controller: client; playback: root.playbackObject; mainWindow: chrome }
     Loader {
         id: trayPopup
         active: Qt.platform.os !== "osx" && Qt.platform.os !== "macos"

@@ -65,15 +65,15 @@ ColumnLayout {
             Layout.preferredHeight: 32
             Layout.alignment: Qt.AlignVCenter
             placeholderText: "搜索歌曲、专辑、艺术家"
-            color: Theme.cf3edf9
-            placeholderTextColor: Theme.c81798e
+            color: Theme.textPrimary
+            placeholderTextColor: Theme.textMuted
             font.pixelSize: 12
             leftPadding: 14
             rightPadding: 32
             background: Rectangle {
-                color: Theme.c26222f
+                color: Theme.surface
                 radius: 9
-                border.color: searchBox.activeFocus ? Theme.c826499 : Theme.c10ffffff
+                border.color: searchBox.activeFocus ? Theme.accent : Theme.hairline
             }
             onTextEdited: browser.controller.search(text)
             Keys.onEscapePressed: {

@@ -31,17 +31,17 @@ Dialog {
     }
     header: Label {
         text: control.title
-        color: Theme.cf3edf9
+        color: Theme.textPrimary
         font.pixelSize: 20
         font.weight: Font.DemiBold
         padding: 24
         bottomPadding: 0
     }
     background: Rectangle {
-        color: Theme.c24202d
+        color: Theme.surface
         radius: 16
         antialiasing: true
-        border.color: Theme.c51465f
+        border.color: Theme.border
     }
-    Overlay.modal: Rectangle { color: Theme.c990b0910 }
+    Overlay.modal: Rectangle { color: Theme.scrim }
 }

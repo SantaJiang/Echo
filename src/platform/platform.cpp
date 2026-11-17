@@ -11,7 +11,7 @@ namespace echo {
 
 void quitApplication()
 {
-    // Explicit quit must bypass close-to-tray handlers on the main and mini windows.
+    // Explicit quit must bypass the main window's close-to-tray handler.
     QCoreApplication::exit(0);
 }
 

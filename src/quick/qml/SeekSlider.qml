@@ -6,7 +6,7 @@ Slider {
     id: control
     implicitHeight: 24
     padding: 4
-    property color accent: Theme.ceee9f5
+    property color accent: Theme.accent
     property bool followEnabled: false
     property real followedValue: 0
     property bool smoothFollow: false
@@ -28,7 +28,7 @@ Slider {
         width: control.availableWidth
         height: control.hovered || control.pressed ? 5 : 3
         radius: 3
-        color: Theme.c30ffffff
+        color: Theme.pressed
         Rectangle {
             width: control.visualPosition * parent.width
             height: parent.height

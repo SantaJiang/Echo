@@ -10,7 +10,7 @@ Rectangle {
     property int decodeSize: Math.min(2048, Math.pow(2, Math.ceil(Math.log2(Math.max(128, cover.width * Screen.devicePixelRatio * 2)))))
     property size renderTextureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio * 2), Math.ceil(height * Screen.devicePixelRatio * 2))
     radius: 12
-    color: Theme.c302c3d
+    color: Theme.surfaceRaised
     antialiasing: true
     Item {
         id: artworkContent
@@ -73,6 +73,6 @@ Rectangle {
         anchors.fill: parent
         radius: cover.radius
         color: "transparent"
-        border.color: Theme.c15ffffff
+        border.color: Theme.hairline
     }
 }

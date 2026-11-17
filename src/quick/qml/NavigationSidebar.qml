@@ -11,7 +11,7 @@ Rectangle {
     property real topInset: 48
     signal contextRequested(Item sender, point position, int row)
     signal queueDismissRequested()
-    color: Theme.c201d28
+    color: Theme.sidebar
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 18
@@ -19,7 +19,7 @@ Rectangle {
         spacing: 8
         Text {
             text: "资料库"
-            color: Theme.c847e90
+            color: Theme.textMuted
             font.pixelSize: 11
             font.weight: Font.DemiBold
             Layout.leftMargin: 12
@@ -49,7 +49,7 @@ Rectangle {
                 width: navigation.width
                 height: item.kind === "playlistSection" ? 52 : 38
                 radius: 9
-                color: item.kind === "playlistSection" ? "transparent" : selected ? Theme.rowSelected : navHover.hovered ? Theme.c12ffffff : "transparent"
+                color: item.kind === "playlistSection" ? "transparent" : selected ? Theme.selection : navHover.hovered ? Theme.hover : "transparent"
                 Accessible.role: Accessible.Button
                 Accessible.name: item.title
                 Accessible.onPressAction: if (item.kind !== "listFolder" && item.kind !== "playlistSection")
@@ -61,7 +61,7 @@ Rectangle {
                     spacing: 11
                     Image {
                         visible: item.kind !== "playlistSection"
-                        source: "image://echo-icons/" + item.icon + "/" + (navRow.selected ? "accent" : "light")
+                        source: Theme.icon(item.icon, navRow.selected ? "accent" : "light")
                         sourceSize: Qt.size(16, 16)
                         Layout.preferredWidth: 16
                         Layout.preferredHeight: 16
@@ -72,7 +72,7 @@ Rectangle {
                         text: item.title
                         font.pixelSize: item.kind === "playlistSection" ? 11 : 13
                         font.weight: navRow.selected ? Font.DemiBold : Font.Normal
-                        color: item.kind === "playlistSection" ? Theme.c847e90 : navRow.selected ? Theme.ceee3ff : Theme.cbbb4c8
+                        color: item.kind === "playlistSection" ? Theme.textMuted : navRow.selected ? Theme.textPrimary : Theme.textSecondary
                         elide: Text.ElideRight
                     }
                 }
@@ -107,7 +107,7 @@ Rectangle {
             text: sidebar.controller.status
             visible: text.length > 0
             wrapMode: Text.Wrap
-            color: Theme.ca49bad
+            color: Theme.textMuted
             font.pixelSize: 11
             maximumLineCount: 3
             elide: Text.ElideRight
@@ -115,7 +115,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             height: 1
-            color: Theme.c12ffffff
+            color: Theme.hover
             Layout.topMargin: 8
             Layout.bottomMargin: 6
         }
@@ -124,7 +124,7 @@ Rectangle {
             Layout.fillWidth: true
             implicitHeight: 38
             radius: 9
-            color: settingsHover.hovered ? Theme.c12ffffff : "transparent"
+            color: settingsHover.hovered ? Theme.hover : "transparent"
             Accessible.role: Accessible.Button
             Accessible.name: "设置"
             Accessible.onPressAction: sidebar.controller.showSettings()
@@ -133,7 +133,7 @@ Rectangle {
                 anchors.leftMargin: 12
                 spacing: 11
                 Image {
-                    source: "image://echo-icons/settings/light"
+                    source: Theme.icon("settings", "light")
                     sourceSize: Qt.size(16, 16)
                     Layout.preferredWidth: 16
                     Layout.preferredHeight: 16
@@ -142,7 +142,7 @@ Rectangle {
                 Text {
                     Layout.fillWidth: true
                     text: "设置"
-                    color: Theme.cbbb4c8
+                    color: Theme.textSecondary
                     font.pixelSize: 13
                 }
             }

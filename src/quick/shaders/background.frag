@@ -8,6 +8,14 @@ layout(std140, binding = 0) uniform buf {
     float useArtwork;
     vec2 viewportSize;
     vec2 artworkSize;
+    vec4 atmosphereTop;
+    vec4 atmosphereBottom;
+    vec4 glowA;
+    vec4 glowB;
+    vec4 glowC;
+    vec4 artworkBase;
+    vec4 shadeTop;
+    vec4 shadeBottom;
 };
 layout(binding = 1) uniform sampler2D source;
 
@@ -21,10 +29,10 @@ void main()
 {
     vec2 uv = qt_TexCoord0;
     float lowerFade = smoothstep(0.12, 1.0, uv.y);
-    vec3 color = mix(vec3(0.052, 0.045, 0.070), vec3(0.067, 0.063, 0.086), lowerFade);
-    vec3 light = vec3(0.055, 0.025, 0.090) * glow(uv, vec2(0.18, 0.20), vec2(0.65, 0.70));
-    light += vec3(0.080, 0.030, 0.045) * glow(uv, vec2(0.77, 0.22), vec2(0.80, 0.80));
-    light += vec3(0.025, 0.018, 0.012) * glow(uv, vec2(1.0, 0.50), vec2(0.70, 0.65));
+    vec3 color = mix(atmosphereTop.rgb, atmosphereBottom.rgb, lowerFade);
+    vec3 light = glowA.rgb * glow(uv, vec2(0.18, 0.20), vec2(0.65, 0.70));
+    light += glowB.rgb * glow(uv, vec2(0.77, 0.22), vec2(0.80, 0.80));
+    light += glowC.rgb * glow(uv, vec2(1.0, 0.50), vec2(0.70, 0.65));
     color += light * (1.0 - lowerFade);
 
     if (useArtwork > 0.5) {
@@ -33,13 +41,13 @@ void main()
         float coverAspect = artworkSize.x / max(1.0, artworkSize.y);
         vec2 crop = vec2(min(1.0, viewAspect / coverAspect), min(1.0, coverAspect / viewAspect));
         vec4 cover = texture(source, (uv - 0.5) * crop + 0.5);
-        vec3 base = vec3(22.0, 20.0, 29.0) / 255.0;
+        vec3 base = artworkBase.rgb;
         vec3 rgb = cover.rgb + base * (1.0 - cover.a);
         float luminance = dot(rgb, vec3(0.299, 0.587, 0.114));
         rgb = mix(vec3(luminance), rgb, 0.7);
         color = mix(base, rgb * 0.65, 0.65);
         float shadeAlpha = mix(21.0, 237.0, uv.y) / 255.0;
-        vec3 shade = mix(vec3(18.0, 24.0, 36.0), vec3(17.0, 16.0, 22.0), uv.y) / 255.0;
+        vec3 shade = mix(shadeTop.rgb, shadeBottom.rgb, uv.y);
         color = mix(color, shade, shadeAlpha);
     }
 

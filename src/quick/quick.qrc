@@ -32,7 +32,6 @@
 <file alias="FormField.qml">qml/FormField.qml</file>
 <file alias="AppCheck.qml">qml/AppCheck.qml</file>
 <file alias="AppMenu.qml">qml/AppMenu.qml</file>
-<file alias="MiniPlayer.qml">qml/MiniPlayer.qml</file>
 <file alias="TrayPopup.qml">qml/TrayPopup.qml</file>
 <file alias="StartupError.qml">qml/StartupError.qml</file>
 </qresource></RCC>

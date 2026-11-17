@@ -16,21 +16,21 @@ Item {
         width: Math.min(parent.width, 420)
         Image {
             anchors.horizontalCenter: parent.horizontalCenter
-            source: "image://echo-icons/songs/accent"
+            source: Theme.icon("songs", "accent")
             sourceSize: Qt.size(48, 48)
             opacity: 0.6
         }
         Text {
             width: parent.width
             text: emptyState.controller.page.kind === "search" ? "没有找到匹配的音乐" : "把喜欢的音乐，留在这里"
-            color: Theme.ce8e0f1
+            color: Theme.textPrimary
             font.pixelSize: 22
             horizontalAlignment: Text.AlignHCenter
         }
         Text {
             width: parent.width
             text: emptyState.controller.page.kind === "search" ? "试试其他歌名、专辑或艺术家" : "添加音乐文件夹，或把音乐文件拖到窗口。"
-            color: Theme.c8e829e
+            color: Theme.textMuted
             font.pixelSize: 12
             horizontalAlignment: Text.AlignHCenter
         }

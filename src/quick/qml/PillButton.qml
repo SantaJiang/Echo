@@ -15,7 +15,7 @@ Button {
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.primary ? Theme.c22172d : Theme.cd5c9e2
+        color: control.primary ? Theme.accentText : Theme.textSecondary
         opacity: control.enabled ? 1 : 0.4
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
@@ -23,8 +23,8 @@ Button {
     background: Rectangle {
         antialiasing: true
         radius: height / 2
-        color: control.primary ? (control.down ? Theme.cac8bce : Theme.cd0b1f1) : control.down ? Theme.c44354f : control.hovered ? Theme.c362b42 : control.flat ? "transparent" : Theme.c292231
-        border.color: control.visualFocus ? Theme.cd0b1f1 : control.flat || control.primary ? "transparent" : Theme.c20ffffff
+        color: control.primary ? (control.down ? Theme.accent : Theme.accentStrong) : control.down ? Theme.selection : control.hovered ? Theme.selection : control.flat ? "transparent" : Theme.surface
+        border.color: control.visualFocus ? Theme.accentStrong : control.flat || control.primary ? "transparent" : Theme.hairline
         opacity: control.enabled ? 1 : 0.4
         Behavior on color {
             ColorAnimation {

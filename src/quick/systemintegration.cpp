@@ -81,40 +81,18 @@ void SystemIntegration::attach(QuickView* window, const Hooks& hooks)
     connect(m_hooks.engine, &AudioEngine::positionChanged, this, [this] { sync(true); });
     connect(window, &QuickView::hiddenToTray, m_hooks.player, &Player::saveSession);
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive && m_window && !m_window->isVisible() && (!m_mini || !m_mini->isVisible())
+        if (state == Qt::ApplicationActive && m_window && !m_window->isVisible()
             && !(m_hooks.dialogOpen && m_hooks.dialogOpen()))
             showMainWindow();
     });
     sync(true);
 }
 
-void SystemIntegration::setMiniWindow(QWindow* window)
-{
-    m_mini = window;
-    if (window) {
-        window->setProperty("echoMiniPlayer", true);
-        applyMiniWindowChrome(window);
-    }
-}
-
 void SystemIntegration::showMainWindow()
 {
-    if (m_mini)
-        m_mini->hide();
     if (!m_window)
         return;
     m_window->showFromBackground();
-}
-
-void SystemIntegration::showMini()
-{
-    if (m_mini) {
-        m_mini->show();
-        m_mini->raise();
-        m_mini->requestActivate();
-    }
-    if (m_window)
-        m_window->hideToBackground();
 }
 
 QPointF SystemIntegration::cursorPosition() const

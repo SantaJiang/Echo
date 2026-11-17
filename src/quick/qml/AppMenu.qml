@@ -9,13 +9,13 @@ Menu {
     width: 230
     padding: 6
     font.pixelSize: 13
-    background: Rectangle { color: Theme.c292330; radius: 10; antialiasing: true; border.color: Theme.c51465f }
+    background: Rectangle { color: Theme.surface; radius: 10; antialiasing: true; border.color: Theme.border }
     delegate: MenuItem {
         id: submenuItem
         implicitHeight: 34
-        contentItem: Text { text: submenuItem.text; color: Theme.ceee3ff; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { radius: 6; color: submenuItem.highlighted ? Theme.c51415f : "transparent" }
-        arrow: Text { x: parent.width - width - 10; y: (parent.height-height)/2; text: "›"; color: Theme.caaa1b7 }
+        contentItem: Text { text: submenuItem.text; color: Theme.textPrimary; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { radius: 6; color: submenuItem.highlighted ? Theme.selection : "transparent" }
+        arrow: Text { x: parent.width - width - 10; y: (parent.height-height)/2; text: "›"; color: Theme.textSecondary }
     }
     Component {
         id: leaf
@@ -23,8 +23,8 @@ Menu {
             id: entry
             property int token: 0
             implicitHeight: 34
-            contentItem: Text { text: entry.text; color: Theme.ceee3ff; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
-            background: Rectangle { radius: 6; color: entry.highlighted ? Theme.c51415f : "transparent" }
+            contentItem: Text { text: entry.text; color: Theme.textPrimary; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { radius: 6; color: entry.highlighted ? Theme.selection : "transparent" }
             onTriggered: menu.chosen(token)
         }
     }
@@ -32,7 +32,7 @@ Menu {
         id: separator
         MenuSeparator {
             implicitHeight: 9
-            contentItem: Rectangle { implicitWidth: 200; implicitHeight: 1; color: Theme.c20ffffff }
+            contentItem: Rectangle { implicitWidth: 200; implicitHeight: 1; color: Theme.hairline }
         }
     }
     function rebuild() {

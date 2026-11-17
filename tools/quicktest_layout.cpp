@@ -263,19 +263,9 @@ int echo::quicktest::runLayoutContract(Harness& harness)
                     }
                     QQmlProperty::write(hint,"visible",false);
                     shell.resize(1180,800);
-                    auto* mini = shell.rootObject()->findChild<QQuickWindow*>("miniPlayer");
-                    check(mini, "mini player window exists");
-                    for (int repeat=0; repeat<3; ++repeat) {
-                        client.showMini(); check(waitFor([&] { return mini->isVisible(); }), "mini opens repeatedly"); pump(60);
-                        const auto position = mini->position();
-                        check(mini->size() == QSize(440,100), "mini player retains its fixed viewport");
-                        shell.resize(1040+repeat*120,680+repeat*40); pump(80);
-                        check(mini->position() == position && mini->size() == QSize(440,100), "hidden owner resizing does not shift the mini player");
-                        client.showMainWindow(); check(waitFor([&] { return shell.isVisible() && !mini->isVisible(); }), "return restores main window without leaving a duplicate mini");
-                    }
                     QQuickWindow* tray = nullptr;
                     for (auto* window : shell.rootObject()->findChildren<QQuickWindow*>())
-                        if (window != mini && window->width() == 190 && window->height() == 180) tray=window;
+                        if (window->width() == 190 && window->height() == 132) tray=window;
                     check(tray, "tray popup window exists");
                     const auto screenBox = shell.screen()->geometry();
                     shell.raise(); shell.requestActivate();
@@ -540,21 +530,7 @@ int echo::quicktest::runLayoutContract(Harness& harness)
                 check(flick->property("contentY").toReal() > 0, "dialog overflow remains accessible to wheel and trackpad scrolling");
                 check(shell.grabWindow().save("/tmp/echo-layout-refactor/dialog-overflow.png"), "bounded dialog proof saved");
                 QMetaObject::invokeMethod(message, "close");
-                client.showMini();
-                auto* mini = shell.rootObject()->findChild<QQuickWindow*>("miniPlayer");
-                check(mini && waitFor([&] { return mini->isVisible(); }), "mini player opens after layout refactor");
-                pump(60);
-                auto* cover = mini->findChild<QQuickItem*>("miniCover");
-                auto* metadata = mini->findChild<QQuickItem*>("miniMetadata");
-                auto* miniTransport = mini->findChild<QQuickItem*>("miniTransport");
-                auto* seek = mini->findChild<QQuickItem*>("miniSeek");
-                check(cover && metadata && miniTransport && seek, "mini player constraint zones exist");
-                check(rect(cover).right() < rect(metadata).left() && rect(metadata).right() <= rect(miniTransport).left()
-                        && rect(miniTransport).right() < mini->width(), "mini cover, metadata and transport remain separate");
-                check(rect(seek).top() >= rect(cover).bottom() && rect(seek).bottom() <= mini->height(),
-                    "mini progress slider follows its own layout row");
-                check(mini->grabWindow().save("/tmp/echo-layout-refactor/mini.png"), "mini layout proof saved");
-                client.showMainWindow();
+                check(shell.rootObject()->findChild<QQuickWindow*>("miniPlayer") == nullptr, "mini player window is gone");
                 check(qmlIssues.isEmpty(), "shared declarative layouts produce no QML warnings");
                 qInfo() << "PASS" << passedChecks() << "shared layout contract checks";
                 QCoreApplication::exit(0);

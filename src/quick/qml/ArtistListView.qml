@@ -31,7 +31,7 @@ ListView {
         onClicked: artistList.controller.openCard(index)
         background: Rectangle {
             radius: 8
-            color: artistRow.down ? Theme.c18ffffff : artistRow.hovered || artistRow.visualFocus ? Theme.c0bffffff : "transparent"
+            color: artistRow.down ? Theme.hover : artistRow.hovered || artistRow.visualFocus ? Theme.hover : "transparent"
         }
         contentItem: Item {
             ArtistAvatar {
@@ -52,7 +52,7 @@ ListView {
                 Text {
                     width: parent.width
                     text: artistRow.item.title
-                    color: Theme.ce6dfef
+                    color: Theme.textPrimary
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
@@ -60,7 +60,7 @@ ListView {
                 Text {
                     width: parent.width
                     text: artistRow.item.subtitle
-                    color: Theme.c8d849b
+                    color: Theme.textMuted
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -71,7 +71,7 @@ ListView {
                 anchors.rightMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 text: "›"
-                color: Theme.c8d849b
+                color: Theme.textMuted
                 font.pixelSize: 28
             }
             Rectangle {
@@ -81,7 +81,7 @@ ListView {
                 anchors.rightMargin: 16
                 anchors.bottom: parent.bottom
                 height: 1
-                color: Theme.c12ffffff
+                color: Theme.hover
                 visible: artistRow.index < artistList.count - 1
             }
         }

@@ -12,8 +12,6 @@
 #include <QTimer>
 #include <functional>
 
-class QWindow;
-
 class QQuickView;
 namespace echo {
 struct UiMenu;
@@ -42,7 +40,6 @@ public:
     Q_INVOKABLE void answerDialog(int token, const QVariantMap& answer);
     Q_INVOKABLE void triggerMenu(int token);
     Q_INVOKABLE QPointF cursorPosition() const;
-    Q_INVOKABLE void setMiniWindow(QWindow* window);
 
     RowModel* tracks() { return &m_tracks; }
     RowModel* cards() { return &m_cards; }
@@ -81,12 +78,13 @@ public:
     void openPaths(const QStringList& paths);
     Q_INVOKABLE void showMainWindow();
     Q_INVOKABLE void showSettings();
-    Q_INVOKABLE void showMini();
+    Q_INVOKABLE void setTheme(const QString& id);
     Q_INVOKABLE void setScroll(double offset);
     Q_INVOKABLE double scroll() const;
 signals:
     void dialogChanged();
     void preferencesChanged();
+    void themeChanged();
     void settingsRequested();
     void menuRequested(const QVariantList& entries);
     void trayMenuRequested(const QPoint& position);

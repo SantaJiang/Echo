@@ -263,19 +263,6 @@ int echo::quicktest::runInteractiveSuite(Harness& harness)
                 }
             check(largestColorStep <= 2 && labeledCover != plainBackdrop,
                 "default backdrop is a continuous gradient while the cover retains its lettering");
-            client.showMini();
-            auto* mini = shell.rootObject()->findChild<QQuickWindow*>("miniPlayer");
-            check(mini && waitFor([&] { return mini->isVisible(); }), "mini player opens for alignment regression");
-            pump(100);
-            bool alignedMiniButtons = true;
-            for (const char* name : {"miniFavorite", "miniPrevious", "miniToggle", "miniNext", "miniReturn"}) {
-                const auto* button = mini->findChild<QQuickItem*>(name);
-                alignedMiniButtons &= button && qAbs(button->mapToScene(QPointF(0, button->height() / 2)).y() - 41) < .5
-                    && button->width() == button->height();
-            }
-            check(alignedMiniButtons, "all five mini transport buttons share a vertical center and square bounds");
-            client.showMainWindow();
-            check(waitFor([&] { return shell.isVisible() && !mini->isVisible(); }), "return to main after alignment check");
         }
         bool playlistSection = false;
         for (int i = 0; i < client.navigation()->count(); ++i)
@@ -901,32 +888,7 @@ int echo::quicktest::runInteractiveSuite(Harness& harness)
         pump(100);
         QTest::keyClick(&shell, Qt::Key_Escape);
         pump(150);
-        QWindow* mini = nullptr;
-        for (auto* candidate : QGuiApplication::allWindows()) if (candidate->objectName() == "miniPlayer") mini = candidate;
-        check(mini, "mini player is a QML Window");
-        client.showMini();
-        check(waitFor([&] {
-            mini = nullptr;
-            for (auto* candidate : QGuiApplication::allWindows())
-                if (candidate->objectName() == "miniPlayer" && candidate->isVisible())
-                    mini = candidate;
-            return mini && !shell.isVisible();
-        }), "mini player replaces main window");
-        auto* miniSeek = mini->findChild<QQuickItem*>("miniSeek");
-        check(miniSeek && miniSeek->isEnabled(), "mini player has working seek control");
-        mini->requestActivate();
-        check(waitFor([&] { return mini->isActive(); }), "mini player receives keyboard and pointer focus");
-        const auto miniSeekPoint = miniSeek->mapToScene(QPointF(miniSeek->width() * .65, miniSeek->height()/2)).toPoint();
-        QTest::mouseClick(mini, Qt::LeftButton, Qt::NoModifier, miniSeekPoint);
-        check(waitFor([&] { return playback.position() > 11000 && playback.position() < 17000; }),
-            "actual mini seek click reaches PCM playback position");
-        check(qobject_cast<QQuickWindow*>(mini)->grabWindow().save("/tmp/echo-quick-qa/mini.png"), "QML mini player screenshot saved");
-        const bool miniWasPlaying = playback.playing();
-        mini->close();
-        check(waitFor([&] { return !mini->isVisible(); }) && playback.playing() == miniWasPlaying,
-            "closing mini hides its window without stopping playback");
-        client.showMainWindow();
-        check(waitFor([&] { return shell.isVisible() && !mini->isVisible(); }), "return from mini restores main window");
+        check(shell.rootObject()->findChild<QQuickWindow*>("miniPlayer") == nullptr, "mini player window is gone");
         shell.raise(); shell.requestActivate();
         pump(150);
         check(waitFor([&] { return app.applicationState() == Qt::ApplicationActive && !library.scanBusy(); }),

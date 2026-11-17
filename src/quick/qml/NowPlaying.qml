@@ -97,7 +97,7 @@ Item {
                             scale: (22 + 3 * page.typographyProgress) / 25
                             transformOrigin: Item.TopLeft
                             text: page.playback.track.title
-                            color: Theme.cfaf8ff
+                            color: Theme.textPrimary
                             font.pixelSize: 25
                             renderType: Text.QtRendering
                             font.weight: Font.Medium
@@ -108,7 +108,7 @@ Item {
                         objectName: "detailMetadata"
                         Layout.fillWidth: true
                         text: page.playback.track.artist + "  ·  " + page.playback.track.album
-                        color: Theme.ca9a2b6
+                        color: Theme.textSecondary
                         font.pixelSize: 13
                         elide: Text.ElideRight
                     }

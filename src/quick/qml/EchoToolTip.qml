@@ -25,7 +25,7 @@ ToolTip {
     contentItem: Text {
         text: hint.text
         font: hint.font
-        color: Theme.ceee8f5
+        color: Theme.textPrimary
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         horizontalAlignment: Text.AlignHCenter
@@ -33,8 +33,8 @@ ToolTip {
     }
     background: Rectangle {
         objectName: "tooltipBackground"
-        color: Theme.c302938
-        border.color: Theme.c51465f
+        color: Theme.surfaceRaised
+        border.color: Theme.border
         border.width: 1
         radius: 7
         antialiasing: true
